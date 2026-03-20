@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Calibration data (machine-specific, don't share)
+calibration/*.npz
+calibration/profiles/*.npz
+
+# Trained models  
+*.pt
+*.onnx
+
+# IDE / tooling
+.vscode/
+.claude/
+.agent/
+.gemini/
+
+# Logs
+*.log
