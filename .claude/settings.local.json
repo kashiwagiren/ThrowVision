@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:universe.roboflow.com)",
+      "WebFetch(domain:www.linkedin.com)",
+      "Bash(python -c \"import ast; ast.parse\\(open\\(''server.py''\\).read\\(\\)\\); print\\(''server.py: OK''\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\(''detector.py''\\).read\\(\\)\\); print\\(''detector.py: OK''\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\(''scorer.py''\\).read\\(\\)\\); print\\(''scorer.py: OK''\\)\")",
+      "WebFetch(domain:dart3d.shop)",
+      "Bash(python -c \"import py_compile; py_compile.compile\\(''detector.py'', doraise=True\\); print\\(''detector.py: OK''\\)\")",
+      "Bash(python -c \"import py_compile; py_compile.compile\\(''scorer.py'', doraise=True\\); print\\(''scorer.py: OK''\\)\")",
+      "Bash(.venv/Scripts/python.exe -c \"import py_compile; py_compile.compile\\(''detector.py'', doraise=True\\); print\\(''detector.py OK''\\); py_compile.compile\\(''server.py'', doraise=True\\); print\\(''server.py OK''\\); py_compile.compile\\(''scorer.py'', doraise=True\\); print\\(''scorer.py OK''\\)\")",
+      "mcp__Claude_Preview__preview_start",
+      "Bash(.venv/Scripts/python.exe -c \"import py_compile; py_compile.compile\\(''detector.py'', doraise=True\\); print\\(''detector.py OK''\\)\")",
+      "Bash(node --check frontend/app.js)"
+    ]
+  }
+}
