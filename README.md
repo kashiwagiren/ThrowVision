@@ -33,9 +33,21 @@
 | CPU | Any modern x86-64 multi-core |
 | GPU | Optional — only needed if YOLO models are enabled |
 
-**Camera placement:** 3 cameras at equal 120° spacing around the board, dartboard height, angled ~45° downward.
+### Camera Mounting
 
-![Camera Layout](docs/camera_layout.png)
+Mount 3 cameras at **equal 120° intervals** around the board. The even spacing is critical — it ensures the cross-camera parallax cancellation works correctly from all three directions.
+
+| View | Diagram |
+|:---:|:---:|
+| **Top-down** — 120° spacing | **Side view** — ~45° angle, 35–45 cm above board |
+| ![Top-down camera layout](docs/camera_mount_final.png) | ![Side view camera mount](docs/camera_mount_side.png) |
+
+**Checklist before you start:**
+- ✅ All 3 cameras are at the same height (board centre level or slightly above)
+- ✅ Each camera is angled ~45° downward toward the board centre
+- ✅ The full board is visible in each camera's frame
+- ✅ Each USB camera is on its own USB controller (avoids bandwidth conflicts)
+- ✅ Cameras are **rigidly mounted** — any wobble after calibration breaks accuracy
 
 ---
 
@@ -100,9 +112,9 @@ A webcam mounted at an angle sees the board as a distorted ellipse. Distances an
 Raw camera view:          After calibration (warped):
                                20
   ╔══════════════╗          ╭──────╮
-  ║  (skewed     ║         /  T20  \
-  ║   ellipse)   ║        │ ●bull  │
-  ║              ║         \      /
+  ║  (skewed     ║         /   T20  \
+  ║   ellipse)   ║        │   ●bull  │
+  ║              ║         \        /
   ╚══════════════╝          ╰──────╯
  Distances are wrong        Perfect circle, true geometry
 ```
@@ -119,7 +131,7 @@ Step 2: Click these 4 wire intersections on the outer double ring:
 
          ┌── 20/1  ──┐
          │           │
-    11/14┤   BOARD  ├6/10
+    11/14┤  BOARD    ├6/10
          │           │
          └── 3/19  ──┘
 
