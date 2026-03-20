@@ -1,20 +1,25 @@
 # ThrowVision 🎯
 
+![Python](https://img.shields.io/badge/Python-3.10+-blue?logo=python&logoColor=white)
+![OpenCV](https://img.shields.io/badge/OpenCV-4.x-green?logo=opencv)
+![Flask](https://img.shields.io/badge/Flask-Socket.IO-black?logo=flask)
+![License](https://img.shields.io/badge/License-MIT-yellow)
+![Cameras](https://img.shields.io/badge/Cameras-3×_USB-orange)
+![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux-lightgrey)
+
 **ThrowVision** is an open-source, camera-based automatic dart scoring system. It uses three USB webcams arranged at 120° intervals around the dartboard to detect dart tips with millimetre accuracy using frame differencing, perspective homography, and multi-camera consensus fusion.
 
 ---
 
 ## Features
 
-- **3-camera automatic scoring** — triangulates the dart tip position from three viewing angles, eliminating shaft/barrel parallax
-- **Cross-camera mask intersection** — intersects each camera's diff mask in warped board space; only the dart tip (on the board surface) survives, flights and shaft are cancelled
-- **Multi-camera consensus** — majority vote, outlier rejection, quality-weighted averaging, and near-boundary tiebreaking
-- **Game modes** — X01 (301/501/701/901), Cricket, Count Up, and Bullseye throw-off for first-player determination
-- **Live web dashboard** — real-time scoring via Flask + Socket.IO; open `http://localhost:5000` in any browser
-- **4-point perspective calibration** — saved per-camera, auto-rescaled if resolution changes
-- **Auto-calibration** — YOLO keypoint model (`board_kpt_best.pt`) detects the 4 calibration points and bullseye automatically
-- **Dart annotation mode** — saves labelled frames on every scored dart for dataset collection
-- **Board profiles** — save/load custom board positioning configurations
+- 🎯 **3-camera automatic scoring** — triangulates the dart tip from three viewing angles, eliminating shaft/barrel parallax
+- 🔀 **Cross-camera mask intersection** — only the dart tip (on the board surface) survives the 2-of-3 vote; flights and shaft cancel out
+- 🧮 **Multi-camera consensus** — majority vote, outlier rejection, quality-weighted averaging, near-boundary tiebreaking
+- 🎮 **Game modes** — X01, Cricket, Count Up, Bullseye throw-off
+- 🌐 **Live web dashboard** — real-time scoring at `http://localhost:5000`
+- 📐 **4-point perspective calibration** — saved per-camera, auto-rescaled on resolution change
+- 🤖 **Auto-calibration** — YOLO keypoint model detects calibration points automatically
 
 ---
 
@@ -23,32 +28,25 @@
 | Item | Spec |
 |---|---|
 | Cameras | 3× USB webcams, 1080p recommended |
-| USB | Each camera on its own USB controller (avoid bandwidth conflicts) |
+| USB | Each camera on its own USB controller |
 | OS | Windows (tested) / Linux |
-| CPU | Intel/AMD x86-64, any modern multi-core |
-| GPU | Optional — used only if YOLO models are enabled (CUDA) |
+| CPU | Any modern x86-64 multi-core |
+| GPU | Optional — only needed if YOLO models are enabled |
 
-**Camera placement:** Mount cameras at equal 120° horizontal spacing around the board at dartboard height, angled slightly downward at ~45°.
+**Camera placement:** 3 cameras at equal 120° spacing around the board, dartboard height, angled ~45° downward.
+
+![Camera Layout](docs/camera_layout.png)
 
 ---
 
 ## Installation
 
 ```bash
-# 1. Clone the repo
 git clone https://github.com/kashiwagiren/ThrowVision.git
 cd ThrowVision
-
-# 2. Create a virtual environment (recommended)
-python -m venv .venv
-.venv\Scripts\activate       # Windows
-# source .venv/bin/activate  # Linux/macOS
-
-# 3. Install dependencies
+python -m venv .venv && .venv\Scripts\activate
 pip install flask flask-socketio opencv-python numpy psutil
-
-# Optional — for YOLO tip/calibration detection
-pip install ultralytics
+pip install ultralytics   # optional: YOLO models
 ```
 
 ---
@@ -56,23 +54,14 @@ pip install ultralytics
 ## Quick Start
 
 ```bash
-# Start with 3 cameras (default, cameras 0, 1, 2)
-python server.py
-
-# Single camera demo
-python server.py --demo
-
-# Custom camera indices
-python server.py --cameras 0,1,2
-
-# Override FPS
-python server.py --fps 30
-
-# UI only (no detection — for testing the frontend)
-python server.py --no-detection
+python server.py                  # 3 cameras (default)
+python server.py --demo           # single camera
+python server.py --cameras 0,1,2  # custom indices
+python server.py --fps 30         # override FPS
+python server.py --no-detection   # UI only
 ```
 
-Open **http://localhost:5000** in your browser.
+Open **http://localhost:5000**
 
 ---
 
@@ -80,341 +69,335 @@ Open **http://localhost:5000** in your browser.
 
 ```
 ThrowVision/
-├── server.py          # Flask + Socket.IO server, detection loop, scoring pipeline
-├── detector.py        # DartDetector — per-camera state machine, tip extraction
-├── calibrator.py      # BoardCalibrator — perspective transform, board geometry, masks
-├── scorer.py          # ScoreMapper — multi-camera consensus, dart scoring
+├── server.py          # Flask + Socket.IO server, detection loop
+├── detector.py        # DartDetector — per-camera state machine & tip extraction
+├── calibrator.py      # BoardCalibrator — perspective transform & board geometry
+├── scorer.py          # ScoreMapper — multi-camera consensus & scoring
 ├── config.py          # ConfigManager — all tuneable parameters
-├── game_mode.py       # Game engines — X01, Cricket, CountUp, BullseyeThrow
-├── board_profile.py   # Board profiles (save/load custom positions)
+├── game_mode.py       # X01, Cricket, CountUp, BullseyeThrow engines
+├── board_profile.py   # Save/load board position profiles
 ├── board_annotator.py # Frame annotation for dataset collection
 ├── stats.py           # Per-game statistics
-├── frontend/
-│   ├── index.html     # Dashboard UI
-│   ├── app.js         # Socket.IO client, game UI logic
-│   └── style.css      # Styling
-└── calibration/       # Per-camera .npz calibration files (gitignored)
+├── frontend/          # Dashboard (HTML + JS + CSS)
+└── calibration/       # Per-camera .npz files (gitignored)
 ```
 
 ---
 
 ## How the System Works
 
-ThrowVision is made up of three main stages that run together every time a dart is thrown: **Calibration**, **Detection**, and **Scoring**. Here is a full explanation of each.
+ThrowVision has three stages that run every time a dart is thrown: **Calibration**, **Detection**, and **Scoring**.
 
 ---
 
 ### 1. Calibration — Teaching the Cameras About the Board
 
-Before ThrowVision can score anything, each camera needs to understand where the dartboard is in its view. This is done through a **perspective calibration**.
+#### The Problem
 
-#### The Problem: Camera Angle Distortion
+A webcam mounted at an angle sees the board as a distorted ellipse. Distances and angles measured directly in the image are wrong.
 
-A USB webcam mounted at an angle sees the dartboard as a skewed ellipse, not a perfect circle. Distances and angles measured directly in the camera image are therefore wrong — e.g. a dart in T20 and a dart in S20 might appear the same distance from the centre even though T20 is physically much closer.
+```
+Raw camera view:          After calibration (warped):
+                               20
+  ╔══════════════╗          ╭──────╮
+  ║  (skewed     ║         /  T20  \
+  ║   ellipse)   ║        │ ●bull  │
+  ║              ║         \      /
+  ╚══════════════╝          ╰──────╯
+ Distances are wrong        Perfect circle, true geometry
+```
 
 #### The Solution: Perspective Homography
 
-A **homography** is a mathematical transformation (a 3×3 matrix) that maps any pixel in the raw camera image to a pixel in a "top-down" flat view of the board. After applying the homography:
-- The board appears as a perfect circle
-- All ring and segment boundaries are geometrically correct
-- Any point on the board surface can be accurately converted to real-world millimetres from the bullseye
+A **homography** is a 3×3 matrix that maps any pixel in the raw camera image to a flat top-down position on the board. After applying it, all ring and segment boundaries are geometrically correct and any point can be accurately converted to real-world millimetres.
 
-#### How to Calibrate (Manual)
+#### How to Calibrate
 
-1. Open the dashboard → click **Calibrate** on a camera
-2. Click exactly **4 wire intersections** on the outer double ring — specifically where the thin metal wires cross at:
-   - The boundary between sectors **20 and 1**
-   - **6 and 10**
-   - **3 and 19**
-   - **11 and 14**
-3. Confirm — the system computes `cv2.getPerspectiveTransform()` between those 4 raw pixel points and their known real-world positions on the board, and saves the result
+```
+Step 1: Click "Calibrate" in the dashboard
+Step 2: Click these 4 wire intersections on the outer double ring:
 
-These 4 points were chosen because they are at known angles on the double ring (radius = 170 mm from centre), so their real-world coordinates are mathematically exact.
+         ┌── 20/1  ──┐
+         │           │
+    11/14┤   BOARD  ├6/10
+         │           │
+         └── 3/19  ──┘
 
-#### What Gets Saved
+Step 3: Confirm — homography saved to calibration/calibration_N.npz
+```
 
-Calibration is stored in `calibration/calibration_N.npz` (one file per camera). It contains the 4 source points and the resolution they were captured at. If you change camera resolution later, ThrowVision automatically **rescales the source points** to the new resolution and recomputes the homography — you never need to recalibrate after a resolution change.
-
-#### Auto-Calibration (Optional)
-
-If the YOLO keypoint model (`board_kpt_best.pt`) is present, ThrowVision can detect the 4 calibration points and bullseye automatically from a single frame. The model was trained to identify specific wire intersections on the board.
+These 4 points are at known real-world positions (radius = 170 mm from centre, exact angles), so `cv2.getPerspectiveTransform()` can compute the perfect mapping.
 
 ---
 
 ### 2. Detection — Finding Where the Dart Landed
 
-Detection runs continuously in the background on all 3 cameras simultaneously. Each camera runs its own independent `DartDetector` state machine.
+#### Detector State Machine
 
-#### The Detector State Machine
+Each of the 3 cameras runs its own independent state machine:
 
-Each camera cycles through these states:
-
+```mermaid
+stateDiagram-v2
+    [*] --> WAIT
+    WAIT --> MOTION : change detected
+    MOTION --> STABLE : movement stopped
+    MOTION --> HAND : blob too large
+    STABLE --> DART : diff stabilised\n(correlation ≥ 99%)
+    DART --> WAIT : scored, board reset
+    HAND --> WAIT : hand removed
 ```
-WAIT ──► MOTION ──► STABLE ──► DART ──► SCORED
-  ▲                               │
-  └───────────────────────────────┘
-         (after board reset)
-```
 
-| State | What it means |
-|---|---|
-| `WAIT` | Camera is idle, watching for movement |
-| `MOTION` | Movement detected — a dart (or hand) is flying |
-| `STABLE` | Movement has stopped — waiting for the dart to settle |
-| `DART` | A dart is confirmed on the board — tip is extracted |
-| `HAND` | Large movement detected — a hand is in the way |
-
-#### Step-by-Step: How a Dart is Detected
+#### Step-by-Step Detection
 
 **① Frame Differencing**
 
-Every frame, the camera image is compared to a stored **reference frame** (the board as it looked before the dart was thrown). The difference between the two images — the **diff** — highlights only what has changed, i.e. the dart.
+Every frame is compared to a stored reference (board without the new dart):
 
 ```
-diff = |current_frame − reference_frame|
+diff = | current_frame − reference_frame |
+           ↓ threshold + blur
+       binary change mask
+          (highlights only the dart)
 ```
 
-This is done in raw camera space (before any warping) for maximum precision. The diff is blurred slightly with a Gaussian filter to reduce sensor noise, then thresholded into a binary black/white image.
+**② Motion & Stability Check**
 
-**② Motion Detection**
+```
+blob area < dart_size_min  → noise, ignore
+blob area < hand_size_max  → DART candidate
+blob area > hand_size_max  → HAND state
 
-The binary diff is checked against a size threshold. If the changed area is:
-- **Too small** → noise or vibration, ignored
-- **Between dart_size_min and dart_size_max** → likely a dart
-- **Larger than hand_size_max** → a hand, transitions to HAND state
+Once in candidate state:
+  Wait until frame-to-frame correlation ≥ 99%
+  (dart has stopped wobbling)
+```
 
-The camera waits for the diff to **stabilise** over several frames (correlation between consecutive frames must exceed 99%) before proceeding — this ensures the dart has stopped wobbling.
+**③ Aspect Ratio Filter**
 
-**③ Raw-Space Contour Analysis (tip extraction)**
+When other darts are already on the board, the diff also picks up flights and shaft residuals. The filter keeps only **elongated blobs**:
 
-Once stable, ThrowVision finds the dart contour in raw camera space:
+```
+Dart shaft:   narrow needle shape   → aspect ratio 5:1 to 15:1  ✅ KEEP
+Dart flights: wide fan shape        → aspect ratio 1.5:1 to 2:1 ❌ REJECT
+```
 
-- All change blobs are found using `cv2.findContours()`
-- Blobs are filtered to dart-sized areas
-- **Aspect ratio filter**: when multiple darts are already on the board, only elongated blobs (aspect ratio ≥ 2.5) are kept — this filters out flights (which are wide and fan-shaped) vs. the dart shaft (which is narrow and needle-like)
-- **Novelty filter**: among remaining blobs, the one furthest from previously scored tips is selected (= the newest dart), with a penalty for blobs that appear off the board in warped coordinates
+Threshold: `aspect ratio ≥ 2.5`
 
-**④ PCA Line Fitting (finding the dart axis)**
+**④ PCA Line Fitting**
 
-On the selected contour, **PCA (Principal Component Analysis)** is used to find the major axis of the blob — i.e. the direction the dart is pointing. This gives a direction vector `(vx, vy)` and the two extreme endpoints along that axis.
+PCA (Principal Component Analysis) finds the **major axis** of the dart blob — the direction the dart is pointing.
+
+```
+   ●●●●●●●●●●●
+  ●●●●●●●●●●●●●  ──── major axis (vx, vy)
+   ●●●●●●●●●●●
+        ↑ dart shaft contour pixels
+```
 
 **⑤ Two-Stage Tip Refinement**
 
-The physical dart tip is the very end of the dart, but the whole shaft is visible in the diff. To isolate only the tip:
+```
+Full blob:  [FLIGHTS]──[SHAFT]──[BARREL]──[TIP●]
 
-1. **Stage 1 (25% zone):** Only the 25% of pixels closest to the tip end of the axis are kept. This cuts out shaft and flight pixels.
-2. **Stage 2 (5% extremum):** Within that 25%, only the most extreme 5% of pixels along the axis are averaged. This pinpoints the very tip contact point rather than anywhere along the shaft.
+Stage 1 — keep the 25% closest to the tip end:
+                              [BARREL]──[TIP●]
+
+Stage 2 — keep the most extreme 5% along the axis:
+                                         [TIP●]
+         → average these pixels = physical tip point
+```
 
 **⑥ Tip Disambiguation — Which End is the Tip?**
 
-The dart has two ends. The system must decide which is the tip. The rule: **the tip is always the end closest to the board centre** in warped (top-down) space. This works because:
+```mermaid
+flowchart TD
+    A[Two axis endpoints: A and B] --> B{Warped-space distance\nto board centre}
+    B -->|difference > 15%| C[Pick the closer end = TIP ✅]
+    B -->|difference ≤ 15%\nambiguous| D{Raw camera-space\ndistance to bullseye pixel}
+    D --> E[Pick the closer end in raw space = TIP ✅]
+```
 
-- The dart tip is physically touching the board surface → the homography maps it correctly → it appears close to the board centre
-- The barrel and flights are elevated above the board surface → camera parallax shifts them outward in warped space → they appear further from centre
-
-**When the two ends are ambiguous** (within 15% of each other in warped distance), a second test is used: in **raw camera space**, the end closest to the raw pixel position of the bullseye (`board_centre_cam`) is chosen. This is a reliable fallback because the raw camera position of the bullseye is a fixed reference that doesn't depend on any 3D math.
+Why does warped distance work? The dart **tip is on the board surface**, so the homography maps it correctly (close to centre). The **barrel is elevated above the board**, so parallax pushes it outward in warped space.
 
 **⑦ Dark-Segment Correction**
 
-Black scoring segments (like S20 dark or S3 dark) have very low contrast against the dart tip. The camera cannot see pixels it cannot distinguish from the background, so the detected blob may end at the shaft rather than at the actual tip. ThrowVision corrects this:
+Black board segments have near-zero contrast. The detected blob ends at the shaft boundary, not the actual tip.
 
-- Sample the **raw image brightness** at the detected tip position
-- If brightness < 80 (dark segment): push the tip **18% further** along the dart axis
-- If brightness ≥ 80 (bright segment): push **5%** for fine-tuning
+```
+Bright segment (≥80 brightness):
+  ══════[SHAFT]═══●tip          detected correctly → push +5%
 
-This extrapolation compensates for the invisible tip pixels without overshooting.
+Dark segment (<80 brightness):
+  ══════[SHAFT]              tip invisible → push +18% along axis
+          ↑ blob ends here        to reach the actual tip
+```
 
 **⑧ Raw → mm Coordinate**
 
-The raw-space tip pixel is converted to real-world millimetres from the bullseye using a **direct homography** (`_M_mm`). This avoids the double-conversion error that comes from going raw→warped→mm. The result is the dart tip position as `(x_mm, y_mm)` where (0, 0) is the bullseye.
+The raw-space tip pixel is converted to real-world millimetres using a **direct homography** (raw px → mm in one step), avoiding the double-conversion error of going raw→warped→mm.
 
 ---
 
-### 3. Cross-Camera Mask Intersection — Cancelling Parallax
+### 3. Cross-Camera Intersection — Cancelling Parallax
 
-This is the most important accuracy step and the reason ThrowVision uses three cameras.
+This is the key accuracy step.
 
 #### The Parallax Problem
 
-The cameras are mounted at an angle (~45°) to the board. This means anything **above the board surface** — the dart barrel, shaft, and flights — appears shifted in the camera image. Each camera is at a different angle, so the barrel appears shifted in a **different direction** for each camera.
+```
+          Camera 0 (top)
+               ▼
+    ┌──────────┼──────────┐
+    │          ●tip       │
+    │         /barrel     │  ← barrel appears shifted
+    │        / (elevated) │     differently per camera
+    └──────────────────────┘
+Cam 1 (left)     Cam 2 (right)
+    sees barrel  →     sees barrel ←
+    shifted left        shifted right
+```
 
-This causes per-camera tip detection to sometimes pick up the barrel or flights (which appear "on the board" in that camera's warped view, just at the wrong position).
+#### The 2-of-3 Vote
 
-#### The Intersection Solution
+```mermaid
+flowchart LR
+    A[Cam 0 warped mask] --> D
+    B[Cam 1 warped mask] --> D
+    C[Cam 2 warped mask] --> D
+    D{Vote map\nsum masks} --> E{pixel ≥ 2 votes?}
+    E -->|Yes| F[✅ Tip pixel survives]
+    E -->|No| G[❌ Shaft/flight cancelled]
+    F --> H[Centroid = true dart tip]
+```
 
-After all 3 cameras have detected a dart, ThrowVision:
-
-1. Takes each camera's **raw diff mask** (the full binary image showing all changed pixels — shaft, flights, tip)
-2. **Warps each mask** into board space using that camera's homography
-3. Adds all three warped masks together into a **vote map** (each pixel = how many cameras see change there)
-4. Keeps only pixels where **≥ 2 cameras agree** (2-of-3 vote)
-
-Why does this work?
-
-- **The dart TIP** is on the board surface. All three cameras' homographies correctly map it to the same board position. It **survives** the vote.
-- **The shaft and flights** are elevated above the board. Each camera's parallax shifts them in a different direction in warped space. They **cancel out** because they land in different positions for each camera and can't get 2+ votes.
-
-The centroid of the surviving intersection region is then the true dart tip position, converted to millimetres.
-
-#### When Intersection Fails
-
-If the intersection is empty (e.g. one camera has bad visibility of the tip), the system falls back to **majority vote** and **quality-weighted averaging** of the individual per-camera detections.
+The dart **tip** (on the board surface) maps to the **same board pixel** for all cameras → gets 3 votes → survives.  
+The **shaft/flights** (elevated above the board) map to **different board pixels** per camera due to parallax → gets only 1 vote each → cancelled.
 
 ---
 
-### 4. Scoring — Converting Position to Score
+### 4. Scoring — Position to Score
 
-Once the final tip position in millimetres is known, scoring is straightforward geometry.
-
-#### Coordinate System
-
-- **(0, 0)** = bullseye centre
-- **+Y** = upward (towards sector 20)
-- **+X** = rightward (towards sector 6)
-- Distances in **millimetres**
-
-#### Polar Conversion
-
-The `(x_mm, y_mm)` position is converted to polar coordinates:
-```
-r     = sqrt(x² + y²)         # distance from centre in mm
-theta = atan2(y, x) in degrees # angle from horizontal
-```
-
-#### Ring Lookup
-
-| Condition | Score |
-|---|---|
-| r ≤ 6.35 mm | Double Bull (50) |
-| r ≤ 15.9 mm | Single Bull (25) |
-| 99 ≤ r ≤ 107 mm | Triple ring |
-| 162 ≤ r ≤ 170 mm | Double ring |
-| r > 170 mm | Off board (0) |
-
-#### Sector Lookup
-
-The board has 20 sectors each spanning 18°. Sector 20 is at the top (90°). The `theta` angle is used to find which sector the dart landed in using the standard dartboard order:
+#### Board Coordinate System
 
 ```
-20, 1, 18, 4, 13, 6, 10, 15, 2, 17, 3, 19, 7, 16, 8, 11, 14, 9, 12, 5
+              +Y  (sector 20)
+               ↑
+               │  ┌─ DB (r ≤ 6.35mm)
+               │  ├─ SB (r ≤ 15.9mm)
+               │  ├─ Single
+               │  ├─ Triple (r 99–107mm)
+  ─────────────┼────────────── +X  (sector 6)
+  (0,0)=bull   │  ├─ Single
+               │  ├─ Double (r 162–170mm)
+               │  └─ OFF    (r > 170mm)
+               ↓
 ```
 
-#### Multi-Camera Consensus
+#### Scoring Logic
 
-When 3 cameras each report a tip position, the final score is determined by this priority chain:
+```mermaid
+flowchart TD
+    A["tip position (x_mm, y_mm)"] --> B["r = √(x²+y²)\nθ = atan2(y,x)°"]
+    B --> C{r ≤ 6.35mm?}
+    C -->|Yes| D[Double Bull = 50]
+    C -->|No| E{r ≤ 15.9mm?}
+    E -->|Yes| F[Single Bull = 25]
+    E -->|No| G{r > 170mm?}
+    G -->|Yes| H[OFF = 0]
+    G -->|No| I[Look up sector from θ\ncheck ring from r]
+    I --> J["S/T/D + sector value"]
+```
 
-1. **Cross-camera intersection** (highest trust) — used if 2+ cameras' masks overlapped
-2. **Majority vote** — if 2/3 cameras independently score the same segment label
-3. **Outlier rejection** — if one camera is >40 mm from the other two, it is discarded
-4. **Quality-weighted average** — remaining cameras are averaged, with higher weight for more reliable detection methods (e.g. `LINE_FIT` weight=4.0 vs `LINE_FIT_WEAK` weight=1.5)
-5. **Near-boundary correction** — if the averaged position is within 6 mm of a wire, the single best-quality camera's reading is used instead to avoid averaging across a boundary
+#### Multi-Camera Consensus Priority
+
+```
+Priority 1: Cross-camera mask intersection  ← most accurate
+Priority 2: Majority vote (2/3 agree)
+Priority 3: Outlier rejection (drop if >40mm from others)
+Priority 4: Quality-weighted average
+Priority 5: Near-boundary → best single camera wins
+```
+
+| Method | Weight | Notes |
+|---|---|---|
+| `LINE_FIT` | 4.0 | Clear tip direction |
+| `YOLO_MOTION` | 4.5 | YOLO bbox + motion-refined |
+| `LINE_FIT_WEAK` | 1.5 | Ambiguous tip direction |
+| `WARPED` | 0.5 | Last-resort fallback |
 
 ---
 
-## Detection Pipeline (Summary)
+## Detection Pipeline (Full Flow)
 
-```
-Camera frame
-    │
-    ▼
-[Frame diff vs reference]   ← highlight only what changed (the new dart)
-    │
-    ▼
-[Motion / stability check]  ← wait for dart to stop wobbling
-    │
-    ▼
-[Contour filtering]         ← dart-sized blobs; aspect ratio ≥ 2.5 to reject flights
-    │
-    ▼
-[Novelty filter]            ← pick blob furthest from already-scored tips
-    │
-    ▼
-[PCA line fit]              ← find dart axis direction
-    │
-    ▼
-[Two-stage tip refinement]  ← 25% zone → 5% extremum to isolate physical tip
-    │
-    ▼
-[Tip disambiguation]        ← warped-space board-centre distance;
-                              raw camera-space fallback if ambiguous
-    │
-    ▼
-[Dark-segment correction]   ← extrapolate 18% if tip is in a dark wedge
-    │
-    ▼
-[Raw → mm coordinate]       ← direct homography, no double-conversion
-    │
-    ▼
-[Cross-camera intersection] ← 2-of-3 vote in warped board space
-    │                         tip survives, shaft/flights cancel out
-    ▼
-[Consensus scoring]         ← majority vote → outlier reject → weighted average
-    │
-    ▼
-Score emitted via Socket.IO → browser dashboard
+```mermaid
+flowchart TD
+    A[📷 Camera Frame] --> B[Frame diff vs reference]
+    B --> C[Motion / stability check]
+    C --> D{Blob size?}
+    D -->|too small| A
+    D -->|hand-sized| E[HAND state — wait]
+    D -->|dart-sized| F[Aspect ratio filter ≥ 2.5]
+    F --> G[Novelty filter — pick newest dart blob]
+    G --> H[PCA line fit — find dart axis]
+    H --> I[Two-stage tip refinement\n25% zone → 5% extremum]
+    I --> J[Tip disambiguation\nwarped-space + raw fallback]
+    J --> K{Dark segment?}
+    K -->|brightness < 80| L[Extrapolate +18% along axis]
+    K -->|bright| M[Fine-tune +5%]
+    L --> N[Raw px → mm via direct homography]
+    M --> N
+    N --> O[Cross-camera 2-of-3 mask vote]
+    O --> P[Consensus scoring\nmajority → outlier reject → weighted avg]
+    P --> Q[🎯 Score emitted via Socket.IO]
 ```
 
 ---
 
 ## Game Modes
 
-| Mode | Description |
-|---|---|
-| **X01** | Standard 301 / 501 / 701 / 901. Double-out required. Bust returns score to start of turn. |
-| **Cricket** | Close 15–20 + Bull (25). Score points on numbers the opponent hasn't closed. Win by closing everything with score ≥ opponent. |
-| **Count Up** | Accumulate points over N rounds (default 8). Highest total wins. |
-| **Bullseye Throw-off** | Each player throws once; closest to bull goes first. Tiebreaks (re-throw) if within 1 mm. |
+| Mode | How to Win | Key Rule |
+|---|---|---|
+| **X01** (301/501/701/901) | Reach exactly 0 | Must finish on a **double**. Bust = score back to turn start. |
+| **Cricket** | Close 15–20 + Bull, score ≥ opponent | Hit a number 3 times to close it. Extra hits score points if opponent hasn't closed. |
+| **Count Up** | Highest total after N rounds | No bust. Pure accumulation. |
+| **Bullseye Throw-off** | Closest to bull goes first | Tiebreak re-throw if within 1 mm. |
 
 ---
 
 ## Configuration
 
-Key parameters in `config.py` (`ConfigManager`):
-
 | Parameter | Default | Description |
 |---|---|---|
 | `resolution` | `(1920, 1080)` | Camera capture resolution |
 | `fps` | `30` | Capture frame rate |
-| `dart_size_min` | `800` | Minimum contour area (px²) for a dart blob |
+| `dart_size_min` | `800` | Minimum contour area (px²) |
 | `dart_size_max` | `25000` | Maximum contour area (px²) |
-| `binary_thresh` | `30` | Frame-diff binarisation threshold |
-| `tip_offset_px` | `8.0` | Fine tip offset along dart axis (px) |
-| `detection_speed` | `DEFAULT` | `VERY_LOW`/`LOW`/`DEFAULT`/`HIGH`/`VERY_HIGH` — trades sensitivity for accuracy |
-| `yolo_enabled` | `True` | Enable YOLO tip/calibration detection |
-| `yolo_model_path` | `models/darttipbox1.1.pt` | YOLO dart tip model path |
-| `board_kpt_model_path` | `models/board_kpt_best.pt` | YOLO board keypoint model path |
+| `binary_thresh` | `30` | Frame-diff threshold |
+| `tip_offset_px` | `8.0` | Fine tip offset along dart axis |
+| `detection_speed` | `DEFAULT` | `VERY_LOW` / `LOW` / `DEFAULT` / `HIGH` / `VERY_HIGH` |
 
 ---
 
-## API Endpoints
+## API
 
-| Endpoint | Method | Description |
-|---|---|---|
-| `/` | GET | Dashboard UI |
-| `/api/status` | GET | Camera states, last score, detector count |
-| `/api/settings` | GET | Current config values |
-| `/api/system-stats` | GET | CPU, RAM, GPU usage |
+| Endpoint | Description |
+|---|---|
+| `GET /` | Dashboard UI |
+| `GET /api/status` | Camera states, last score |
+| `GET /api/settings` | Current config |
+| `GET /api/system-stats` | CPU, RAM, GPU |
 
-### Socket.IO Events
-
-| Event | Direction | Payload |
-|---|---|---|
-| `dart_scored` | Server → Client | `{label, score, x_mm, y_mm, cam_details, game_state}` |
-| `cam_status` | Server → Client | `{cam_id, state, fps, active}` |
-| `calibrate` | Client → Server | `{cam_id, points: [[x,y]×4]}` |
-| `reset_board` | Client → Server | — |
-| `start_game` | Client → Server | `{mode, options}` |
-| `undo_dart` | Client → Server | — |
+**Socket.IO:** `dart_scored` · `cam_status` · `calibrate` · `reset_board` · `start_game` · `undo_dart`
 
 ---
 
 ## Tips for Best Accuracy
 
-- **Use bright, contrasting dart flights** — pink/orange/yellow flights are easiest to detect; avoid dark flights on dark segments
-- **Keep cameras stable** — any camera wobble after calibration degrades accuracy
-- **Good lighting** — even, diffuse lighting reduces shadows on the board
-- **Throw cleanly** — remove your hand from the camera's field of view promptly after each throw (the system waits for the HAND state to clear before scoring)
-- **Recalibrate if you move a camera** — calibration is stored per-camera index
+- 🌈 **Bright contrasting flights** — pink/orange/yellow work best; avoid dark flights on dark segments
+- 📷 **Keep cameras stable** — any wobble after calibration degrades accuracy
+- 💡 **Even lighting** — reduce shadows across the board
+- ✋ **Remove hand quickly** — the system waits for the HAND state to clear before scoring
+- 🔧 **Recalibrate** if you move a camera
 
 ---
 
