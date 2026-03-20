@@ -20,3 +20,6 @@ calibration/profiles/*.npz
 
 # Logs
 *.log
+
+# One-off generator scripts
+gen_*.py
