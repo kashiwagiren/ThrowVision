@@ -28,7 +28,7 @@
 | Item | Spec |
 |---|---|
 | Cameras | 3× USB webcams, 1080p recommended |
-| USB | Each camera on its own USB controller |
+| USB | USB 2.0 — each camera on its own USB controller |
 | OS | Windows (tested) / Linux |
 | CPU | Any modern x86-64 multi-core |
 | GPU | Optional — only needed if YOLO models are enabled |
