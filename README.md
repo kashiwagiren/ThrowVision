@@ -56,6 +56,22 @@ Mount 3 cameras at **equal 120° intervals** around the board. The even spacing 
 
 ## Installation
 
+### Option A — Desktop App (recommended)
+
+```bash
+git clone https://github.com/kashiwagiren/ThrowVision.git
+cd ThrowVision
+
+# 1. Set up Python backend
+python -m venv .venv && .venv\Scripts\activate
+pip install flask flask-socketio opencv-python numpy psutil pyinstaller
+
+# 2. Install Electron
+npm install
+```
+
+### Option B — Browser only (Python, no Electron)
+
 ```bash
 git clone https://github.com/kashiwagiren/ThrowVision.git
 cd ThrowVision
@@ -66,6 +82,16 @@ pip install flask flask-socketio opencv-python numpy psutil
 ---
 
 ## Quick Start
+
+### Desktop App
+
+```bash
+npm start                       # launch as a native desktop window
+```
+
+The branded splash screen appears while the Python server starts (~3 s), then ThrowVision opens in its own window. Closing the window shuts down the Python backend automatically.
+
+### Browser / Python Only
 
 ```bash
 python server.py                  # 3 cameras (default)
@@ -78,6 +104,7 @@ python server.py --no-detection   # UI only
 Open **http://localhost:5000**
 
 ---
+
 
 ## Project Structure
 
@@ -92,13 +119,43 @@ ThrowVision/
 ├── board_profile.py   # Save/load board position profiles
 ├── board_annotator.py # Frame annotation for dataset collection
 ├── stats.py           # Per-game statistics
+├── throwvision.spec   # PyInstaller build spec
+├── package.json       # Electron project + npm scripts
+├── electron/
+│   ├── main.js        # Electron main process (spawns Python, shows splash)
+│   ├── splash.html    # Branded loading screen
+│   └── preload.js     # Security preload (contextIsolation)
 ├── frontend/          # Dashboard (HTML + JS + CSS)
 └── calibration/       # Per-camera .npz files (gitignored)
 ```
 
 ---
 
+## Desktop App — Building a Distributable
+
+> Requires: Python `.venv` activated, `npm install` done, **Developer Mode** on  
+> (Windows: Settings → System → Advanced → Developer Mode → On)
+
+```bash
+# Step 1: Bundle Python backend (run after any .py changes)
+npm run pyinstaller
+# → dist/server/server.exe  (~30 MB, all deps included)
+
+# Step 2: Package Electron app + create Windows installer
+npm run build:win
+# → dist-electron/ThrowVision Setup 1.0.0.exe  (180 MB, no Python needed)
+# → dist-electron/win-unpacked/ThrowVision.exe  (portable, no install)
+```
+
+| Output | Description |
+|--------|-------------|
+| `ThrowVision Setup 1.0.0.exe` | Standard installer — creates Desktop & Start Menu shortcuts |
+| `win-unpacked/ThrowVision.exe` | Portable — just copy the folder and run |
+
+---
+
 ## How the System Works
+
 
 ThrowVision has three stages that run every time a dart is thrown: **Calibration**, **Detection**, and **Scoring**.
 
