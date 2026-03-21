@@ -25,10 +25,13 @@ os.environ["OPENCV_LOG_LEVEL"] = "ERROR"
 import logging
 logging.getLogger("werkzeug").setLevel(logging.ERROR)  # silence HTTP request logs
 
-from flask import Flask, send_from_directory, Response, jsonify, request
-from flask_socketio import SocketIO
+import sys
 
-app = Flask(__name__, static_folder="frontend", static_url_path="")
+# ── Base directory: exe dir when frozen (PyInstaller), script dir in dev ────
+BASE_DIR = Path(sys.executable).parent if getattr(sys, 'frozen', False) else Path(__file__).parent
+
+app = Flask(__name__, static_folder=str(BASE_DIR / "frontend"), static_url_path="")
+
 app.config["SECRET_KEY"] = "throwvision-secret"
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
 

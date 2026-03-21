@@ -27,4 +27,6 @@ gen_*.py
 # Electron / Node
 node_modules/
 dist/
+dist-electron/
 package-lock.json
+

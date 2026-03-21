@@ -6,38 +6,52 @@
   "scripts": {
     "start": "node -e \"const {execFileSync}=require('child_process');execFileSync(require('electron'),['.'],{stdio:'inherit',cwd:process.cwd()})\"",
     "start:dev": "node -e \"const {execFileSync}=require('child_process');execFileSync(require('electron'),['.',  '--dev'],{stdio:'inherit',cwd:process.cwd()})\"",
-    "build": "electron-builder",
-    "build:win": "electron-builder --win",
-    "build:linux": "electron-builder --linux"
+    "build": "node node_modules/electron-builder/cli.js",
+    "build:win": "node node_modules/electron-builder/cli.js --win",
+    "build:linux": "node node_modules/electron-builder/cli.js --linux",
+    "pyinstaller": ".venv\\Scripts\\pyinstaller throwvision.spec --clean --noconfirm"
   },
   "build": {
     "appId": "com.kashiwagiren.throwvision",
     "productName": "ThrowVision",
     "directories": {
-      "output": "dist"
+      "output": "dist-electron"
     },
     "files": [
-      "electron/**/*",
-      "frontend/**/*",
-      "*.py",
-      "calibration/**/*",
-      "docs/**/*"
+      "electron/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "dist/server",
+        "to": "server",
+        "filter": [
+          "**/*"
+        ]
+      }
     ],
     "win": {
-      "target": "nsis",
-      "icon": "docs/icon.ico"
+      "target": "dir"
     },
     "linux": {
       "target": "AppImage",
-      "icon": "docs/icon.png"
-    },
-    "extraResources": []
+      "category": "Utility"
+    }
+
   },
-  "keywords": ["darts", "computer-vision", "scoring", "electron"],
+  "keywords": [
+    "darts",
+    "computer-vision",
+    "scoring",
+    "electron"
+  ],
   "author": "kashiwagiren",
   "license": "MIT",
   "devDependencies": {
     "electron": "^34.0.0",
     "electron-builder": "^25.0.0"
+  },
+  "dependencies": {
+    "app-builder-bin": "^5.0.0-alpha.10",
+    "typescript": "^5.9.3"
   }
 }
