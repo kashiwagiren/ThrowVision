@@ -27,10 +27,14 @@ logging.getLogger("werkzeug").setLevel(logging.ERROR)  # silence HTTP request lo
 
 import sys
 
+from flask import Flask, send_from_directory, Response, jsonify, request
+from flask_socketio import SocketIO
+
 # ── Base directory: exe dir when frozen (PyInstaller), script dir in dev ────
 BASE_DIR = Path(sys.executable).parent if getattr(sys, 'frozen', False) else Path(__file__).parent
 
 app = Flask(__name__, static_folder=str(BASE_DIR / "frontend"), static_url_path="")
+
 
 app.config["SECRET_KEY"] = "throwvision-secret"
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode="threading")
