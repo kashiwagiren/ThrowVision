@@ -30,7 +30,15 @@
       }
     ],
     "win": {
-      "target": "dir"
+      "target": "nsis"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowElevation": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "ThrowVision"
     },
     "linux": {
       "target": "AppImage",
