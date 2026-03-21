@@ -4,8 +4,8 @@
   "description": "Real-Time, Vision-Based Automated Scoring System for Steel-Tip Darts",
   "main": "electron/main.js",
   "scripts": {
-    "start": "electron .",
-    "start:dev": "electron . --dev",
+    "start": "node -e \"const {execFileSync}=require('child_process');execFileSync(require('electron'),['.'],{stdio:'inherit',cwd:process.cwd()})\"",
+    "start:dev": "node -e \"const {execFileSync}=require('child_process');execFileSync(require('electron'),['.',  '--dev'],{stdio:'inherit',cwd:process.cwd()})\"",
     "build": "electron-builder",
     "build:win": "electron-builder --win",
     "build:linux": "electron-builder --linux"
