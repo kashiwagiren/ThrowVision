@@ -16,10 +16,13 @@
 - 🎯 **3-camera automatic scoring** — triangulates the dart tip from three viewing angles, eliminating shaft/barrel parallax
 - 🔀 **Cross-camera mask intersection** — only the dart tip (on the board surface) survives the 2-of-3 vote; flights and shaft cancel out
 - 🧮 **Multi-camera consensus** — majority vote, outlier rejection, quality-weighted averaging, near-boundary tiebreaking
-- 🎮 **Game modes** — X01, Cricket, Count Up, Bullseye throw-off
+- 🎮 **Game modes** — X01 (301/501/701/901), Cricket, Count Up, Bullseye throw-off
 - 🌐 **Live web dashboard** — real-time scoring at `http://localhost:5000`
 - 📐 **4-point perspective calibration** — saved per-camera, auto-rescaled on resolution change
-- 🤖 **Auto-calibration** — YOLO keypoint model detects calibration points automatically
+- 🤖 **Opportunistic scan** — cameras that miss the initial detection window run a one-shot frame-diff scan to contribute to multi-camera consensus
+- ✋ **Turn takeout system** — after 3 darts the board blocks new dart detection, waits for physical dart removal via hand detection, then advances the player turn
+- 🔄 **System checker** — "Preparing Practice / Game" startup screen checks server, cameras, calibration, board profile, and detection engine before launching
+- 📡 **Offline guard** — all pages (Practice, Game, Stats) show a "System Offline" modal if the server is not connected; disconnect redirects gracefully to home
 
 ---
 
@@ -31,7 +34,7 @@
 | USB | USB 2.0 — each camera on its own USB controller |
 | OS | Windows (tested) / Linux |
 | CPU | Any modern x86-64 multi-core |
-| GPU | Optional — only needed if YOLO models are enabled |
+| GPU | Not required — detection is pure CPU-based OpenCV |
 
 ### Camera Mounting
 
@@ -58,7 +61,6 @@ git clone https://github.com/kashiwagiren/ThrowVision.git
 cd ThrowVision
 python -m venv .venv && .venv\Scripts\activate
 pip install flask flask-socketio opencv-python numpy psutil
-pip install ultralytics   # optional: YOLO models
 ```
 
 ---
@@ -157,6 +159,9 @@ stateDiagram-v2
     STABLE --> DART : diff stabilised\n(correlation ≥ 99%)
     DART --> WAIT : scored, board reset
     HAND --> WAIT : hand removed
+    DART --> TAKEOUT : 3rd dart scored
+    TAKEOUT --> HAND : player reaches for darts
+    TAKEOUT --> WAIT : takeout confirmed
 ```
 
 #### Step-by-Step Detection
@@ -183,6 +188,14 @@ Once in candidate state:
   Wait until frame-to-frame correlation ≥ 99%
   (dart has stopped wobbling)
 ```
+
+Detection timing per dart (approximate at 30 fps):
+
+| Timer | Frames | Duration | Purpose |
+|---|---|---|---|
+| Settle | 7 | ~230 ms | Dart wobble + auto-exposure balance |
+| Cooldown | 15 | ~500 ms | Prevent re-detection noise after scoring |
+| Stability | 10 | ~333 ms | Confirm dart is fully still before scoring |
 
 **③ Aspect Ratio Filter**
 
@@ -250,7 +263,31 @@ The raw-space tip pixel is converted to real-world millimetres using a **direct 
 
 ---
 
-### 3. Cross-Camera Intersection — Cancelling Parallax
+### 3. Turn Takeout System
+
+After a player throws their 3rd dart, the system enters **takeout mode**:
+
+```mermaid
+flowchart TD
+    A[3rd dart scored] --> B[prepare_for_takeout\ncaptures current frame as reference\ndisables stale-ref guard]
+    B --> C[Frontend shows\nRemove darts from board!]
+    C --> D{Hand detected\nin camera view?}
+    D -->|Yes — after 1.5s guard| E[Wait for hand to withdraw]
+    E -->|Hand gone + 1.5s| F[Takeout confirmed]
+    F --> G[Player advances\nNew turn begins]
+    D -->|No| D
+```
+
+**Key design points:**
+
+- `prepare_for_takeout()` bakes the 3-dart board state into the reference immediately — no settle period, no cooldown — so hand detection is instant
+- `_stale_ref_threshold` is raised to `0.95` during takeout so a hand covering >30% of the board does **not** trigger an auto-recapture (which would destroy hand detection)
+- The server holds back the new `game_state` until physical takeout completes — the frontend never switches the player indicator until the board is actually clear
+- A 1.5-second guard after hand-first-seen prevents dart vibration from being mistaken for a hand
+
+---
+
+### 4. Cross-Camera Intersection — Cancelling Parallax
 
 This is the key accuracy step.
 
@@ -287,7 +324,7 @@ The **shaft/flights** (elevated above the board) map to **different board pixels
 
 ---
 
-### 4. Scoring — Position to Score
+### 5. Scoring — Position to Score
 
 #### Board Coordinate System
 
@@ -332,10 +369,12 @@ Priority 5: Near-boundary → best single camera wins
 
 | Method | Weight | Notes |
 |---|---|---|
-| `LINE_FIT` | 4.0 | Clear tip direction |
-| `YOLO_MOTION` | 4.5 | YOLO bbox + motion-refined |
+| `LINE_FIT` | 4.0 | Clear tip direction from cv2.fitLine |
+| `HOUGH_LINE` | 4.0 | Clear tip direction from HoughLinesP |
+| `SCAN_LINE_FIT` | 3.5 | Opportunistic scan line-fit |
+| `PROFILE` | 3.0 | Width-profile blob (legacy fallback) |
 | `LINE_FIT_WEAK` | 1.5 | Ambiguous tip direction |
-| `WARPED` | 0.5 | Last-resort fallback |
+| `WARPED` | 0.5 | Last-resort warped-space fallback |
 
 ---
 
@@ -360,7 +399,10 @@ flowchart TD
     M --> N
     N --> O[Cross-camera 2-of-3 mask vote]
     O --> P[Consensus scoring\nmajority → outlier reject → weighted avg]
-    P --> Q[🎯 Score emitted via Socket.IO]
+    P --> Q{3rd dart?}
+    Q -->|Yes| R[Turn Takeout — wait for hand removal]
+    Q -->|No| S[🎯 Score emitted via Socket.IO]
+    R --> S
 ```
 
 ---
@@ -373,6 +415,40 @@ flowchart TD
 | **Cricket** | Close 15–20 + Bull, score ≥ opponent | Hit a number 3 times to close it. Extra hits score points if opponent hasn't closed. |
 | **Count Up** | Highest total after N rounds | No bust. Pure accumulation. |
 | **Bullseye Throw-off** | Closest to bull goes first | Tiebreak re-throw if within 1 mm. |
+
+### Turn Flow (Game Mode)
+
+```
+Player throws 3 darts
+        ↓
+All 3 dart scores displayed (dots remain on board)
+        ↓
+"Remove darts from the board!" prompt shown
+        ↓
+Hand enters frame → hand detection confirmed
+        ↓
+Hand withdraws → takeout confirmed
+        ↓
+Next player's turn begins, board clears
+```
+
+---
+
+## Dashboard
+
+The web dashboard (`http://localhost:5000`) provides:
+
+- **Home** — launch Calibrate, Practice, Game, Stats, Settings
+- **Practice mode** — free-throw scoring with live board visualisation and debug camera view
+- **Game mode** — full X01 / Cricket / Count Up with bullseye throw-off, player panels, turn history, and takeout prompts
+- **Calibration** — per-camera 4-point perspective setup with live warp preview
+- **Stats** — per-game history with averages, checkout rates, and recent games
+- **Settings** — camera, detection, and annotation configuration
+
+**System checker** ("Preparing Practice / Game") runs once per session, verifying:  
+Server Connection → Camera System → Board Calibration → Board Profile → Detection Engine
+
+**Offline guard** — clicking any mode while the server is disconnected shows a "System Offline" modal instead of navigating to a broken page.
 
 ---
 
@@ -399,7 +475,21 @@ flowchart TD
 | `GET /api/settings` | Current config |
 | `GET /api/system-stats` | CPU, RAM, GPU |
 
-**Socket.IO:** `dart_scored` · `cam_status` · `calibrate` · `reset_board` · `start_game` · `undo_dart`
+**Socket.IO events (server → client):**
+
+| Event | Payload | Description |
+|---|---|---|
+| `dart_scored` | `{label, score, coord, …}` | Dart tip detected and scored |
+| `game_state` | `{type, scores, current_player, …}` | Full game state update |
+| `turn_takeout` | `{message}` | 3rd dart landed — prompt to remove darts |
+| `clear_board_dots` | `{}` | Takeout confirmed — clear board visualisation |
+| `cam_status` | `{cam_id, state, fps}` | Camera health update |
+| `srv_status` | `{type, message}` | Server phase ("Opening cameras…", "Cameras ready") |
+| `cameras_state` | `{open}` | Cameras opened/closed |
+| `game_over` | `{winner, …}` | Game finished |
+
+**Socket.IO events (client → server):**  
+`calibrate` · `reset_board` · `start_bullseye` · `start_game` · `undo_dart` · `skip_takeout` · `open_cameras` · `close_cameras` · `update_settings`
 
 ---
 
