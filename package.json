@@ -1,0 +1,43 @@
+{
+  "name": "throwvision",
+  "version": "1.0.0",
+  "description": "Real-Time, Vision-Based Automated Scoring System for Steel-Tip Darts",
+  "main": "electron/main.js",
+  "scripts": {
+    "start": "electron .",
+    "start:dev": "electron . --dev",
+    "build": "electron-builder",
+    "build:win": "electron-builder --win",
+    "build:linux": "electron-builder --linux"
+  },
+  "build": {
+    "appId": "com.kashiwagiren.throwvision",
+    "productName": "ThrowVision",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "electron/**/*",
+      "frontend/**/*",
+      "*.py",
+      "calibration/**/*",
+      "docs/**/*"
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "docs/icon.ico"
+    },
+    "linux": {
+      "target": "AppImage",
+      "icon": "docs/icon.png"
+    },
+    "extraResources": []
+  },
+  "keywords": ["darts", "computer-vision", "scoring", "electron"],
+  "author": "kashiwagiren",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^34.0.0",
+    "electron-builder": "^25.0.0"
+  }
+}

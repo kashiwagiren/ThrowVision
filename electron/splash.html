@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ThrowVision</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      width: 420px;
+      height: 300px;
+      background: #0a0a12;
+      border-radius: 16px;
+      border: 1px solid rgba(94, 234, 170, 0.2);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
+      color: #e2e8f0;
+      overflow: hidden;
+      user-select: none;
+      -webkit-app-region: drag;
+    }
+
+    /* Subtle radial glow */
+    body::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: radial-gradient(ellipse at 50% 40%, rgba(94,234,170,0.08) 0%, transparent 70%);
+      pointer-events: none;
+    }
+
+    .icon {
+      font-size: 48px;
+      margin-bottom: 16px;
+      filter: drop-shadow(0 0 16px rgba(94,234,170,0.5));
+      animation: pulse 2s ease-in-out infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { filter: drop-shadow(0 0 10px rgba(94,234,170,0.3)); }
+      50%       { filter: drop-shadow(0 0 22px rgba(94,234,170,0.7)); }
+    }
+
+    .brand {
+      font-size: 22px;
+      font-weight: 800;
+      letter-spacing: 0.12em;
+      color: #fff;
+      text-transform: uppercase;
+      margin-bottom: 4px;
+    }
+
+    .brand span {
+      color: #5eead4;
+    }
+
+    .sub {
+      font-size: 11px;
+      color: #64748b;
+      letter-spacing: 0.04em;
+      margin-bottom: 32px;
+    }
+
+    /* Spinner bar */
+    .bar-track {
+      width: 200px;
+      height: 3px;
+      background: rgba(255,255,255,0.06);
+      border-radius: 2px;
+      overflow: hidden;
+      margin-bottom: 14px;
+    }
+
+    .bar-fill {
+      height: 100%;
+      width: 40%;
+      background: linear-gradient(90deg, transparent, #5eead4, transparent);
+      border-radius: 2px;
+      animation: slide 1.4s ease-in-out infinite;
+    }
+
+    @keyframes slide {
+      0%   { transform: translateX(-100%); }
+      100% { transform: translateX(550%); }
+    }
+
+    .status {
+      font-size: 12px;
+      color: #94a3b8;
+      animation: blink 1.4s ease-in-out infinite;
+    }
+
+    @keyframes blink {
+      0%, 100% { opacity: 0.9; }
+      50%       { opacity: 0.4; }
+    }
+  </style>
+</head>
+<body>
+  <div class="icon">🎯</div>
+  <div class="brand">THROW<span>VISION</span></div>
+  <div class="sub">DART SYSTEM</div>
+  <div class="bar-track"><div class="bar-fill"></div></div>
+  <div class="status">Starting server…</div>
+</body>
+</html>
