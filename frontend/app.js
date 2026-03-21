@@ -774,9 +774,8 @@ function drawPerspectiveWireframe(ctx) {
 // ══════════════════════════════════════════════════════════════════════
 // Practice Navigation
 // ══════════════════════════════════════════════════════════════════════
-let _practiceLoaded = false;
-
-let _gameChecked = false;
+// Shared system-check flag — once passed in either mode, skips for the other
+let _systemChecked = false;
 
 async function launchGame() {
   if (!socket || !socket.connected) {
@@ -790,7 +789,7 @@ async function launchGame() {
   }
 
   // Skip system-check overlay on subsequent launches this session
-  if (_gameChecked) {
+  if (_systemChecked) {
     const homePage = document.getElementById('page-home');
     homePage.classList.add('transitioning');
     $homeBoard.classList.remove('spinning');
@@ -881,7 +880,7 @@ async function launchGame() {
     setStep('gs-detection', 'done', '✓');
 
     statusEl.textContent = 'Ready!';
-    _gameChecked = true;
+    _systemChecked = true;
     await new Promise(r => setTimeout(r, 600));
 
   } catch (err) {
@@ -920,7 +919,7 @@ async function launchPractice() {
   }
 
   // Skip loading screen if already loaded once this session
-  if (_practiceLoaded) {
+  if (_systemChecked) {
     const homePage = document.getElementById('page-home');
     homePage.classList.add('transitioning');
     $homeBoard.classList.remove('spinning');
@@ -1031,7 +1030,7 @@ async function launchPractice() {
 
     // All done
     statusEl.textContent = 'Ready!';
-    _practiceLoaded = true;
+    _systemChecked = true;
     await new Promise(r => setTimeout(r, 600));
 
   } catch (err) {
@@ -1212,7 +1211,7 @@ function connectSocket() {
         // Reset practice state
         if (practiceActive) {
           practiceActive = false;
-          _practiceLoaded = false;
+          _systemChecked = false;
           const btn = document.getElementById('btn-practice-toggle');
           if (btn) { btn.textContent = 'Start'; btn.classList.remove('btn-reset'); btn.classList.add('btn-primary'); }
           const dbg = document.getElementById('toggle-debug');
@@ -1220,7 +1219,7 @@ function connectSocket() {
         }
         // Reset game state — requires re-check on next launch
         if (_gameMode) { _gameMode = null; }
-        _gameChecked = false;
+        _systemChecked = false;
         setStatus('idle', 'Idle');
         showPage('home');
         if (toast) { toast.style.display = 'none'; }
