@@ -165,6 +165,7 @@ function showPage(name) {
     _camsManuallyOpen = false;
     stopCamPreview();
     checkBoardProfile();
+    lensRefreshAll();
   } else {
     stopCamPreview();
     // Close cameras when leaving settings — but NOT when going to calibration,
@@ -1638,6 +1639,77 @@ function addLog(msg) {
 // ══════════════════════════════════════════════════════════════════════
 // Settings
 // ══════════════════════════════════════════════════════════════════════
+// Lens Calibration helpers
+// ══════════════════════════════════════════════════════════════════════
+
+function _lensSetStatus(camId, text, ok) {
+  const el = document.getElementById(`lens-status-${camId}`);
+  if (el) { el.textContent = text; el.style.color = ok === true ? '#4ade80' : ok === false ? '#f87171' : ''; }
+}
+
+async function lensRefreshStatus(camId) {
+  try {
+    const d = await fetch(`/api/lens/status/${camId}`).then(r => r.json());
+    if (d.calibrated) {
+      _lensSetStatus(camId, `✓ Calibrated  RMS: ${d.rms} px`, true);
+    } else if (d.count > 0) {
+      _lensSetStatus(camId, `${d.count}/20 frames`, null);
+    } else {
+      _lensSetStatus(camId, 'Uncalibrated', null);
+    }
+  } catch { _lensSetStatus(camId, '—', null); }
+}
+
+async function lensPreview(camId) {
+  const wrap = document.getElementById('lens-preview-wrap');
+  const img  = document.getElementById('lens-preview-img');
+  if (!wrap || !img) return;
+  wrap.style.display = '';
+  img.src = `/api/lens/frame/${camId}?t=${Date.now()}`;
+}
+
+async function lensCapture(camId) {
+  const btn = document.getElementById(`lens-cap-${camId}`);
+  if (btn) { btn.textContent = '⏳'; btn.disabled = true; }
+  try {
+    const d = await fetch(`/api/lens/capture/${camId}`, { method: 'POST' }).then(r => r.json());
+    if (d.ok) {
+      _lensSetStatus(camId, `${d.count}/20 frames`, null);
+      addLog(`Lens Cam ${camId + 1}: frame ${d.count}/${d.need} captured`);
+    } else {
+      _lensSetStatus(camId, 'No pattern found — adjust angle', false);
+    }
+    // Refresh preview to show corners
+    lensPreview(camId);
+  } catch (e) { _lensSetStatus(camId, 'Error: ' + e.message, false); }
+  if (btn) { btn.textContent = 'Capture Frame'; btn.disabled = false; }
+}
+
+async function lensCompute(camId) {
+  const btn = document.getElementById(`lens-cmp-${camId}`);
+  if (btn) { btn.textContent = '⏳ Computing…'; btn.disabled = true; }
+  try {
+    const d = await fetch(`/api/lens/compute/${camId}`, { method: 'POST' }).then(r => r.json());
+    if (d.ok) {
+      _lensSetStatus(camId, `✓ Calibrated  RMS: ${d.rms} px`, true);
+      addLog(`Lens Cam ${camId + 1}: computed — RMS ${d.rms} px`);
+    } else {
+      _lensSetStatus(camId, d.error || d.message || 'Compute failed', false);
+    }
+  } catch (e) { _lensSetStatus(camId, 'Error: ' + e.message, false); }
+  if (btn) { btn.textContent = 'Compute'; btn.disabled = false; }
+}
+
+async function lensReset(camId) {
+  await fetch(`/api/lens/reset/${camId}`, { method: 'POST' });
+  lensRefreshStatus(camId);
+  addLog(`Lens Cam ${camId + 1}: reset`);
+}
+
+function lensRefreshAll() {
+  [0, 1, 2].forEach(lensRefreshStatus);
+}
+
 
 function saveSettings() {
   const settings = {

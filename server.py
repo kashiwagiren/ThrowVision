@@ -44,6 +44,7 @@ _cam_states: dict = {}   # cam_id -> {"state": str, "fps": float, "active": bool
 _last_score: dict = {}   # last dart_scored payload
 _detectors: list = []    # DartDetector instances (set by detection thread)
 _calibrators: list = []  # BoardCalibrator instances
+_lens_cals: dict    = {}  # cam_id -> LensCalibrator (loaded lazily)
 _consensus_scored_tips: list = []  # global list of (x,y) consensus tip positions
 _cameras_open: bool = False       # True = cameras are open and streaming
 _cameras_lock = threading.Lock()  # protects camera open/close
@@ -52,6 +53,7 @@ _state_lock = threading.Lock()    # protects shared state
 from board_profile import BoardProfile
 from game_mode import BullseyeThrow, GameX01, GameCricket, GameCountUp
 import stats as game_stats
+from lens_calibrator import LensCalibrator
 
 _board_profile = BoardProfile()
 # Load first available profile if any exist
@@ -62,6 +64,22 @@ _cfg = None              # ConfigManager reference
 _detection_paused: bool = True   # True = detection scoring is paused
 _annotation_mode: bool = False   # True = auto-save frames on each dart scored
 _annotation_count: int = 0       # running count of saved annotations
+
+
+def _apply_undistort(cam_id: int, frame):
+    """Apply lens undistortion if K+dist were previously computed for cam_id."""
+    if cam_id not in _lens_cals:
+        # Lazy-load from disk on first call
+        K, dist = LensCalibrator.load(cam_id)
+        _lens_cals[cam_id] = (K, dist)  # store tuple; None means uncalibrated
+    entry = _lens_cals[cam_id]
+    if isinstance(entry, tuple) and entry[0] is not None:
+        return LensCalibrator.undistort(frame, entry[0], entry[1])
+    if isinstance(entry, LensCalibrator) and entry.is_calibrated:
+        K, dist = LensCalibrator.load(cam_id)
+        if K is not None:
+            return LensCalibrator.undistort(frame, K, dist)
+    return frame
 
 # ── Game mode state ──────────────────────────────────────────────────────────
 _game_mode: Optional[str] = None       # 'bullseye' | 'x01' | 'cricket' | 'countup' | None
@@ -155,12 +173,14 @@ def api_cal_frame(cam_id):
     # Use last_frame if it has real content (not black)
     frame = det.last_frame
     if frame is not None and np.mean(frame) > 5:
+        frame = _apply_undistort(cam_id, frame)
         _, buf = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
         return Response(buf.tobytes(), mimetype='image/jpeg')
     # Otherwise keep grabbing until we get a non-black frame
     for _ in range(20):
         frame = det._grab()
         if frame is not None and np.mean(frame) > 5:
+            frame = _apply_undistort(cam_id, frame)
             _, buf = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
             return Response(buf.tobytes(), mimetype='image/jpeg')
         time.sleep(0.3)
@@ -382,6 +402,7 @@ def api_cal_preview(cam_id):
     frame = det._grab()
     if frame is None:
         return {"error": "Failed to capture frame"}, 500
+    frame = _apply_undistort(cam_id, frame)
 
     # Accepts comma-sep x1,y1,...xN,yN for 4 or 8 points
     pts_str = request.args.get("pts")
@@ -409,7 +430,118 @@ def api_cal_preview(cam_id):
     _, buf = cv2.imencode('.jpg', warped, [cv2.IMWRITE_JPEG_QUALITY, 80])
     return Response(buf.tobytes(), mimetype='image/jpeg')
 
-# ── Board Annotation (training-data collection) ──────────────────────────────
+
+
+# ── Lens Distortion Calibration API ──────────────────────────────────────────
+
+@app.route("/api/lens/status/<int:cam_id>")
+def api_lens_status(cam_id):
+    """Return lens calibration status for a camera."""
+    rms = LensCalibrator.rms_saved(cam_id)
+    lc  = _lens_cals.get(cam_id)
+    count = lc.count if isinstance(lc, LensCalibrator) else 0
+    return jsonify({
+        "cam_id":     cam_id,
+        "count":      count,
+        "calibrated": rms is not None,
+        "rms":        round(rms, 3) if rms is not None else None,
+    })
+
+
+@app.route("/api/lens/frame/<int:cam_id>")
+def api_lens_frame(cam_id):
+    """Return a JPEG showing live corner detection (for UI preview)."""
+    import cv2
+    if cam_id < 0 or cam_id >= len(_detectors):
+        return {"error": "Invalid camera ID"}, 400
+    det = _detectors[cam_id]
+    if not det.active:
+        return {"error": f"Camera {cam_id} not active"}, 503
+    frame = det._grab()
+    if frame is None:
+        return {"error": "No frame"}, 500
+    # Use a LensCalibrator instance for detection preview (don't add to collection)
+    lc = _lens_cals.setdefault(cam_id, LensCalibrator(cam_id))
+    if not isinstance(lc, LensCalibrator):
+        lc = LensCalibrator(cam_id)
+        _lens_cals[cam_id] = lc
+    _, vis = lc.detect(frame)
+    _, buf = cv2.imencode('.jpg', vis, [cv2.IMWRITE_JPEG_QUALITY, 80])
+    return Response(buf.tobytes(), mimetype='image/jpeg')
+
+
+@app.route("/api/lens/capture/<int:cam_id>", methods=["POST"])
+def api_lens_capture(cam_id):
+    """Capture one frame, detect corners, add to collection if valid."""
+    if cam_id < 0 or cam_id >= len(_detectors):
+        return {"error": "Invalid camera ID"}, 400
+    det = _detectors[cam_id]
+    if not det.active:
+        return {"error": f"Camera {cam_id} not active"}, 503
+    frame = det._grab()
+    if frame is None:
+        return {"error": "No frame"}, 500
+    lc = _lens_cals.setdefault(cam_id, LensCalibrator(cam_id))
+    if not isinstance(lc, LensCalibrator):
+        lc = LensCalibrator(cam_id)
+        _lens_cals[cam_id] = lc
+    added, count = lc.add_frame(frame)
+    return jsonify({"ok": added, "count": count, "need": 20})
+
+
+@app.route("/api/lens/compute/<int:cam_id>", methods=["POST"])
+def api_lens_compute(cam_id):
+    """Compute K+dist from collected frames and save to disk."""
+    lc = _lens_cals.get(cam_id)
+    if not isinstance(lc, LensCalibrator):
+        return jsonify({"ok": False, "error": "No frames captured yet"})
+    ok, rms, msg = lc.compute()
+    if ok:
+        # Invalidate cached (K, dist) tuple so _apply_undistort reloads from disk
+        _lens_cals[cam_id] = lc
+    return jsonify({"ok": ok, "rms": round(rms, 3) if ok else None, "message": msg})
+
+
+@app.route("/api/lens/reset/<int:cam_id>", methods=["POST"])
+def api_lens_reset(cam_id):
+    """Clear collected frames for a camera (does NOT delete saved calibration)."""
+    lc = _lens_cals.get(cam_id)
+    if isinstance(lc, LensCalibrator):
+        lc.reset()
+    elif cam_id in _lens_cals:
+        _lens_cals[cam_id] = LensCalibrator(cam_id)
+    return jsonify({"ok": True, "count": 0})
+
+
+
+@app.route("/api/lens/checkerboard")
+def api_lens_checkerboard():
+    """Return a printable SVG checkerboard (9×6 inner corners = 10×7 squares, 25 mm each)."""
+    from flask import Response as FR
+    cols, rows = 10, 7          # squares (outer count = inner corners + 1)
+    sq_mm = 25                  # square size in mm
+    px_per_mm = 3.7795          # 96 dpi
+    sq = sq_mm * px_per_mm
+    W  = cols * sq
+    H  = rows * sq
+    rects = []
+    for r in range(rows):
+        for c in range(cols):
+            if (r + c) % 2 == 0:
+                x, y = c * sq, r * sq
+                rects.append(f'<rect x="{x:.1f}" y="{y:.1f}" width="{sq:.1f}" height="{sq:.1f}" fill="black"/>')
+    svg = (
+        f'<?xml version="1.0" encoding="UTF-8"?>'
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{W:.1f}" height="{H:.1f}" '
+        f'viewBox="0 0 {W:.1f} {H:.1f}" style="background:white">'
+        + "".join(rects) +
+        f'<text x="4" y="{H - 4:.1f}" font-size="9" fill="#666">'
+        f'ThrowVision Lens Calibration — 9×6 inner corners, 25 mm squares — print at 100% scale'
+        f'</text></svg>'
+    )
+    return FR(svg, mimetype="image/svg+xml",
+              headers={"Content-Disposition": "inline; filename=checkerboard.svg"})
+
 
 @app.route("/api/board-annotate/preview", methods=["POST"])
 def api_board_annotate_preview():

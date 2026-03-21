@@ -508,6 +508,59 @@
         </div>
       </section>
 
+      <!-- Lens Calibration -->
+      <section class="settings-card" id="settings-lens">
+        <h3><span class="card-icon">🔬</span> Lens Calibration</h3>
+        <p class="settings-note">
+          Corrects camera barrel/pincushion distortion for tighter ring overlays.
+          Print a <strong>9×6 checkerboard</strong> (25 mm squares) and hold it in
+          front of each camera at ~20 different angles.
+          <a href="/api/lens/checkerboard" target="_blank" style="color:var(--accent)">
+            Download Checkerboard ↗
+          </a>
+        </p>
+
+        <!-- Per-camera rows -->
+        <div class="lens-cam-row" id="lens-row-0">
+          <div class="lens-cam-label">Cam 1</div>
+          <div class="lens-cam-status" id="lens-status-0">—</div>
+          <div class="lens-cam-actions">
+            <button class="btn btn-sm btn-secondary" onclick="lensPreview(0)" title="Show corner detection preview">👁 Preview</button>
+            <button class="btn btn-sm btn-secondary" onclick="lensCapture(0)" id="lens-cap-0">Capture Frame</button>
+            <button class="btn btn-sm btn-accent"    onclick="lensCompute(0)" id="lens-cmp-0">Compute</button>
+            <button class="btn btn-sm btn-secondary" onclick="lensReset(0)"   title="Clear captured frames">Reset</button>
+          </div>
+        </div>
+        <div class="lens-cam-row" id="lens-row-1">
+          <div class="lens-cam-label">Cam 2</div>
+          <div class="lens-cam-status" id="lens-status-1">—</div>
+          <div class="lens-cam-actions">
+            <button class="btn btn-sm btn-secondary" onclick="lensPreview(1)" title="Show corner detection preview">👁 Preview</button>
+            <button class="btn btn-sm btn-secondary" onclick="lensCapture(1)" id="lens-cap-1">Capture Frame</button>
+            <button class="btn btn-sm btn-accent"    onclick="lensCompute(1)" id="lens-cmp-1">Compute</button>
+            <button class="btn btn-sm btn-secondary" onclick="lensReset(1)"   title="Clear captured frames">Reset</button>
+          </div>
+        </div>
+        <div class="lens-cam-row" id="lens-row-2">
+          <div class="lens-cam-label">Cam 3</div>
+          <div class="lens-cam-status" id="lens-status-2">—</div>
+          <div class="lens-cam-actions">
+            <button class="btn btn-sm btn-secondary" onclick="lensPreview(2)" title="Show corner detection preview">👁 Preview</button>
+            <button class="btn btn-sm btn-secondary" onclick="lensCapture(2)" id="lens-cap-2">Capture Frame</button>
+            <button class="btn btn-sm btn-accent"    onclick="lensCompute(2)" id="lens-cmp-2">Compute</button>
+            <button class="btn btn-sm btn-secondary" onclick="lensReset(2)"   title="Clear captured frames">Reset</button>
+          </div>
+        </div>
+
+        <!-- Corner-detection preview image (shared, shown on demand) -->
+        <div class="lens-preview-wrap" id="lens-preview-wrap" style="display:none">
+          <img id="lens-preview-img" alt="Corner detection preview" style="max-width:100%;border-radius:8px;margin-top:10px">
+          <div style="font-size:11px;color:#888;margin-top:4px">
+            Green dots = corners found • Grey = no pattern detected — try better lighting
+          </div>
+        </div>
+      </section>
+
       <!-- System -->
       <section class="settings-card">
         <h3><span class="card-icon">⚡</span> System</h3>
