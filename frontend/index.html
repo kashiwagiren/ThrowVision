@@ -48,7 +48,7 @@
             <span class="btn-icon-lg">🎮</span> Game
             <span class="btn-hotkey">G</span>
           </button>
-          <button class="btn btn-lg btn-stats" onclick="showPage('stats')">
+          <button class="btn btn-lg btn-stats" onclick="openStats()">
             <span class="btn-icon-lg">📊</span> Stats
             <span class="btn-hotkey">T</span>
           </button>
@@ -184,7 +184,7 @@
             <div class="cg-body" id="cg-body"></div>
           </div>
           <!-- Count Up Rounds (shown only in countup mode) -->
-          <div class="countup-rounds" id="countup-rounds" style="display:none"></div>
+          <div class="countup-rounds" id="game-countup-rounds" style="display:none"></div>
         </div>
 
         <!-- Player 2 Panel -->
@@ -264,7 +264,36 @@
     </div>
   </div>
 
+  <!-- ─── GAME MODE SYSTEM CHECK OVERLAY ──────────────────────── -->
+  <div class="loading-overlay" id="game-loading" style="display:none">
+    <div class="loading-content">
+      <div class="loading-spinner">
+        <svg viewBox="0 0 100 100" class="loading-board">
+          <circle cx="50" cy="50" r="45" fill="none" stroke="rgba(94,234,170,.15)" stroke-width="3" />
+          <circle cx="50" cy="50" r="35" fill="none" stroke="rgba(94,234,170,.1)" stroke-width="2" />
+          <circle cx="50" cy="50" r="25" fill="none" stroke="rgba(94,234,170,.08)" stroke-width="2" />
+          <circle cx="50" cy="50" r="8" fill="rgba(255,70,70,.6)" />
+          <circle cx="50" cy="50" r="3" fill="rgba(94,234,170,.8)" />
+          <line x1="50" y1="5" x2="50" y2="95" stroke="rgba(255,255,255,.1)" stroke-width="0.5" />
+          <line x1="5" y1="50" x2="95" y2="50" stroke="rgba(255,255,255,.1)" stroke-width="0.5" />
+          <line x1="15" y1="15" x2="85" y2="85" stroke="rgba(255,255,255,.06)" stroke-width="0.5" />
+          <line x1="85" y1="15" x2="15" y2="85" stroke="rgba(255,255,255,.06)" stroke-width="0.5" />
+        </svg>
+      </div>
+      <h2 class="loading-title">Preparing Game</h2>
+      <div class="loading-steps">
+        <div class="loading-step" id="gs-connection"><span class="ls-icon">⏳</span> Server Connection</div>
+        <div class="loading-step" id="gs-cameras"><span class="ls-icon">⏳</span> Camera System</div>
+        <div class="loading-step" id="gs-calibration"><span class="ls-icon">⏳</span> Board Calibration</div>
+        <div class="loading-step" id="gs-profile"><span class="ls-icon">⏳</span> Board Profile</div>
+        <div class="loading-step" id="gs-detection"><span class="ls-icon">⏳</span> Detection Engine</div>
+      </div>
+      <div class="loading-status" id="game-loading-status">Initializing…</div>
+    </div>
+  </div>
+
   <!-- ─── PRACTICE ──────────────────────────────────────────── -->
+
   <main class="page" id="page-practice">
     <div class="prac">
       <!-- LEFT: Board area -->
@@ -297,12 +326,16 @@
         <div class="prac-nav">
           <button class="btn btn-sm btn-back" onclick="leavePractice()">← Back</button>
           <button class="btn btn-sm btn-primary" id="btn-practice-toggle" onclick="togglePractice()">Start</button>
-          <div class="prac-ann-toggle">
-            <label style="font-size:12px;color:#888">Annotation</label>
-            <label class="toggle toggle-sm"><input type="checkbox" id="set-annotation"><span
-                class="toggle-slider"></span></label>
-          </div>
+        </div>
 
+        <!-- Practice takeout banner (shown after 3 darts) -->
+        <div id="practice-takeout-banner" class="practice-takeout-banner" style="display:none;">
+          <span class="takeout-icon">🎯</span>
+          <div class="takeout-msg">
+            <strong>Remove darts from the board</strong>
+            <small id="practice-takeout-sub">Board will reset automatically when darts are removed</small>
+          </div>
+          <button class="btn btn-sm btn-accent" onclick="socket.emit('skip_takeout')" title="Manual reset if hand detection doesn't trigger">↺ Continue</button>
         </div>
 
         <div class="prac-score-hero">
@@ -339,12 +372,6 @@
               👆 Click where the dart tip actually is, then Save
             </span>
             <div style="display:flex;gap:6px;align-items:center">
-              <button class="btn btn-sm btn-outline debug-screenshot-btn" id="btn-debug-mark"
-                onclick="enterTipMarkMode()" style="display:none">📍 Mark Tip</button>
-              <button class="btn btn-sm btn-outline debug-screenshot-btn" id="btn-debug-save"
-                onclick="saveTipAnnotation()" style="display:none">💾 Save</button>
-              <button class="btn btn-sm btn-outline debug-screenshot-btn" id="btn-debug-cancel"
-                onclick="cancelTipMark()" style="display:none">✕</button>
             </div>
           </div>
           <div class="debug-cam-switcher">
@@ -408,12 +435,7 @@
             oninput="this.nextElementSibling.textContent=this.value">
           <span class="range-val">10</span>
         </div>
-        <div class="setting-row toggle-row">
-          <label>YOLO-Only Mode</label>
-          <label class="toggle"><input type="checkbox" id="set-yolo-only"><span class="toggle-slider"></span></label>
-          <small style="color:#888;font-size:11px;margin-top:2px">Skip traditional CV — use model for tip
-            detection</small>
-        </div>
+
       </section>
 
       <!-- Camera -->
@@ -503,10 +525,6 @@
           <input type="range" id="set-bin-thresh" min="10" max="80" step="5" value="30"
             oninput="this.nextElementSibling.textContent=this.value">
           <span class="range-val">30</span>
-        </div>
-        <div class="sys-info" id="sys-info">
-          <div class="sys-info-item"><span>Dart Annotations</span><span id="ann-count">0</span></div>
-          <div class="sys-info-item"><span>Board Annotations</span><span id="board-ann-count">0</span></div>
         </div>
       </section>
 
@@ -609,10 +627,8 @@
           title="Rotate points left (counter-clockwise)">◀</button>
         <button class="btn btn-sm btn-secondary" onclick="calRotatePoints(1)"
           title="Rotate points right (clockwise)">▶</button>
-        <button class="btn btn-sm btn-secondary" id="btn-board-annotate" onclick="toggleBoardAnnotateMode()"
-          title="Annotate board for YOLO training">📍 Annotate</button>
         <select id="cal-resolution" class="cal-resolution-select" onchange="changeCalResolution(this.value)"
-          title="Capture resolution for annotation">
+          title="Capture resolution">
           <option value="848x480" selected>848×480</option>
           <option value="1280x720">1280×720</option>
           <option value="1920x1080">1920×1080</option>
@@ -622,15 +638,6 @@
         <button class="btn btn-sm btn-secondary" onclick="resetCalPoints()">Reset</button>
         <button class="btn btn-sm btn-primary" id="btn-cal-accept" onclick="acceptCalibration()">Accept</button>
       </div>
-    </div>
-    <!-- Annotation status bar -->
-    <div id="board-annotate-bar" class="board-annotate-bar" style="display:none;">
-      <span id="board-annotate-step" class="board-annotate-step">Drag the <b>4 points</b> to align the wireframe with
-        the board, then <b>Save</b></span>
-      <span id="board-annotate-count" class="board-annotate-count"></span>
-      <button class="btn btn-sm btn-primary" id="btn-annotate-save" onclick="saveBoardAnnotation()" disabled>💾
-        Save</button>
-      <button class="btn btn-sm btn-secondary" onclick="toggleBoardAnnotateMode()">✕ Cancel</button>
     </div>
     <div class="cal-canvas-wrap" id="cal-canvas-wrap">
       <canvas id="cal-canvas"></canvas>
@@ -744,38 +751,6 @@
       </button>
     </div>
   </footer>
-
-  <!-- ── Annotation Modal ─────────────────────────────────────── -->
-  <div class="ann-overlay" id="ann-overlay" style="display:none">
-    <div class="ann-modal">
-      <div class="ann-header">
-        <h3>🎯 Annotate Dart Tips</h3>
-        <div class="ann-score-info">
-          <span>CV Score: <strong id="ann-cv-label">—</strong></span>
-          <span class="ann-sep">|</span>
-          <span>Correct: <input type="text" id="ann-actual-score" placeholder="Leave blank if correct"
-              class="ann-score-input"></span>
-        </div>
-      </div>
-      <div class="ann-panels" id="ann-panels">
-        <!-- Camera panels injected by JS -->
-      </div>
-      <div class="ann-controls">
-        <div class="ann-dart-selector">
-          <span>Dart:</span>
-          <button class="ann-dart-btn active" data-dart="0" onclick="selectAnnDart(0)">🟥 1</button>
-          <button class="ann-dart-btn" data-dart="1" onclick="selectAnnDart(1)">🟨 2</button>
-          <button class="ann-dart-btn" data-dart="2" onclick="selectAnnDart(2)">🟦 3</button>
-        </div>
-        <div class="ann-actions">
-          <span class="ann-click-count" id="ann-click-count">0 tips placed</span>
-          <button class="btn btn-outline" onclick="undoAnnClick()">↩ Undo</button>
-          <button class="btn btn-outline" onclick="skipAnnotation()">Skip</button>
-          <button class="btn btn-primary" onclick="saveAnnotation()">💾 Save</button>
-        </div>
-      </div>
-    </div>
-  </div>
 
   <!-- ─── PROFILE SAVE MODAL ──────────────────────────────────── -->
   <div class="profile-modal-overlay" id="profile-modal" style="display:none">

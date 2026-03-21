@@ -80,12 +80,12 @@ class ScoreMapper:
     # ------------------------------------------------------------------
     # Quality weights for tip detection methods
     _METHOD_WEIGHT = {
-        'YOLO_MOTION':   4.5,   # best — motion contour refined within YOLO bbox
         'LINE_FIT':      4.0,   # fitted line, clear tip direction
-        'YOLO_BOX':      3.0,   # YOLO bounding-box perimeter — good fallback
-        'PROFILE':       3.0,   # width-profile succeeded (legacy fallback)
-        'YOLO_SEG':      2.5,   # YOLO segmentation mask tip
-        'LINE_FIT_WEAK': 1.5,   # line fit OK, but tip direction was ambiguous
+        'HOUGH_LINE':    4.0,   # Hough-line axis, clear tip direction
+        'SCAN_LINE_FIT': 3.5,   # opportunistic scan line-fit
+        'PROFILE':       3.0,   # width-profile (legacy fallback)
+        'LINE_FIT_WEAK': 1.5,   # line fit — tip direction ambiguous
+        'HOUGH_LINE_WEAK': 1.5, # Hough line — tip direction ambiguous
         'PROXIMITY':     1.0,   # centre-proximity tiebreaker
         'WARPED':        0.5,   # warped-space fallback, least reliable
         'NONE':          1.0,
@@ -147,12 +147,12 @@ class ScoreMapper:
         # If 2+ cameras independently produce the same score label,
         # use that label — BUT only if the dissenting camera's method
         # is not significantly better-quality.  A single high-quality
-        # YOLO_MOTION camera near a wire boundary may be more accurate
-        # than two lower-quality YOLO_BOX cameras that agree on the
+        # LINE_FIT camera near a wire boundary may be more accurate
+        # than two lower-quality SCAN_LINE_FIT cameras that agree on the
         # wrong segment.
         _MV_RANK = {
-            'YOLO_MOTION': 5, 'LINE_FIT': 4, 'YOLO_BOX': 3,
-            'PROFILE': 3, 'YOLO_SEG': 2, 'LINE_FIT_WEAK': 1,
+            'LINE_FIT': 4, 'HOUGH_LINE': 4, 'SCAN_LINE_FIT': 3,
+            'PROFILE': 3, 'LINE_FIT_WEAK': 1, 'HOUGH_LINE_WEAK': 1,
             'PROXIMITY': 1, 'WARPED': 0, 'NONE': 0,
         }
         if len(per_cam_labels) >= 2:
@@ -211,20 +211,20 @@ class ScoreMapper:
         # others (> 40 mm), discard it.
         #
         # Exception: if the "outlier" was detected with a higher-quality
-        # method (e.g. YOLO_MOTION) than the cameras being kept (e.g.
-        # YOLO_BOX), the outlier is likely *more* reliable.  In that case
+        # method (e.g. LINE_FIT) than the cameras being kept (e.g.
+        # SCAN_LINE_FIT), the outlier is likely *more* reliable.  In that case
         # keep only the high-quality outlier instead of the low-quality
         # agreeing pair.
         _METHOD_RANK = {
-            'YOLO_MOTION':   5,
-            'LINE_FIT':      4,
-            'YOLO_BOX':      3,
-            'PROFILE':       3,
-            'YOLO_SEG':      2,
-            'LINE_FIT_WEAK': 1,
-            'PROXIMITY':     1,
-            'WARPED':        0,
-            'NONE':          0,
+            'LINE_FIT':        4,
+            'HOUGH_LINE':      4,
+            'SCAN_LINE_FIT':   3,
+            'PROFILE':         3,
+            'LINE_FIT_WEAK':   1,
+            'HOUGH_LINE_WEAK': 1,
+            'PROXIMITY':       1,
+            'WARPED':          0,
+            'NONE':            0,
         }
         if len(mm_coords) >= 3:
             filtered = []
@@ -323,7 +323,7 @@ class ScoreMapper:
         # 2-camera check — if they disagree more than 35 mm, tiebreak.
         # The tip is a single physical point; averaging two readings 35-60mm
         # apart gives a THIRD wrong position.  Tiebreak priority:
-        #   1. Higher method rank (YOLO_MOTION > YOLO_BOX etc.)
+        #   1. Higher method rank (LINE_FIT > SCAN_LINE_FIT etc.)
         #   2. Smaller radius from board centre — barrel parallax at 45°
         #      elevation ALWAYS pushes readings OUTWARD (larger r), so the
         #      camera reporting smaller r suffered less barrel contamination
@@ -371,25 +371,9 @@ class ScoreMapper:
 
         # Quality-weighted average (better detection method = higher weight)
         # Falls back to equal weighting when methods not provided.
-        #
-        # Sanity check: a YOLO_BOX tip that lands inside BULL_OUTER_R is
-        # almost certainly a bbox-edge artefact — _bbox_closest_to_bull
-        # systematically biases the result toward the board centre when the
-        # dart is far from the bull.  Downweight such readings significantly
-        # so they don't skew the final average into the bullseye zone.
-        _BULL_R = 15.9  # BULL_OUTER_R
         if methods and len(coords) > 1:
-            weights = []
-            for ci, mm in mm_coords:
-                w = self._METHOD_WEIGHT.get(methods[ci], 1.0)
-                r_i = math.hypot(mm[0], mm[1])
-                # YOLO_BOX systematically biases toward board centre.
-                # Downweight aggressively inside 30mm (not just bull ring).
-                if methods[ci] == 'YOLO_BOX' and r_i <= 30.0:
-                    print(f"[SCR] Cam {ci}: YOLO_BOX r={r_i:.1f}mm centre-bias — "
-                          f"downweighting")
-                    w *= 0.1
-                weights.append(w)
+            weights = [self._METHOD_WEIGHT.get(methods[ci], 1.0)
+                       for ci, _ in mm_coords]
             total_w = sum(weights)
             fin_x = sum(w * mm[0] for w, (_, mm) in zip(weights, mm_coords)) / total_w
             fin_y = sum(w * mm[1] for w, (_, mm) in zip(weights, mm_coords)) / total_w
@@ -440,9 +424,9 @@ class ScoreMapper:
             if near_boundary:
                 # Rank cameras by detection quality, pick the best
                 rank = {
-                    'YOLO_MOTION': 6, 'LINE_FIT': 5,
-                    'YOLO_BOX': 4, 'YOLO_SEG': 3,
-                    'PROFILE': 3, 'LINE_FIT_WEAK': 2,
+                    'LINE_FIT': 5, 'HOUGH_LINE': 5,
+                    'SCAN_LINE_FIT': 4,
+                    'PROFILE': 3, 'LINE_FIT_WEAK': 2, 'HOUGH_LINE_WEAK': 2,
                     'PROXIMITY': 1, 'WARPED': 0, 'NONE': 0,
                 }
                 best_ci, best_mm = max(

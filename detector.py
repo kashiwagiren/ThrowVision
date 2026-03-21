@@ -159,7 +159,7 @@ class DartDetector:
 
         # Cooldown
         self._cooldown: int = 0
-        self._COOLDOWN_FRAMES: int = 30   # ~1 sec at 30fps -- time for hand to withdraw
+        self._COOLDOWN_FRAMES: int = 15   # ~500ms at 30fps (was 30=1s)
 
         # Hand-detection hysteresis counter.
         # A dart throw creates a brief motion spike (1-3 frames) that should
@@ -173,6 +173,11 @@ class DartDetector:
         # Computed lazily after calibration is available.
         self._board_mask_area: int = 0
         self._motion_mask_area: int = 0
+        # Stale-reference threshold: fraction of board that must change
+        # before the reference is considered outdated and re-captured.
+        # Raised to 0.95 during takeout so a hand reaching in (~30-60%)
+        # does NOT trigger auto-recapture (which would destroy hand detection).
+        self._stale_ref_threshold: float = 0.30
 
         # Previously scored tip positions (warped px) -- used to
         # identify which contour is the *new* dart when multiple
@@ -182,7 +187,7 @@ class DartDetector:
         # Number of grab-and-discard cycles after a reference update
         # so the reference truly reflects the settled board state.
         self._settle_frames: int = 0
-        self._SETTLE_FRAME_COUNT: int = 12    # ~400ms at 30fps -- dart wobble + auto-exposure
+        self._SETTLE_FRAME_COUNT: int = 7    # ~230ms at 30fps (was 12=400ms)
 
         # Actual camera FPS (from OpenCV, set on open)
         self.camera_fps: float = 0.0
@@ -190,11 +195,6 @@ class DartDetector:
         self.dart_area: int = 0
         # How the tip was found: 'PROFILE' | 'PROXIMITY' | 'WARPED' | 'NONE'
         self.dart_tip_method: str = 'NONE'
-        # Direct mm coordinates from raw->mm transform (center=0,0)
-        self.dart_tip_mm: Optional[Tuple[float, float]] = None
-        # Gaussian-blurred diff image (stored for gftt secondary estimate)
-        self._diff_blur: Optional[np.ndarray] = None
-
         self._last_step_frame_id: int = 0
         self._last_raw_frame_id: int = 0
 
@@ -653,7 +653,7 @@ class DartDetector:
         # etc.).  Re-capture immediately instead of cycling forever.
         if self._motion_mask_area > 0:
             frac = change / self._motion_mask_area
-            if frac > 0.30:
+            if frac > self._stale_ref_threshold:
                 if self.verbose:
                     print(f"[DET] Cam {self.cam_id}: stale ref "
                           f"({frac:.0%} of board changed) -- recapturing")
@@ -863,234 +863,6 @@ class DartDetector:
               f"area={self.dart_area}")
         self._extract_dart(contour, frame)
 
-    # ---- Motion-refined tip detection (PCA-based) --------------------------
-
-    def _motion_refined_tip(
-        self, bx1: int, by1: int, bx2: int, by2: int,
-    ) -> Optional[Tuple[float, float]]:
-        """Refine the dart tip by fusing a bounding box with motion (frame diff).
-
-        The bounding box tells us WHERE the dart is, but its edge is
-        only a rough approximation of the tip.  The frame-difference
-        (motion) contour shows the *actual shape* of the dart -- narrow at
-        the tip, wide at the flights.
-
-        Pipeline:
-          1.  Compute raw-space frame diff (current vs reference).
-          2.  Mask the diff to the bbox region (with padding).
-          3.  Find the motion contour within that region.
-          4.  Fit a line (cv2.fitLine) through the motion blob to find the
-              dart barrel axis.
-          5.  The tip = the extremal blob pixels along the barrel axis on
-              the side closer to the board centre.
-
-        This produces a tip estimate that is MUCH more accurate than the
-        bbox perimeter, because it uses the actual pixel-change shape
-        rather than a rectangle.
-
-        Returns (raw_tip_x, raw_tip_y) in raw camera pixels, or None if
-        motion refinement is not possible (falls back to bbox method).
-        """
-        if self._ref_raw_gray is None or self.last_frame is None:
-            return None
-
-        # -- 1. Compute raw-space diff --
-        raw_gray = cv2.cvtColor(self.last_frame, cv2.COLOR_BGR2GRAY)
-        raw_diff = cv2.absdiff(raw_gray, self._ref_raw_gray)
-        raw_diff = cv2.GaussianBlur(raw_diff, (5, 5), 0)
-
-        # Board mask (expanded to include dart sticking out)
-        raw_mask = cv2.dilate(
-            self.cal.raw_mask,
-            np.ones((41, 41), np.uint8), iterations=1)
-        raw_diff = cv2.bitwise_and(raw_diff, raw_mask)
-
-        # -- 2. Constrain to bbox region --
-        pad = 25
-        h, w = raw_diff.shape[:2]
-        bbox_mask = np.zeros((h, w), dtype=np.uint8)
-        bbox_mask[max(0, by1 - pad):min(h, by2 + pad),
-                  max(0, bx1 - pad):min(w, bx2 + pad)] = 255
-        raw_diff = cv2.bitwise_and(raw_diff, bbox_mask)
-
-        # -- 3. Threshold + MOG2 fusion + morphology --
-        _, raw_thresh = cv2.threshold(
-            raw_diff, self.cfg.absdiff_threshold, 255,
-            cv2.THRESH_BINARY)
-
-        # Fuse with MOG2 adaptive background subtractor for cleaner mask.
-        # MOG2 adapts to gradual lighting/sensor changes that simple
-        # absdiff misses, producing fewer false-positive pixels.
-        if self._bg_sub_ready:
-            # learningRate=0 -> query only, don't update the model
-            fg_mask = self._bg_sub.apply(raw_gray, learningRate=0)
-            # Apply same bbox + board masks to fg_mask
-            fg_mask = cv2.bitwise_and(fg_mask, bbox_mask)
-            fg_mask = cv2.bitwise_and(fg_mask, raw_mask)
-            # AND: keep only pixels that BOTH methods agree are foreground
-            raw_thresh = cv2.bitwise_and(raw_thresh, fg_mask)
-
-        raw_thresh = cv2.morphologyEx(
-            raw_thresh, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8))
-        raw_thresh = cv2.dilate(
-            raw_thresh, np.ones((3, 3), np.uint8), iterations=1)
-
-        # Exclude previously-scored dart regions (raw camera space)
-        excl_raw = self._build_scored_exclusion_mask(
-            raw_thresh.shape, space='raw')
-        if excl_raw is not None:
-            raw_thresh = cv2.bitwise_and(raw_thresh, excl_raw)
-
-        # Store for cross-camera mask intersection (server.py)
-        self._dart_mask_raw = raw_thresh.copy()
-
-        # -- 4. Find motion contours --
-        contours_raw, _ = cv2.findContours(
-            raw_thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-        dart_contours = [
-            (c, cv2.contourArea(c)) for c in contours_raw
-            if cv2.contourArea(c) > 50
-        ]
-        if not dart_contours:
-            return None
-
-        dart_contours.sort(key=lambda x: x[1], reverse=True)
-
-        # Elongation pre-filter: dart shafts are narrow and elongated
-        # (aspect ratio >> 1); flights are wide/fan-shaped (aspect ≈ 1.5).
-        # When previous darts are on the board, filter to elongated blobs
-        # only so flights are not picked as the "newest dart" contour.
-        if self._scored_tips and len(dart_contours) > 1:
-            def _aspect(ca):
-                rect = cv2.minAreaRect(ca[0])
-                _, (rw, rh), _ = rect
-                return max(rw, rh, 1.0) / max(min(rw, rh), 1.0)
-            elongated = [(c, a) for c, a in dart_contours if _aspect((c, a)) >= 2.5]
-            if elongated:
-                dart_contours = elongated
-
-        # Novelty filter: prefer contour furthest from scored tips;
-        # off-board blobs (flights, edge noise) are always deprioritized.
-        if len(dart_contours) > 1 and self._scored_tips:
-            _bs_half = self.cal.board_size / 2.0
-            _board_r = _bs_half * 0.90
-            def _novelty(ca):
-                c = ca[0]
-                M = cv2.moments(c)
-                if M['m00'] > 0:
-                    cx = M['m10'] / M['m00']
-                    cy = M['m01'] / M['m00']
-                else:
-                    pts = c.reshape(-1, 2)
-                    cx, cy = pts.mean(axis=0)
-                pt = np.array([[[cx, cy]]], dtype=np.float32)
-                bp = cv2.perspectiveTransform(pt, self.cal.matrix)
-                bx, by = float(bp[0, 0, 0]), float(bp[0, 0, 1])
-                off_board = (-1e6 if np.hypot(bx - _bs_half, by - _bs_half)
-                             > _board_r else 0.0)
-                return off_board + min(np.hypot(bx - t[0], by - t[1])
-                                       for t in self._scored_tips)
-            dart_contours.sort(key=_novelty, reverse=True)
-
-        raw_c = dart_contours[0][0]
-        raw_area = dart_contours[0][1]
-        raw_pts = raw_c.reshape(-1, 2).astype(np.float64)
-
-        if len(raw_pts) < 5:
-            return None
-
-        # -- 5. PCA axis endpoints -> project both to mm -> pick tip --
-        # The dart tip is ON the board surface, so the homography maps it
-        # correctly.  The barrel/flights are ABOVE the surface, so the
-        # homography projects them to wrong locations (parallax).
-        #
-        # Strategy:
-        #   1. PCA on raw contour -> major axis direction.
-        #   2. Project the two extreme points along that axis to mm
-        #      via transform_to_mm (direct raw->mm homography).
-        #   3. The endpoint with smaller r_mm is the tip (correct
-        #      surface projection), the other is the barrel (wrong).
-        #
-        # Fallback: if PCA fails, use the contour pixel closest to the
-        # board centre in raw camera space (tip is always the end
-        # closest to the bull).
-        pts_xy = raw_pts.astype(np.float32)
-
-        # PCA to find major axis
-        mean_pt = pts_xy.mean(axis=0)
-        centered = pts_xy - mean_pt
-        cov = np.cov(centered.T)
-        eigvals, eigvecs = np.linalg.eigh(cov)
-        major_axis = eigvecs[:, -1]  # largest eigenvalue
-
-        # Project all contour points onto major axis
-        projections = centered @ major_axis
-        idx_min = int(np.argmin(projections))
-        idx_max = int(np.argmax(projections))
-
-        # Two extreme raw-space points (tip candidate A and B)
-        endpt_a = pts_xy[idx_min]
-        endpt_b = pts_xy[idx_max]
-
-        # Average a small neighbourhood around each endpoint for stability
-        n_avg = max(3, int(len(pts_xy) * 0.05))
-        idx_near_a = np.argpartition(projections, n_avg)[:n_avg]
-        idx_near_b = np.argpartition(-projections, n_avg)[:n_avg]
-        endpt_a_avg = pts_xy[idx_near_a].mean(axis=0)
-        endpt_b_avg = pts_xy[idx_near_b].mean(axis=0)
-
-        # Project both endpoints to mm coordinates
-        try:
-            mm_a = self.cal.transform_to_mm(
-                float(endpt_a_avg[0]), float(endpt_a_avg[1]))
-            mm_b = self.cal.transform_to_mm(
-                float(endpt_b_avg[0]), float(endpt_b_avg[1]))
-            r_a = np.hypot(mm_a[0], mm_a[1])
-            r_b = np.hypot(mm_b[0], mm_b[1])
-        except Exception:
-            # transform_to_mm failed -- use raw-space fallback
-            bull_raw = self.cal.board_centre_cam
-            d_a = np.hypot(endpt_a_avg[0] - bull_raw[0],
-                           endpt_a_avg[1] - bull_raw[1])
-            d_b = np.hypot(endpt_b_avg[0] - bull_raw[0],
-                           endpt_b_avg[1] - bull_raw[1])
-            tip_raw = endpt_a_avg if d_a < d_b else endpt_b_avg
-            self._health_motion_hits += 1
-            print(f"[FUSE] Cam {self.cam_id}: PCA raw-fallback "
-                  f"area={raw_area:.0f} "
-                  f"tip=({tip_raw[0]:.0f},{tip_raw[1]:.0f})")
-            return (float(tip_raw[0]), float(tip_raw[1]))
-
-        # Pick the endpoint closer to board centre in mm (that's the tip)
-        if r_a <= r_b:
-            tip_raw = endpt_a_avg
-            r_tip, r_bar = r_a, r_b
-        else:
-            tip_raw = endpt_b_avg
-            r_tip, r_bar = r_b, r_a
-
-        # Sanity check: if both endpoints are far from center or the chosen
-        # "tip" is beyond the board, fall back to raw-space closest pixel
-        if r_tip > 180.0:
-            bull_raw = self.cal.board_centre_cam
-            dists_raw = np.hypot(pts_xy[:, 0] - bull_raw[0],
-                                 pts_xy[:, 1] - bull_raw[1])
-            n_close = max(3, int(len(dists_raw) * 0.05))
-            close_idx = np.argpartition(dists_raw, n_close)[:n_close]
-            tip_raw = pts_xy[close_idx].mean(axis=0)
-            print(f"[FUSE] Cam {self.cam_id}: PCA tip off-board "
-                  f"(r={r_tip:.0f}mm) -- raw-closest fallback "
-                  f"tip=({tip_raw[0]:.0f},{tip_raw[1]:.0f})")
-        else:
-            print(f"[FUSE] Cam {self.cam_id}: PCA axis "
-                  f"area={raw_area:.0f} n={len(pts_xy)} "
-                  f"rTip={r_tip:.1f}mm rBar={r_bar:.1f}mm "
-                  f"tip=({tip_raw[0]:.0f},{tip_raw[1]:.0f})")
-
-        self._health_motion_hits += 1
-        return (float(tip_raw[0]), float(tip_raw[1]))
-
     # ---- Cross-camera mask helper -------------------------------------------
 
     def get_dart_mask_board(self) -> Optional[np.ndarray]:
@@ -1107,43 +879,6 @@ class DartDetector:
         return cv2.warpPerspective(
             self._dart_mask_raw, self.cal._M,
             (self.cal.board_size, self.cal.board_size))
-
-    # ---- Bounding-box tip helper -------------------------------------------
-
-    def _bbox_closest_to_bull(
-        self, bx1: int, by1: int, bx2: int, by2: int,
-    ) -> Tuple[float, float]:
-        """Return the point on the bbox perimeter closest to the board centre.
-
-        Instead of only checking four edge midpoints, we clamp the board
-        centre onto the rectangle perimeter.  This yields the true closest
-        point for *any* relative position of the box and the bull,
-        producing a more accurate tip estimate for angled darts.
-        """
-        bull_x, bull_y = self.cal.board_centre_cam  # raw cam pixels
-
-        # Clamp bull to box interior -> nearest point on perimeter
-        cx = float(np.clip(bull_x, bx1, bx2))
-        cy = float(np.clip(bull_y, by1, by2))
-
-        # If the bull is *inside* the box, project to the nearest edge
-        if bx1 < bull_x < bx2 and by1 < bull_y < by2:
-            # distances to each edge from the clamped (=bull) point
-            d_left   = bull_x - bx1
-            d_right  = bx2 - bull_x
-            d_top    = bull_y - by1
-            d_bottom = by2 - bull_y
-            min_d = min(d_left, d_right, d_top, d_bottom)
-            if min_d == d_left:
-                cx = float(bx1)
-            elif min_d == d_right:
-                cx = float(bx2)
-            elif min_d == d_top:
-                cy = float(by1)
-            else:
-                cy = float(by2)
-
-        return (cx, cy)
 
     # ---- Dart tip extraction -----------------------------------------------
 
@@ -1289,157 +1024,6 @@ class DartDetector:
               f"using warped fallback")
         cpts = contour.reshape(-1, 2).astype(np.float64)
         self._warped_fallback_tip(cpts)
-
-    # ------------------------------------------------------------------
-    def _hough_line_tip(
-        self,
-        raw_pts: np.ndarray,
-        raw_area: float,
-        raw_thresh: np.ndarray,
-    ) -> bool:
-        """Hough-Line tip detection in raw camera space.
-
-        Uses cv2.HoughLinesP on the edge image of the dart blob.
-        Hough voting naturally rejects outlier pixels (flights, shaft
-        noise) and finds the dominant straight line through the barrel.
-
-        Steps:
-          1. Mask + Canny edges on the dart blob region
-          2. HoughLinesP to detect line segments
-          3. Pick the longest segment as the dart axis
-          4. Tip = endpoint closer to board centre
-          5. Project through homography to board coordinates
-
-        Returns True if a tip was successfully found.
-        """
-        h_img, w_img = raw_thresh.shape[:2]
-
-        # -- 1. Create blob mask from contour --
-        blob_mask = np.zeros((h_img, w_img), dtype=np.uint8)
-        raw_contour = raw_pts.astype(np.int32).reshape(-1, 1, 2)
-        cv2.drawContours(blob_mask, [raw_contour], -1, 255,
-                         thickness=cv2.FILLED)
-
-        # Dilate slightly to connect nearby edge pixels
-        blob_mask = cv2.dilate(blob_mask, np.ones((3, 3), np.uint8),
-                               iterations=1)
-
-        # Apply mask to threshold image so we only see this dart
-        masked = cv2.bitwise_and(raw_thresh, blob_mask)
-
-        # -- 2. Canny edge detection on the masked dart --
-        edges = cv2.Canny(masked, 50, 150)
-
-        # -- 3. HoughLinesP --
-        lines = cv2.HoughLinesP(
-            edges,
-            rho=1,
-            theta=np.pi / 180,
-            threshold=15,           # min votes
-            minLineLength=12,       # min line segment length in px
-            maxLineGap=8,           # max gap between segments
-        )
-
-        if lines is None or len(lines) == 0:
-            return False
-
-        # -- 4. Pick the longest line as the dominant axis --
-        best_line = None
-        best_len = 0
-        for seg in lines:
-            x1, y1, x2, y2 = seg[0]
-            seg_len = np.hypot(x2 - x1, y2 - y1)
-            if seg_len > best_len:
-                best_len = seg_len
-                best_line = (x1, y1, x2, y2)
-
-        if best_line is None or best_len < 8:
-            return False
-
-        x1, y1, x2, y2 = best_line
-
-        # Direction vector of the detected line
-        vx = x2 - x1
-        vy = y2 - y1
-        vlen = np.hypot(vx, vy)
-        if vlen < 1:
-            return False
-        vx /= vlen
-        vy /= vlen
-
-        # -- 5. Disambiguate: which endpoint is the tip? --
-        # Project both endpoints to warped board space and pick the one
-        # closest to the board centre (bs/2, bs/2).  This is correct because
-        # the tip is on the board surface and maps accurately through the
-        # homography; the barrel/flights are elevated and their raw-space
-        # position is skewed by the 45 degree camera elevation -- differently for
-        # each camera due to the 120 degree spacing.
-        bs_half = self.cal.board_size / 2.0
-        pt1 = np.array([[[float(x1), float(y1)]]], dtype=np.float32)
-        pt2 = np.array([[[float(x2), float(y2)]]], dtype=np.float32)
-        w1 = cv2.perspectiveTransform(pt1, self.cal.matrix)[0, 0]
-        w2 = cv2.perspectiveTransform(pt2, self.cal.matrix)[0, 0]
-        da = np.hypot(w1[0] - bs_half, w1[1] - bs_half)
-        db = np.hypot(w2[0] - bs_half, w2[1] - bs_half)
-
-        if da < db:
-            tip_raw = np.array([float(x1), float(y1)])
-            far_raw = np.array([float(x2), float(y2)])
-        else:
-            tip_raw = np.array([float(x2), float(y2)])
-            far_raw = np.array([float(x1), float(y1)])
-
-        # -- 5b. Refine: find the most-extreme blob pixels along
-        #    the Hough direction near the tip endpoint --
-        blob_px = np.column_stack(np.where(blob_mask > 0))  # (row, col)
-        if len(blob_px) >= 5:
-            pts_xy = blob_px[:, ::-1].astype(np.float32)  # -> (x, y)
-            # Project onto Hough direction
-            cx, cy = tip_raw[0], tip_raw[1]
-            dx = pts_xy[:, 0] - cx
-            dy = pts_xy[:, 1] - cy
-            projs = dx * vx + dy * vy
-            # Tip is at the extreme in the tip direction (negative proj)
-            n_tip = max(3, int(len(projs) * 0.05))
-            tip_idx = np.argpartition(projs, min(n_tip, len(projs)-1))[:n_tip]
-            tip_raw = pts_xy[tip_idx].mean(axis=0)
-
-        # -- 5c. Confidence check --
-        d_ratio = min(da, db) / max(da, db) if max(da, db) > 0 else 1.0
-        tip_confident = d_ratio < 0.85
-
-        # Log for diagnostics
-        conf_tag = "OK" if tip_confident else "~WEAK"
-        print(f"[RAW] Cam {self.cam_id}: area={raw_area:.0f} "
-              f"pts={len(raw_pts)} houghLen={best_len:.0f}px "
-              f"nLines={len(lines)} "
-              f"dA={da:.0f} dB={db:.0f} tip={'A' if da < db else 'B'} "
-              f"{conf_tag}")
-
-        # -- 6. Project raw tip -> warped board space via homography
-        pt = np.array([[[tip_raw[0], tip_raw[1]]]], dtype=np.float32)
-        board_pt = cv2.perspectiveTransform(pt, self.cal.matrix)
-        tip = board_pt[0, 0].astype(np.float64)
-
-        # -- 7. Direction + tip offset --
-        far_pt = np.array([[[far_raw[0], far_raw[1]]]], dtype=np.float32)
-        far_warped = cv2.perspectiveTransform(
-            far_pt, self.cal.matrix)[0, 0]
-        direction = tip - far_warped
-        norm = np.linalg.norm(direction)
-        if norm > 1.0:
-            direction /= norm
-            tip += direction * self.cfg.tip_offset_px
-            self.dart_vector = (float(direction[0]), float(direction[1]))
-        else:
-            self.dart_vector = None
-
-        self.dart_tip_method = 'HOUGH_LINE' if tip_confident else 'HOUGH_LINE_WEAK'
-        self.dart_tip = (float(tip[0]), float(tip[1]))
-        tag = 'HOUGH-LINE' if tip_confident else 'HOUGH-LINE-WEAK'
-        print(f"[DART] Cam {self.cam_id}: "
-              f"tip=({tip[0]:.0f},{tip[1]:.0f}) [{tag}]")
-        return True
 
     # ------------------------------------------------------------------
     def _line_fit_tip(
@@ -1666,7 +1250,7 @@ class DartDetector:
     # Opportunistic one-shot scan
     # ==================================================================
 
-    def try_yolo_scan(
+    def try_opportunistic_scan(
         self,
         scored_mm: list | None = None,
     ) -> Optional[Tuple[float, float, str]]:
@@ -1868,10 +1452,50 @@ class DartDetector:
         self.motion_change = 0
         self._stable_count = 0
         self._prev_motion = None
-        self._hand_count = 0   # clear hysteresis counter between throws
-        self._dart_mask_raw = None  # clear for next dart cycle
+        self._hand_count = 0
+        self._dart_mask_raw = None
+        self._stale_ref_threshold = 0.30   # restore normal sensitivity
         if with_cooldown:
             self._cooldown = self._COOLDOWN_FRAMES
+
+    def prepare_for_takeout(self) -> None:
+        """Prepare the camera to detect a hand removing darts.
+
+        Captures the current frame (board WITH darts) as the new reference
+        so the darts become 'invisible' and only the hand will appear as
+        motion.  Critically:
+        - No settle period (_settle_frames stays 0) so HAND detection is
+          immediately active after this call.
+        - No cooldown (camera can enter HAND state on the very next frame).
+        - Raises _stale_ref_threshold to 0.95 so the stale-reference guard
+          does NOT auto-recapture when a large hand covers the board.
+          (Without this, a hand filling >30% of the board would trigger the
+          guard and call update_reference(), resetting the cycle forever.)
+        """
+        if self.warped_frame is not None:
+            # Directly snapshot current warped frame as reference
+            self._ref_motion = self._to_motion(self.warped_frame)
+            self._ref_detect = self._to_detect(self.warped_frame)
+            self.warped_ref = self.warped_frame.copy()
+        if self.last_frame is not None:
+            raw_gray = cv2.cvtColor(self.last_frame, cv2.COLOR_BGR2GRAY)
+            self._ref_raw_gray = raw_gray
+            # Prime MOG2 with current frame so it stops adapting to darts
+            for _ in range(5):
+                self._bg_sub.apply(raw_gray, learningRate=1.0)
+            self._bg_sub_ready = True
+        # Reset state — no cooldown, no settle, no STABLE tracking
+        self.state = State.WAIT
+        self._cooldown = 0
+        self._settle_frames = 0
+        self._stable_count = 0
+        self._prev_motion = None
+        self._hand_count = 0
+        # Suppress the stale-reference guard during takeout.
+        # The guard fires at >30% board change — a hand easily covers that.
+        # Store the raised threshold; _step_wait reads it.
+        self._stale_ref_threshold = 0.95   # effectively disabled
+
 
     def record_scored_tip(self, tip: Tuple[float, float]) -> None:
         """Remember a scored tip position so future detection can

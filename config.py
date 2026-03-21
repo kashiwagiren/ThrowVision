@@ -90,16 +90,6 @@ class ConfigManager:
     hough_min_line_len: int = 15
     hough_max_line_gap: int = 10
 
-    # --- YOLO hybrid detection -----------------------------------------------
-    yolo_enabled: bool = True
-    yolo_model_path: str = "models/darttipbox1.1.pt"
-    yolo_confidence: float = 0.75
-    yolo_only: bool = True          # True = YOLO-only tip detection (no math CV)
-
-    # --- Board keypoint auto-detection (YOLO Pose) -------------------------
-    board_kpt_model_path: str = "models/board_kpt_best.pt"
-    board_kpt_confidence: float = 0.5
-
     # --- Gaussian blur for segmentation ------------------------------------
     blur_kernel: Tuple[int, int] = (5, 5)
     binary_thresh: int = 30
@@ -141,9 +131,6 @@ class ConfigManager:
             f"  Standby          : {self.standby_time} ({self.standby_seconds}s)",
             f"  Tip offset       : {self.tip_offset_px} px",
             f"  Triangle k       : {self.triangle_k_factor}",
-            f"  YOLO enabled     : {self.yolo_enabled}",
-            f"  YOLO model       : {self.yolo_model_path}",
-            f"  YOLO confidence  : {self.yolo_confidence}",
         ]
         return "\n".join(lines)
 

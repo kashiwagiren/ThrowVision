@@ -820,6 +820,57 @@ body {
   border-bottom: 1px solid var(--border);
 }
 
+/* Practice takeout banner */
+.practice-takeout-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 20px;
+  background: rgba(240, 196, 68, 0.10);
+  border-bottom: 1px solid rgba(240, 196, 68, 0.35);
+  flex-shrink: 0;
+  animation: prac-takeout-pulse 2s ease-in-out infinite;
+}
+
+@keyframes prac-takeout-pulse {
+  0%, 100% { background: rgba(240, 196, 68, 0.08); }
+  50%       { background: rgba(240, 196, 68, 0.18); }
+}
+
+.practice-takeout-banner .takeout-icon {
+  font-size: 22px;
+  flex-shrink: 0;
+}
+
+.practice-takeout-banner .takeout-msg {
+  flex: 1;
+  min-width: 0;
+}
+
+.practice-takeout-banner .takeout-msg strong {
+  display: block;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--yellow);
+}
+
+.practice-takeout-banner .takeout-msg small {
+  display: block;
+  font-size: 11px;
+  color: var(--fg-muted);
+  margin-top: 2px;
+}
+
+/* Flash on successful board reset */
+.prac-score-side.reset-flash {
+  animation: board-reset-flash 0.6s ease-out;
+}
+
+@keyframes board-reset-flash {
+  0%   { background: rgba(62, 207, 142, 0.12); }
+  100% { background: transparent; }
+}
+
 .prac-score-hero {
   text-align: center;
   padding: clamp(20px, 4vh, 48px) 20px;

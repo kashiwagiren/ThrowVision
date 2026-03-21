@@ -62,6 +62,7 @@ _bullseye: Optional[BullseyeThrow] = None
 _game = None                           # active GameX01 / GameCricket / GameCountUp
 _game_pending_mode: Optional[str] = None   # mode to launch after bullseye
 _game_pending_opts: dict = {}              # options for the pending game
+_practice_dart_count: int = 0              # darts thrown in current practice turn
 
 # ── Static routes ────────────────────────────────────────────────────────────
 
@@ -176,39 +177,35 @@ def api_cal_resolution():
 
 @app.route("/api/cal/accept", methods=["POST"])
 def api_cal_accept():
-    """Accept 4 calibration points for a camera."""
+    """Accept 4 or 8 calibration points for a camera."""
     import numpy as np
     from flask import request
     data = request.get_json()
-    cam_id = data.get("cam_id", 0)
-    points = data.get("points")  # [[x1,y1],[x2,y2],[x3,y3],[x4,y4]]
-    # Actual frame dimensions from the calibration canvas (may differ from cfg.resolution)
-    frame_w = data.get("frame_width")
-    frame_h = data.get("frame_height")
-    if points is None or len(points) != 4:
-        return {"error": "Exactly 4 points required"}, 400
+    cam_id   = data.get("cam_id", 0)
+    points   = data.get("points")   # [[x,y] x4 or x8]
+    frame_w  = data.get("frame_width")
+    frame_h  = data.get("frame_height")
+    if points is None or len(points) not in (4, 8):
+        return {"error": "4 or 8 points required"}, 400
     if cam_id < 0 or cam_id >= len(_calibrators):
         return {"error": "Invalid camera ID"}, 400
     cal = _calibrators[cam_id]
     src = np.array(points, dtype=np.float32)
-    # Temporarily set cal's resolution to match the actual frame the user calibrated on,
-    # so the saved .npz has coordinates and resolution that are consistent.
     if frame_w and frame_h:
         old_w, old_h = cal.w, cal.h
         cal.w, cal.h = int(frame_w), int(frame_h)
         cal.calibrate(src)
-        # Restore so the calibrator continues operating at cfg resolution
         cal.w, cal.h = old_w, old_h
     else:
         cal.calibrate(src)
-    # Re-init detector with new calibration
     det = _detectors[cam_id]
     det.cal = cal
     det.capture_reference()
     det.reset_to_wait()
-    print(f"[CAL] Camera {cam_id}: web calibration accepted "
+    n = len(points)
+    print(f"[CAL] Camera {cam_id}: {n}-point calibration accepted "
           f"(frame {frame_w}x{frame_h})")
-    return {"ok": True, "cam_id": cam_id}
+    return {"ok": True, "cam_id": cam_id, "n_points": n}
 
 
 @app.route("/api/cal/info/<int:cam_id>")
@@ -224,21 +221,19 @@ def api_cal_info(cam_id):
     }
     if cal._src_pts is not None:
         info["src_points"] = cal._src_pts.tolist()
+        info["n_points"] = len(cal._src_pts)
     return info
 
 
 @app.route("/api/cal/auto/<int:cam_id>")
 def api_cal_auto(cam_id):
-    """Auto-detect dartboard and return 4 calibration points.
+    """Auto-detect dartboard and return up to 8 calibration points.
 
     Detection priority:
-      1. Board profile feature matching
-      2. HoughCircles / ellipse fitting (geometric fallback)
+      1. Board profile feature matching (returns 4 pts for backward compat)
+      2. auto_detect_anchors() in calibrator: HoughCircles + ellipse + edge-snap
+         Returns 8 points by default (4 outer double + 4 outer triple ring).
     """
-    import cv2
-    import numpy as np
-    import math
-
     if cam_id < 0 or cam_id >= len(_detectors):
         return {"error": "Invalid camera ID"}, 400
     det = _detectors[cam_id]
@@ -253,88 +248,25 @@ def api_cal_auto(cam_id):
         matched = _board_profile.detect(frame)
         if matched is not None:
             points = [[round(float(p[0]), 1), round(float(p[1]), 1)] for p in matched]
-            print(f"[CAL] Auto-detect Cam {cam_id}: board profile match -> 4 points")
+            print(f"[CAL] Auto-detect Cam {cam_id}: board profile match -> {len(points)} points")
             return {
                 "ok": True, "cam_id": cam_id, "method": "profile",
-                "center": [0, 0], "radius": 0, "points": points,
+                "n_points": len(points), "points": points,
             }
 
-    # ── Strategy 3: HoughCircles / ellipse ────────────────────────
+    # ── Strategy 2: Geometric auto-detect (8-point) ──────────────
+    cal = _calibrators[cam_id]
+    pts = cal.auto_detect_anchors(frame, n_points=8)
+    if pts is None:
+        return {"error": "Could not detect dartboard. Ensure the board is visible and well-lit."}, 404
 
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    h, w = gray.shape
-
-    blurred = cv2.GaussianBlur(gray, (9, 9), 2)
-    circles = cv2.HoughCircles(
-        blurred, cv2.HOUGH_GRADIENT, dp=1.2,
-        minDist=min(w, h) // 4,
-        param1=100, param2=60,
-        minRadius=int(min(w, h) * 0.15),
-        maxRadius=int(min(w, h) * 0.48),
-    )
-
-    best_cx, best_cy, best_r = None, None, None
-
-    if circles is not None:
-        circles = np.round(circles[0]).astype(int)
-        img_cx, img_cy = w / 2, h / 2
-        best_dist = float('inf')
-        for cx, cy, r in circles:
-            d = math.hypot(cx - img_cx, cy - img_cy)
-            if d < best_dist:
-                best_dist = d
-                best_cx, best_cy, best_r = float(cx), float(cy), float(r)
-
-    # Contour ellipse fit (fallback)
-    if best_cx is None:
-        thresh = cv2.adaptiveThreshold(
-            blurred, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-            cv2.THRESH_BINARY_INV, 31, 5)
-        contours, _ = cv2.findContours(
-            thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        best_area = 0
-        for cnt in contours:
-            area = cv2.contourArea(cnt)
-            if area < (min(w, h) * 0.1) ** 2:
-                continue
-            if len(cnt) < 5:
-                continue
-            ellipse = cv2.fitEllipse(cnt)
-            (ecx, ecy), (ma, Mi), angle = ellipse
-            ratio = min(ma, Mi) / max(ma, Mi) if max(ma, Mi) > 0 else 0
-            if ratio > 0.5 and area > best_area:
-                best_area = area
-                best_cx, best_cy = float(ecx), float(ecy)
-                best_r = float((ma + Mi) / 4)
-
-    if best_cx is None:
-        return {"error": "Could not detect dartboard. Try adjusting camera."}, 404
-
-    # Compute 4 wire-intersection points from circle
-    from calibrator import _wire_angle
-    angles_deg = [
-        _wire_angle(20, 1),
-        _wire_angle(6, 10),
-        _wire_angle(3, 19),
-        _wire_angle(11, 14),
-    ]
-
-    points = []
-    for ang in angles_deg:
-        rad = math.radians(ang)
-        px = best_cx + best_r * math.cos(rad)
-        py = best_cy - best_r * math.sin(rad)
-        points.append([round(px, 1), round(py, 1)])
-
-    print(f"[CAL] Auto-detect Cam {cam_id}: center=({best_cx:.0f},{best_cy:.0f}) "
-          f"r={best_r:.0f} -> 4 points computed")
-
+    points = [[round(float(p[0]), 1), round(float(p[1]), 1)] for p in pts]
+    print(f"[CAL] Auto-detect Cam {cam_id}: geometric -> {len(points)} points")
     return {
         "ok": True,
         "cam_id": cam_id,
-        "method": "circle",
-        "center": [round(best_cx, 1), round(best_cy, 1)],
-        "radius": round(best_r, 1),
+        "method": "geometric",
+        "n_points": len(points),
         "points": points,
     }
 
@@ -429,7 +361,7 @@ def api_board_status():
 
 @app.route("/api/cal/preview/<int:cam_id>")
 def api_cal_preview(cam_id):
-    """Return a warped homography preview JPEG for the given calibration points."""
+    """Return a warped homography preview JPEG for calibration points."""
     import cv2
     import numpy as np
     from flask import request, Response
@@ -444,20 +376,26 @@ def api_cal_preview(cam_id):
     if frame is None:
         return {"error": "Failed to capture frame"}, 500
 
-    # Get points from query string (comma-sep x1,y1,x2,y2,...x4,y4)
+    # Accepts comma-sep x1,y1,...xN,yN for 4 or 8 points
     pts_str = request.args.get("pts")
     if not pts_str:
         return {"error": "pts parameter required"}, 400
     try:
         vals = [float(v) for v in pts_str.split(",")]
-        assert len(vals) == 8
-        src = np.array(vals, dtype=np.float32).reshape(4, 2)
+        assert len(vals) in (8, 16), "Need 4 or 8 points"
+        n = len(vals) // 2
+        src = np.array(vals, dtype=np.float32).reshape(n, 2)
     except Exception:
-        return {"error": "Invalid points format"}, 400
+        return {"error": "Invalid points format (need 4 or 8 points)"}, 400
 
-    # Compute warped using same dst_pts as BoardCalibrator
     cal = _calibrators[cam_id]
-    M = cv2.getPerspectiveTransform(src, cal._dst_pts)
+    dst_px = cal._dst_pts_8 if n == 8 else cal._dst_pts_4
+    if n == 4:
+        M = cv2.getPerspectiveTransform(src, dst_px)
+    else:
+        M, _ = cv2.findHomography(src, dst_px, cv2.RANSAC, 3.0)
+        if M is None:
+            return {"error": "RANSAC failed"}, 500
     board_size = min(cal.w, cal.h)
     warped = cv2.warpPerspective(frame, M, (board_size, board_size))
 
@@ -711,19 +649,21 @@ def on_test_dart(data):
 
 @socketio.on("start_detection")
 def on_start_detection():
-    global _detection_paused
+    global _detection_paused, _practice_dart_count
     # Auto-open cameras if not already open
     if not _cameras_open:
         _do_open_cameras()
     _detection_paused = False
+    _practice_dart_count = 0
     print("[SRV] Detection RESUMED by client.")
     socketio.emit("detection_state", {"paused": False})
 
 
 @socketio.on("stop_detection")
 def on_stop_detection():
-    global _detection_paused
+    global _detection_paused, _practice_dart_count
     _detection_paused = True
+    _practice_dart_count = 0
     print("[SRV] Detection PAUSED by client.")
     socketio.emit("detection_state", {"paused": True})
 
@@ -751,6 +691,7 @@ def _do_open_cameras():
         if _cameras_open:
             return
         print("[SRV] Opening cameras…")
+        socketio.emit("srv_status", {"message": "Opening cameras\u2026", "type": "loading"})
         for i, det in enumerate(_detectors):
             if i > 0:
                 time.sleep(0.5)
@@ -786,6 +727,7 @@ def _do_open_cameras():
 
         _cameras_open = True
         print("[SRV] Cameras ready.")
+        socketio.emit("srv_status", {"message": "Cameras ready", "type": "ready"})
         socketio.emit("cameras_state", {"open": True})
 
 
@@ -815,8 +757,19 @@ def _do_close_cameras():
         socketio.emit("cameras_state", {"open": False})
 
 
+@socketio.on("connect")
+def on_connect():
+    """Re-emit current server/camera status to this specific new client."""
+    from flask_socketio import emit
+    if _cameras_open:
+        emit("srv_status", {"message": "Cameras ready", "type": "ready"})
+    else:
+        emit("srv_status", {"message": "Opening cameras\u2026", "type": "loading"})
+
+
 @socketio.on("update_settings")
 def on_update_settings(data):
+
     global _annotation_mode
     if isinstance(data, dict):
         _annotation_mode = bool(data.get("annotation_mode", False))
@@ -1015,7 +968,7 @@ def on_end_game():
 @socketio.on("skip_takeout")
 def on_skip_takeout():
     """User clicked Continue — skip automatic takeout detection."""
-    global _awaiting_takeout, _takeout_hand_seen, _takeout_reason
+    global _awaiting_takeout, _takeout_hand_seen, _takeout_reason, _practice_dart_count
     if not _awaiting_takeout:
         return
     # Clear all scored tips manually
@@ -1029,6 +982,15 @@ def on_skip_takeout():
     if _takeout_reason == 'bullseye':
         print("[GAME] Takeout skipped by user — tips cleared, starting game")
         _do_start_pending_game()
+    elif _takeout_reason == 'practice':
+        # Practice takeout — clear state and signal frontend to reset
+        _practice_dart_count = 0
+        _awaiting_takeout = False
+        _takeout_hand_seen = False
+        _takeout_reason = ''
+        socketio.emit('practice_reset', {})
+        socketio.emit('state', {'state': 'WAIT'})
+        print("[PRACTICE] Takeout skipped by user — board reset")
     else:
         # Between-turn takeout — just resume scoring
         print("[GAME] Turn takeout completed by user — resuming")
@@ -1068,19 +1030,24 @@ def _create_game(mode: str, options: dict):
     return None
 
 
-_awaiting_takeout: bool = False  # True = waiting for darts to be removed before game start
-_takeout_hand_seen: bool = False  # True = hand was detected during takeout wait
-_takeout_ready_at: float = 0.0   # timestamp after which hand detection starts for takeout
-_takeout_reason: str = ''        # 'bullseye' or 'turn'
+_awaiting_takeout: bool = False
+_takeout_hand_seen: bool = False
+_takeout_ready_at: float = 0.0
+_takeout_reason: str = ''
+_practice_reset_at: float = 0.0
+_needs_takeout_init: bool = False
+_pending_turn_state: dict | None = None   # held-back game_state until turn takeout completes
 
 def _start_pending_game(winner: int):
     """Called after bullseye throw completes — waits for takeout before starting."""
-    global _awaiting_takeout, _pending_game_winner, _takeout_hand_seen, _takeout_ready_at, _takeout_reason
+    global _awaiting_takeout, _pending_game_winner, _takeout_hand_seen, _takeout_ready_at
+    global _takeout_reason, _needs_takeout_init
     _pending_game_winner = winner
     _awaiting_takeout = True
     _takeout_hand_seen = False
-    _takeout_ready_at = time.time() + 3.0  # 3 second cooldown before looking for hand
+    _takeout_ready_at = time.time() + 1.5  # 1.5s cooldown (was 3s, too long)
     _takeout_reason = 'bullseye'
+    _needs_takeout_init = True              # trigger one-shot reference capture
     socketio.emit("awaiting_takeout", {"message": "Remove darts from the board to start the game!"})
     print(f"[GAME] Awaiting takeout before starting game (winner: Player {winner})")
 
@@ -1124,6 +1091,7 @@ def _emit_dart(label: str, score: int, x_mm: float, y_mm: float,
                cam_details: list | None = None):
     global _last_score, _game_mode, _bullseye, _game
     global _awaiting_takeout, _takeout_hand_seen, _takeout_ready_at, _takeout_reason
+    global _needs_takeout_init, _pending_turn_state
     payload = {"label": label, "score": score, "x_mm": x_mm, "y_mm": y_mm,
                "ts": time.time()}
     if cam_details:
@@ -1149,28 +1117,55 @@ def _emit_dart(label: str, score: int, x_mm: float, y_mm: float,
     if _game is not None and not _game.is_finished:
         prev_player = _game.current_player
         game_state = _game.record_dart(label, score, (x_mm, y_mm))
-        socketio.emit('game_state', game_state)
         if _game.is_finished:
+            socketio.emit('game_state', game_state)
             socketio.emit('game_over', game_state)
-            # Save stats
             try:
                 game_stats.save_game(_game.stats_summary())
             except Exception as e:
                 print(f'[STATS] Error saving: {e}')
         elif _game.current_player != prev_player:
-            # Turn ended — need takeout before next player throws
+            # Turn ended — hold back new game_state until darts are removed
+            # Emit only the current score, keeping same current_player display
+            held_back = dict(game_state)
+            held_back['current_player'] = prev_player + 1   # 1-indexed, stay on old player
+
+            held_back['awaiting_takeout'] = True
+            held_back['turn_info'] = 'Remove darts from the board!'
+            # Restore the just-thrown darts for display — _end_turn() moves them
+            # to turn_history so darts_this_turn is [] in the new game_state.
+            # Pull them back so dart chips stay visible during takeout wait.
+            if game_state.get('turn_history'):
+                last_turn = game_state['turn_history'][-1]
+                held_back['darts_this_turn'] = last_turn.get('darts', [])
+            socketio.emit('game_state', held_back)           # score update, same player
+            _pending_turn_state = game_state                 # emit this after takeout
             _awaiting_takeout = True
             _takeout_hand_seen = False
-            _takeout_ready_at = time.time() + 2.0  # 2 second cooldown
+            _takeout_ready_at = time.time() + 1.5
             _takeout_reason = 'turn'
+            _needs_takeout_init = True
             socketio.emit('turn_takeout', {'message': 'Remove darts from the board!'})
             print(f"[GAME] Turn ended — awaiting takeout before Player {_game.current_player + 1} throws")
+        else:
+            socketio.emit('game_state', game_state)          # mid-turn dart, emit normally
         # Also emit dart_scored for board dot placement
         socketio.emit('dart_scored', payload)
         return
 
     # No active game — normal practice mode
     socketio.emit("dart_scored", payload)
+    # ── Practice 3-throw auto-takeout ──────────────────────────────
+    global _practice_dart_count
+    _practice_dart_count += 1
+    if _practice_dart_count >= 3:
+        _awaiting_takeout = True
+        _takeout_hand_seen = False
+        _takeout_ready_at = time.time() + 1.5  # 1.5s cooldown
+        _takeout_reason = 'practice'
+        _needs_takeout_init = True
+        socketio.emit('practice_awaiting_takeout', {'message': 'Remove darts from the board!'})
+        print(f"[PRACTICE] 3 darts thrown — awaiting takeout")
 
 
 def _emit_cam_status():
@@ -1263,6 +1258,10 @@ class _TeeStdout:
         self._real = real
         self._buf = ""
 
+        # Cooldown
+        self._cooldown: int = 0
+        self._COOLDOWN_FRAMES: int = 15   # ~500ms at 30fps (was 30 = 1s)
+
     def write(self, s):
         self._real.write(s)
         self._buf += s
@@ -1298,6 +1297,9 @@ def _run_detection(cam_ids: List[int], cfg) -> None:
     from scorer import ScoreMapper
 
     global _detectors, _calibrators, _cfg, _annotation_count
+    global _awaiting_takeout, _takeout_hand_seen, _takeout_ready_at
+    global _takeout_reason, _practice_dart_count, _practice_reset_at
+    global _needs_takeout_init, _pending_turn_state
     _cfg = cfg
 
     # Count existing annotations to continue numbering
@@ -1360,6 +1362,25 @@ def _run_detection(cam_ids: List[int], cfg) -> None:
         states = [det.step() for det in detectors]
         now = time.perf_counter()
 
+        # ── One-shot takeout initialisation ───────────────────────────────
+        # When _needs_takeout_init is set, do ONE capture_reference() pass so
+        # the cameras treat the board-with-darts as the new baseline.
+        # Without this, cameras keep re-detecting the static darts as "motion"
+        # and never reach HAND state.  We also discard any partial collection.
+        if _needs_takeout_init:
+            _needs_takeout_init = False
+            collected_tips    = [None]   * len(detectors)
+            collected_areas   = [0]      * len(detectors)
+            collected_methods = ['NONE'] * len(detectors)
+            collected_mm      = [None]   * len(detectors)
+            collect_deadline  = 0.0
+            for det in active_dets:
+                # prepare_for_takeout(): bakes darts into reference,
+                # no cooldown, no settle, disables stale-ref guard so
+                # the hand reaching in doesn't trigger auto-recapture.
+                det.prepare_for_takeout()
+
+
         # ── Update camera status every ~30 frames ─────────────────────────
         for det in detectors:
             cid = det.cam_id
@@ -1399,7 +1420,7 @@ def _run_detection(cam_ids: List[int], cfg) -> None:
                     collected_tips[i]    = det.dart_tip
                     collected_areas[i]   = det.dart_area
                     collected_methods[i] = det.dart_tip_method
-                    collected_mm[i]      = det.dart_tip_mm  # may be None for non-YOLO
+                    collected_mm[i]      = None  # CV methods: no direct mm
 
         any_dart = any(d.state == State.DART for d in active_dets)
         if any_dart and collect_deadline == 0.0:
@@ -1409,14 +1430,14 @@ def _run_detection(cam_ids: List[int], cfg) -> None:
         if collect_deadline > 0.0 and now >= collect_deadline:
             # ── Opportunistic scan ────────────────────────────────────────
             # For every active camera that hasn't contributed a tip yet
-            # (i.e. didn't reach DART state in time), run a one-shot YOLO
+            # (i.e. didn't reach DART state in time), run a one-shot diff
             # scan on its current frame.  This ensures all cameras always
             # participate in locating the dart tip.
             for i, det in enumerate(detectors):
                 if (det.active
                         and collected_tips[i] is None
                         and det.state not in (State.HAND, State.TAKEOUT)):
-                    scan = det.try_yolo_scan(scored_mm=_consensus_scored_tips)
+                    scan = det.try_opportunistic_scan(scored_mm=_consensus_scored_tips)
                     if scan is not None:
                         s_x, s_y, s_method = scan
                         collected_tips[i]    = (0.0, 0.0)  # placeholder (mm used directly)
@@ -1426,7 +1447,7 @@ def _run_detection(cam_ids: List[int], cfg) -> None:
                         print(f"[DET] Cam {i}: opportunistic {s_method} "
                               f"-> ({s_x:.1f},{s_y:.1f})mm")
                     else:
-                        print(f"[DET] Cam {i}: opportunistic YOLO scan "
+                        print(f"[DET] Cam {i}: opportunistic scan "
                               f"FAILED (state={det.state.name} "
                               f"motion={det.motion_change}px "
                               f"calibrated={det.cal.is_calibrated})")
@@ -1566,16 +1587,15 @@ def _run_detection(cam_ids: List[int], cfg) -> None:
                                      if t is not None)
                 single_area   = collected_areas[single_idx]
                 single_method = collected_methods[single_idx]
-                # When multiple cameras are active but only one detected,
-                # require a much larger area for plain YOLO_BOX detections
-                # (single-cam bbox-only is less reliable without cross-validation).
-                # YOLO_MOTION is more reliable (motion-refined) so use lower threshold.
+                # Single-camera area threshold:
+                # PROFILE uses tighter area (very reliable blob shape).
+                # All CV line-fit methods use a standard threshold.
+                # With 2+ active cameras, require a higher area to reduce
+                # false positives from uncorroborated single-cam readings.
                 if single_method == 'PROFILE':
                     area_thresh = 120
-                elif single_method == 'YOLO_MOTION':
-                    area_thresh = 300   # motion-refined tip is reliable
-                elif single_method in ('YOLO_BOX', 'YOLO_SEG') and n_active >= 2:
-                    area_thresh = 2000
+                elif n_active >= 2:
+                    area_thresh = 500
                 else:
                     area_thresh = 300
                 if single_area >= area_thresh:
@@ -1642,6 +1662,9 @@ def _run_detection(cam_ids: List[int], cfg) -> None:
         any_hand = any(d.state == State.HAND for d in active_dets)
         if any_hand:
             if _awaiting_takeout:
+                # Reset the 1.5s practice hold timer — hand is back, wait again
+                if _takeout_reason == 'practice' and _practice_reset_at > 0.0:
+                    _practice_reset_at = 0.0
                 # During takeout wait: DON'T update reference (keep darts-on-board ref)
                 # Just reset to WAIT with short cooldown so detection resumes quickly
                 for det in active_dets:
@@ -1673,20 +1696,57 @@ def _run_detection(cam_ids: List[int], cfg) -> None:
             # Check if all cameras have settled back to WAIT
             all_wait = all(d.state == State.WAIT for d in active_dets)
             if all_wait:
-                for det in active_dets:
-                    det.clear_scored_tips()
-                    det.capture_reference()
-                    det.reset_to_wait()
-                _consensus_scored_tips.clear()
-                collected_tips    = [None]   * len(detectors)
-                collected_areas   = [0]      * len(detectors)
-                collected_methods = ['NONE'] * len(detectors)
-                collected_mm      = [None]   * len(detectors)
-                collect_deadline = 0.0
-                print("[GAME] Takeout completed — darts removed, waiting for user to click Continue")
-                # Tell frontend that takeout is done, show Continue button
-                socketio.emit("takeout_ready", {})
-                _takeout_hand_seen = False  # Reset so we don't re-trigger
+                if _takeout_reason == 'practice':
+                    # Practice: start a hold timer so the banner stays visible
+                    if _practice_reset_at == 0.0:
+                        _practice_reset_at = time.time() + 1.5
+                        print("[PRACTICE] Board settled — resetting in 1.5 s")
+                    elif time.time() >= _practice_reset_at:
+                        # 1.5 s has elapsed — do the reset now
+                        for det in active_dets:
+                            det.clear_scored_tips()
+                            det.capture_reference()
+                            det.reset_to_wait()
+                        _consensus_scored_tips.clear()
+                        collected_tips    = [None]   * len(detectors)
+                        collected_areas   = [0]      * len(detectors)
+                        collected_methods = ['NONE'] * len(detectors)
+                        collected_mm      = [None]   * len(detectors)
+                        collect_deadline = 0.0
+                        _practice_dart_count = 0
+                        _awaiting_takeout = False
+                        _takeout_hand_seen = False
+                        _takeout_reason = ''
+                        _practice_reset_at = 0.0
+                        socketio.emit('practice_reset', {})
+                        socketio.emit('state', {'state': 'WAIT'})
+                        print("[PRACTICE] Auto-reset after takeout")
+                else:
+                    # Game / bullseye takeout
+                    for det in active_dets:
+                        det.clear_scored_tips()
+                        det.capture_reference()
+                        det.reset_to_wait()
+                    _consensus_scored_tips.clear()
+                    collected_tips    = [None]   * len(detectors)
+                    collected_areas   = [0]      * len(detectors)
+                    collected_methods = ['NONE'] * len(detectors)
+                    collected_mm      = [None]   * len(detectors)
+                    collect_deadline = 0.0
+                    _takeout_hand_seen = False
+                    if _takeout_reason == 'turn' and _pending_turn_state is not None:
+                        # Now it's safe to switch player — darts are gone
+                        socketio.emit('game_state', _pending_turn_state)
+                        socketio.emit('clear_board_dots', {})   # clear dart dots for new player
+                        _pending_turn_state = None
+                        _awaiting_takeout = False
+                        _takeout_reason = ''
+                        socketio.emit('state', {'state': 'WAIT'})
+                        print("[GAME] Turn takeout done — switched to next player")
+                    else:
+                        # Bullseye path — show Continue button
+                        print("[GAME] Takeout completed — darts removed, waiting for user to click Continue")
+                        socketio.emit("takeout_ready", {})
 
         time.sleep(0.010)   # yield CPU (10ms to prevent 100% CPU lock)
 

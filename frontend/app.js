@@ -164,7 +164,7 @@ function showPage(name) {
     if (btn) btn.textContent = 'Open Cameras';
     _camsManuallyOpen = false;
     stopCamPreview();
-    checkBoardProfile(); updateAnnotationCount();
+    checkBoardProfile();
   } else {
     stopCamPreview();
     // Close cameras when leaving settings — but NOT when going to calibration,
@@ -269,8 +269,15 @@ function toggleCamerasManually() {
 
 let calCamId = 0, calImage = null, calPoints = [], calDragging = -1, calOpacity = 0.45;
 const CAL_POINT_R = 8;
-const CAL_COLORS = ['#ff4444', '#44ff44', '#4488ff', '#ffaa00'];
-const CAL_LABELS = ['D20/D1', 'D6/D10', 'D3/D19', 'D11/D14'];
+// 0-3: outer double ring (cyan); 4-7: inner triple ring (orange)
+const CAL_COLORS = [
+  '#00d4ff', '#00d4ff', '#00d4ff', '#00d4ff',   // outer double (cyan)
+  '#ff8c00', '#ff8c00', '#ff8c00', '#ff8c00',   // inner triple (orange)
+];
+const CAL_LABELS = [
+  'D20/D1', 'D6/D10', 'D3/D19', 'D11/D14',      // outer double ring
+  'T20/T1', 'T6/T10', 'T3/T19', 'T11/T14',      // inner triple ring
+];
 let calActivePoint = 0;  // which point zoom follows
 
 async function launchCalibration() {
@@ -327,7 +334,8 @@ async function calCaptureFrame(retries = 5, keepPoints = false) {
       const canvas = document.getElementById('cal-canvas');
       canvas.width = img.width; canvas.height = img.height;
       if (!keepPoints) {
-        if (info.src_points && info.src_points.length === 4) {
+        const n = info.src_points ? info.src_points.length : 0;
+        if (n === 4 || n === 8) {
           // Scale saved points from calibration resolution to current frame resolution
           const calW = info.resolution ? info.resolution[0] : img.width;
           const calH = info.resolution ? info.resolution[1] : img.height;
@@ -335,10 +343,17 @@ async function calCaptureFrame(retries = 5, keepPoints = false) {
           const sy = img.height / calH;
           calPoints = info.src_points.map(p => ({ x: p[0] * sx, y: p[1] * sy }));
         } else {
-          const cx = img.width / 2, cy = img.height / 2, r = Math.min(img.width, img.height) * 0.45;
+          // Default: 8-point layout
+          const cx = img.width / 2, cy = img.height / 2;
+          const ro = Math.min(img.width, img.height) * 0.40;  // outer double ring radius
+          const ri = ro * (107.0 / 170.0);                     // triple ring radius
+          // Same 4 angles as server: D20/D1, D6/D10, D3/D19, D11/D14
+          const angs = [81, 351, 261, 171].map(a => a * Math.PI / 180);
           calPoints = [
-            { x: cx + r * 0.7, y: cy - r * 0.7 }, { x: cx + r * 0.7, y: cy + r * 0.7 },
-            { x: cx - r * 0.7, y: cy + r * 0.7 }, { x: cx - r * 0.7, y: cy - r * 0.7 },
+            // 4 outer double ring
+            ...angs.map(a => ({ x: cx + ro * Math.cos(a), y: cy - ro * Math.sin(a) })),
+            // 4 triple ring (same angles, inner radius)
+            ...angs.map(a => ({ x: cx + ri * Math.cos(a), y: cy - ri * Math.sin(a) })),
           ];
         }
       }
@@ -385,22 +400,38 @@ function calDraw() {
   ctx.drawImage(calImage, 0, 0);
   ctx.fillStyle = `rgba(0,0,0,${calOpacity})`; ctx.fillRect(0, 0, canvas.width, canvas.height);
   ctx.globalAlpha = 1 - calOpacity; ctx.drawImage(calImage, 0, 0); ctx.globalAlpha = 1.0;
-  if (calPoints.length === 4) {
+
+  // Draw lines connecting outer-ring points (first 4)
+  const nOuter = Math.min(4, calPoints.length);
+  if (nOuter >= 4) {
     ctx.beginPath(); ctx.moveTo(calPoints[0].x, calPoints[0].y);
-    for (let i = 1; i < 4; i++) ctx.lineTo(calPoints[i].x, calPoints[i].y);
-    ctx.closePath(); ctx.strokeStyle = 'rgba(255,255,255,0.5)'; ctx.lineWidth = 1.5; ctx.stroke();
+    for (let i = 1; i < nOuter; i++) ctx.lineTo(calPoints[i].x, calPoints[i].y);
+    ctx.closePath(); ctx.strokeStyle = 'rgba(0,220,255,0.4)'; ctx.lineWidth = 1.5; ctx.stroke();
   }
+  // Draw lines connecting inner-ring points (points 4-7)
+  if (calPoints.length === 8) {
+    ctx.beginPath(); ctx.moveTo(calPoints[4].x, calPoints[4].y);
+    for (let i = 5; i < 8; i++) ctx.lineTo(calPoints[i].x, calPoints[i].y);
+    ctx.closePath(); ctx.strokeStyle = 'rgba(255,165,0,0.4)'; ctx.lineWidth = 1.5; ctx.stroke();
+    // Lines connecting corresponding outer/inner pairs
+    ctx.strokeStyle = 'rgba(255,255,255,0.18)'; ctx.lineWidth = 1;
+    for (let i = 0; i < 4; i++) {
+      ctx.beginPath(); ctx.moveTo(calPoints[i].x, calPoints[i].y);
+      ctx.lineTo(calPoints[i + 4].x, calPoints[i + 4].y); ctx.stroke();
+    }
+  }
+  // Draw points
   calPoints.forEach((p, i) => {
+    const isInner = i >= 4;
+    const color = isInner ? CAL_COLORS[i] : CAL_COLORS[i];
     ctx.beginPath(); ctx.arc(p.x, p.y, CAL_POINT_R + 2, 0, Math.PI * 2); ctx.fillStyle = 'rgba(0,0,0,0.5)'; ctx.fill();
-    ctx.beginPath(); ctx.arc(p.x, p.y, CAL_POINT_R, 0, Math.PI * 2); ctx.fillStyle = CAL_COLORS[i]; ctx.fill();
+    ctx.beginPath(); ctx.arc(p.x, p.y, CAL_POINT_R, 0, Math.PI * 2); ctx.fillStyle = color; ctx.fill();
     ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5; ctx.stroke();
     ctx.font = '11px Inter, sans-serif'; ctx.fillStyle = '#fff'; ctx.textAlign = 'center';
     ctx.fillText(CAL_LABELS[i], p.x, p.y - CAL_POINT_R - 6);
   });
-  // Draw perspective wireframe overlay when 4 calibration points exist
-  if (calPoints.length === 4) {
-    drawPerspectiveWireframe(ctx);
-  }
+  // Draw perspective wireframe overlay
+  if (calPoints.length >= 4) drawPerspectiveWireframe(ctx);
   calDrawZoom();
   calScheduleWarpPreview();
 }
@@ -476,18 +507,23 @@ function updateCalOpacity(val) { calOpacity = val / 100; calDraw(); }
 
 function resetCalPoints() {
   if (!calImage) return;
-  const cx = calImage.width / 2, cy = calImage.height / 2, r = Math.min(calImage.width, calImage.height) * 0.35;
+  const cx = calImage.width / 2, cy = calImage.height / 2;
+  const ro = Math.min(calImage.width, calImage.height) * 0.40;
+  const ri = ro * (107.0 / 170.0);
+  const angs = [81, 351, 261, 171].map(a => a * Math.PI / 180);
   calPoints = [
-    { x: cx + r * 0.7, y: cy - r * 0.7 }, { x: cx + r * 0.7, y: cy + r * 0.7 },
-    { x: cx - r * 0.7, y: cy + r * 0.7 }, { x: cx - r * 0.7, y: cy - r * 0.7 },
+    ...angs.map(a => ({ x: cx + ro * Math.cos(a), y: cy - ro * Math.sin(a) })),
+    ...angs.map(a => ({ x: cx + ri * Math.cos(a), y: cy - ri * Math.sin(a) })),
   ];
   calDraw();
 }
 
 async function acceptCalibration() {
-  if (calPoints.length !== 4) return;
+  if (calPoints.length !== 4 && calPoints.length !== 8) {
+    alert('Place all calibration points (4 or 8) before accepting.');
+    return;
+  }
   const points = calPoints.map(p => [p.x, p.y]);
-  // Also send the actual frame dimensions so the server saves the correct resolution
   const frameW = calImage ? calImage.width : null;
   const frameH = calImage ? calImage.height : null;
   try {
@@ -497,11 +533,10 @@ async function acceptCalibration() {
     });
     const data = await res.json();
     if (data.ok) {
-      addLog(`Calibration accepted for Camera ${calCamId + 1}`);
+      addLog(`Calibration accepted for Camera ${calCamId + 1} (${data.n_points || points.length} points)`);
       if (calCamId < 2) {
         calSelectCam(calCamId + 1);
       } else {
-        // All 3 cameras calibrated — show styled save modal
         showPage('home');
         showProfileModal();
       }
@@ -538,12 +573,13 @@ async function autoCalibrate() {
   try {
     const res = await fetch(`/api/cal/auto/${calCamId}`);
     const data = await res.json();
-    if (data.ok && data.points && data.points.length === 4) {
+    const np = data.n_points || (data.points && data.points.length);
+    if (data.ok && data.points && (np === 4 || np === 8)) {
       calPoints = data.points.map(p => ({ x: p[0], y: p[1] }));
       calActivePoint = 0;
       calDraw();
-      addLog(`Auto-calibrate Cam ${calCamId + 1}: center=(${data.center[0]},${data.center[1]}) r=${data.radius}`);
-      btn.textContent = '✓ Detected';
+      addLog(`Auto-calibrate Cam ${calCamId + 1}: ${np} points detected (${data.method})`);
+      btn.textContent = `✓ ${np} pts`;
     } else {
       alert(data.error || 'Auto-detection failed');
       btn.textContent = '✗ Failed';
@@ -602,17 +638,12 @@ function calRotatePoints(direction) {
   calDraw();
 }
 
-// ══════════════════════════════════════════════════════════════════════
-// Board Annotation (training data collection)
-// Uses the EXISTING 4 calibration points to compute a perspective-
-// correct wireframe overlay that matches the actual camera angle.
-// ══════════════════════════════════════════════════════════════════════
+// ── Calibration board geometry & homography math ──────────────────────
+// (These constants and helpers are shared between calRotatePoints() above
+//  and drawPerspectiveWireframe() below — they are NOT annotation-specific.)
 
-let boardAnnotateActive = false;
-
-// Dartboard constants (same as calibrator.py)
 const BOARD_SECTOR_ORDER = [20, 5, 12, 9, 14, 11, 8, 16, 7, 19, 3, 17, 2, 15, 10, 6, 13, 4, 18, 1];
-const BOARD_SECTOR_ANGLE = 18;
+const BOARD_SECTOR_ANGLE = 18;  // degrees
 const BOARD_RADII_MM = {
   bull_inner: 6.35, bull_outer: 15.9,
   triple_inner: 99, triple_outer: 107,
@@ -626,9 +657,8 @@ function boardSectorBoundaryAngles() {
   return Array.from({ length: 20 }, (_, i) => (start + i * BOARD_SECTOR_ANGLE) % 360);
 }
 
-// --- Perspective homography math ---
 function _solveLinear8(A, b) {
-  // Gaussian elimination with partial pivoting for 8x8 system
+  // Gaussian elimination with partial pivoting for 8×8 system
   const n = 8;
   const aug = A.map((row, i) => [...row, b[i]]);
   for (let col = 0; col < n; col++) {
@@ -674,30 +704,8 @@ function applyH(H, px, py) {
   };
 }
 
-function toggleBoardAnnotateMode() {
-  boardAnnotateActive = !boardAnnotateActive;
-  const bar = document.getElementById('board-annotate-bar');
-  const btn = document.getElementById('btn-board-annotate');
-  if (boardAnnotateActive) {
-    bar.style.display = 'flex';
-    btn.classList.add('active');
-    document.getElementById('board-annotate-step').innerHTML =
-      'Drag the <b>4 points</b> to align the wireframe with the board, then <b>Save</b>';
-    document.getElementById('btn-annotate-save').disabled = false;
-    fetch('/api/board-annotate/count').then(r => r.json()).then(d => {
-      document.getElementById('board-annotate-count').textContent = `${d.count} saved`;
-    }).catch(() => { });
-  } else {
-    bar.style.display = 'none';
-    btn.classList.remove('active');
-  }
-  calDraw();
-}
-
 function drawPerspectiveWireframe(ctx) {
-  // Compute board-space positions for the 4 calibration destination points
-  const BS = 500;  // arbitrary board-space size
-  const bCx = BS / 2, bCy = BS / 2;
+  const BS = 500, bCx = BS / 2, bCy = BS / 2;
   const sc = BS / BOARD_CANVAS_MM;
 
   const boardPts = BOARD_DST_WIRE_ANGLES.map(a => {
@@ -708,12 +716,9 @@ function drawPerspectiveWireframe(ctx) {
     };
   });
 
-  // Compute homography: board-space → camera-space
-  const camPts = calPoints.map(p => ({ x: p.x, y: p.y }));
-  const H = computeHomography(boardPts, camPts);
+  const H = computeHomography(boardPts, calPoints.map(p => ({ x: p.x, y: p.y })));
   if (!H) return;
 
-  // Transform a board-space point (angle + mm radius) to camera pixels
   function boardToCamera(angleDeg, rMM) {
     const rad = angleDeg * Math.PI / 180;
     const bx = bCx + rMM * sc * Math.cos(rad);
@@ -721,11 +726,10 @@ function drawPerspectiveWireframe(ctx) {
     return applyH(H, bx, by);
   }
 
-  const wireColor = 'rgba(0, 255, 255, 0.7)';
-  ctx.strokeStyle = wireColor;
+  ctx.strokeStyle = 'rgba(0, 255, 255, 0.7)';
   ctx.lineWidth = 1;
 
-  // Draw rings (sampled as polylines → perspective-correct ellipses)
+  // Rings
   const ringRadii = [
     BOARD_RADII_MM.bull_inner, BOARD_RADII_MM.bull_outer,
     BOARD_RADII_MM.triple_inner, BOARD_RADII_MM.triple_outer,
@@ -742,7 +746,7 @@ function drawPerspectiveWireframe(ctx) {
     ctx.stroke();
   }
 
-  // Draw sector wires
+  // Sector wires
   const angles = boardSectorBoundaryAngles();
   for (const ang of angles) {
     const cp1 = boardToCamera(ang, BOARD_RADII_MM.bull_outer);
@@ -753,7 +757,7 @@ function drawPerspectiveWireframe(ctx) {
     ctx.stroke();
   }
 
-  // Draw sector numbers
+  // Sector numbers
   ctx.font = 'bold 11px Inter, sans-serif';
   ctx.fillStyle = 'rgba(0, 255, 255, 0.9)';
   ctx.textAlign = 'center';
@@ -766,59 +770,148 @@ function drawPerspectiveWireframe(ctx) {
   });
 }
 
-async function saveBoardAnnotation() {
-  if (calPoints.length !== 4) return;
-  const saveBtn = document.getElementById('btn-annotate-save');
-  saveBtn.disabled = true;
-  saveBtn.textContent = '⏳ Saving…';
-
-  // Send the 4 calibration points directly — the server uses the same
-  // perspective homography as BoardCalibrator. Dart tip is auto-detected
-  // server-side from the detector's last_frame position.
-  const srcPoints = calPoints.map(p => [p.x, p.y]);
-
-  try {
-    const res = await fetch('/api/board-annotate/save', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        cam_id: calCamId,
-        src_points: srcPoints,
-      }),
-    });
-    const data = await res.json();
-    if (data.ok) {
-      saveBtn.textContent = `✓ Saved (${data.total_annotations} total)`;
-      document.getElementById('board-annotate-count').textContent =
-        `${data.total_annotations} saved`;
-      addLog(`Board annotation saved for Cam ${calCamId + 1} (${data.total_annotations} total)`);
-    } else {
-      saveBtn.textContent = '✗ Failed';
-      alert(data.error || 'Save failed');
-    }
-  } catch (err) {
-    saveBtn.textContent = '✗ Error';
-    alert('Save error: ' + err.message);
-  }
-  setTimeout(() => { saveBtn.textContent = '💾 Save'; saveBtn.disabled = false; }, 2000);
-}
 
 // ══════════════════════════════════════════════════════════════════════
 // Practice Navigation
 // ══════════════════════════════════════════════════════════════════════
 let _practiceLoaded = false;
 
-function launchGame() {
-  const homePage = document.getElementById('page-home');
-  homePage.classList.add('transitioning');
-  $homeBoard.classList.remove('spinning');
-  $homeBoard.classList.add('launch-practice');
+let _gameChecked = false;
+
+async function launchGame() {
+  if (!socket || !socket.connected) {
+    const m = document.getElementById('offline-modal');
+    if (m) {
+      m.querySelector('p').innerHTML =
+        'Cannot start game mode — the server is not connected.<br>Start the server and try again.';
+      m.style.display = 'flex';
+    }
+    return;
+  }
+
+  // Skip system-check overlay on subsequent launches this session
+  if (_gameChecked) {
+    const homePage = document.getElementById('page-home');
+    homePage.classList.add('transitioning');
+    $homeBoard.classList.remove('spinning');
+    $homeBoard.classList.add('launch-practice');
+    setTimeout(() => { showPage('game-select'); }, 700);
+    return;
+  }
+
+  // Show game-loading overlay, hide home
+  const overlay = document.getElementById('game-loading');
+  overlay.classList.remove('fade-out');
+  overlay.style.display = 'flex';
+  document.getElementById('page-home').classList.remove('active');
+
+  // Reset all steps
+  const steps = ['gs-connection', 'gs-cameras', 'gs-calibration', 'gs-profile', 'gs-detection'];
+  steps.forEach(id => {
+    const el = document.getElementById(id);
+    el.className = 'loading-step';
+    el.querySelector('.ls-icon').textContent = '⏳';
+  });
+  const statusEl = document.getElementById('game-loading-status');
+
+  function setStep(id, state, icon) {
+    const el = document.getElementById(id);
+    el.className = 'loading-step ' + state;
+    el.querySelector('.ls-icon').textContent = icon;
+  }
+
+  try {
+    // 1. Connection
+    setStep('gs-connection', 'active', '🔄');
+    statusEl.textContent = 'Checking server connection…';
+    await new Promise(r => setTimeout(r, 300));
+    if (socket && socket.connected) {
+      setStep('gs-connection', 'done', '✓');
+    } else {
+      setStep('gs-connection', 'warn', '✗');
+      statusEl.textContent = 'Connection failed';
+      await new Promise(r => setTimeout(r, 2000));
+      overlay.classList.add('fade-out');
+      setTimeout(() => { overlay.style.display = 'none'; showPage('home'); }, 500);
+      return;
+    }
+
+    // 2. Cameras
+    setStep('gs-cameras', 'active', '🔄');
+    statusEl.textContent = 'Checking cameras…';
+    let camCount = 0;
+    try {
+      const camRes = await fetch('/api/status');
+      const camData = await camRes.json();
+      camCount = camData.num_cameras || 0;
+      const states = camData.cam_states || {};
+      const activeCams = Object.values(states).filter(c => c.active).length;
+      if (activeCams > 0) camCount = activeCams;
+    } catch (e) {}
+    setStep('gs-cameras', camCount > 0 ? 'done' : 'warn', camCount > 0 ? '✓' : '⚠');
+
+    // 3. Calibration
+    setStep('gs-calibration', 'active', '🔄');
+    statusEl.textContent = 'Verifying calibration…';
+    await new Promise(r => setTimeout(r, 400));
+    let calCount = 0;
+    for (let i = 0; i < 3; i++) {
+      try {
+        const r = await fetch(`/api/cal/info/${i}`);
+        const d = await r.json();
+        if (d.calibrated) calCount++;
+      } catch (e) {}
+    }
+    setStep('gs-calibration', calCount === 3 ? 'done' : 'warn', calCount === 3 ? '✓' : '⚠');
+
+    // 4. Board profile
+    setStep('gs-profile', 'active', '🔄');
+    statusEl.textContent = 'Loading board profile…';
+    await new Promise(r => setTimeout(r, 300));
+    try {
+      const pRes = await fetch('/api/board/status');
+      const pData = await pRes.json();
+      setStep('gs-profile', pData.registered ? 'done' : 'warn', pData.registered ? '✓' : '⚠');
+    } catch (e) { setStep('gs-profile', 'warn', '⚠'); }
+
+    // 5. Detection engine
+    setStep('gs-detection', 'active', '🔄');
+    statusEl.textContent = 'Starting detection engine…';
+    await new Promise(r => setTimeout(r, 500));
+    setStep('gs-detection', 'done', '✓');
+
+    statusEl.textContent = 'Ready!';
+    _gameChecked = true;
+    await new Promise(r => setTimeout(r, 600));
+
+  } catch (err) {
+    statusEl.textContent = 'Error: ' + err.message;
+    await new Promise(r => setTimeout(r, 2000));
+  }
+
+  overlay.classList.add('fade-out');
   setTimeout(() => {
+    overlay.style.display = 'none';
     showPage('game-select');
-  }, 700);
+  }, 500);
+}
+
+
+function openStats() {
+  if (!socket || !socket.connected) {
+    const m = document.getElementById('offline-modal');
+    if (m) {
+      m.querySelector('p').innerHTML =
+        'Cannot view stats — the server is not connected.<br>Start the server and try again.';
+      m.style.display = 'flex';
+    }
+    return;
+  }
+  showPage('stats');
 }
 
 async function launchPractice() {
+
   if (!socket || !socket.connected) {
     addLog('⚠ Cannot start practice — system is offline');
     const m = document.getElementById('offline-modal');
@@ -990,7 +1083,7 @@ document.addEventListener('keydown', (e) => {
       _highlightHomeBtn(_homeFocus);
     } else if (e.key === 'Enter' && _homeFocus >= 0) {
       e.preventDefault();
-      const actions = [launchCalibration, launchPractice, launchGame, () => showPage('stats'), () => showPage('settings')];
+      const actions = [launchCalibration, launchPractice, launchGame, openStats, () => showPage('settings')];
       actions[_homeFocus]();
     }
     // Letter shortcuts (existing)
@@ -998,7 +1091,7 @@ document.addEventListener('keydown', (e) => {
     if (e.key === 'p' || e.key === 'P') launchPractice();
     if (e.key === 's' || e.key === 'S') showPage('settings');
     if (e.key === 'g' || e.key === 'G') launchGame();
-    if (e.key === 't' || e.key === 'T') showPage('stats');
+    if (e.key === 't' || e.key === 'T') openStats();
     return;
   }
 
@@ -1104,7 +1197,17 @@ function connectSocket() {
     // If user is outside home, show toast and redirect back
     if (currentPage !== 'home') {
       const toast = document.getElementById('offline-toast');
-      if (toast) { toast.style.display = 'flex'; }
+      const toastMsg = document.getElementById('offline-toast-msg');
+      if (toast) {
+        if (currentPage === 'game' || currentPage === 'game-select') {
+          if (toastMsg) toastMsg.textContent = 'Server disconnected — game mode ended. Returning to home…';
+        } else if (currentPage === 'stats') {
+          if (toastMsg) toastMsg.textContent = 'Server disconnected — returning to home…';
+        } else {
+          if (toastMsg) toastMsg.textContent = 'Server disconnected — returning to home…';
+        }
+        toast.style.display = 'flex';
+      }
       setTimeout(() => {
         // Reset practice state
         if (practiceActive) {
@@ -1115,30 +1218,37 @@ function connectSocket() {
           const dbg = document.getElementById('toggle-debug');
           if (dbg) { dbg.checked = false; dbg.disabled = true; toggleDebugCams(); }
         }
-        // Reset game state
+        // Reset game state — requires re-check on next launch
         if (_gameMode) { _gameMode = null; }
+        _gameChecked = false;
         setStatus('idle', 'Idle');
         showPage('home');
         if (toast) { toast.style.display = 'none'; }
       }, 2500);
     }
   });
+
   socket.on('dart_scored', onDartScored);
   socket.on('cam_status', onCamStatus);
+  socket.on('srv_status', (data) => {
+    // Server-side phase updates (Opening cameras…, Cameras ready, etc.)
+    // Only update if not in an active practice/game detecting state
+    if (!practiceActive && currentPage !== 'game') {
+      const type = data.type || 'idle';
+      const msg  = data.message || '';
+      if (type === 'loading') setStatus('waiting', msg);
+      else if (type === 'ready') setStatus('ready', msg);
+      else setStatus('idle', msg);
+    }
+  });
+
   socket.on('state', onState);
   socket.on('takeout', onTakeout);
   socket.on('server_log', (data) => appendDebugLog(data.msg, data.ts));
-  socket.on('annotation_count', (data) => {
-    const el = document.getElementById('ann-count');
-    if (el) el.textContent = data.count || 0;
-  });
   socket.on('cameras_state', (data) => {
     if (data.open && practiceActive) {
       setStatus('ready', 'Waiting for Throw');
     }
-  });
-  socket.on('annotation_prompt', (data) => {
-    openAnnotationModal(data);
   });
 
   // ── Game mode events
@@ -1147,7 +1257,21 @@ function connectSocket() {
   socket.on('game_state', onGameState);
   socket.on('game_over', onGameOver);
   socket.on('stats_data', onStatsData);
+
+  // Clear dart dots from board when turn takeout is confirmed
+  socket.on('clear_board_dots', () => {
+    ['practice-board-dots', 'bullseye-board-dots', 'game-board-dots'].forEach(id => {
+      const g = document.getElementById(id);
+      if (g) g.innerHTML = '';
+    });
+    // Clear the Remove Darts banner in the game turn info
+    const turnInfo = document.getElementById('game-turn-info');
+    if (turnInfo) turnInfo.innerHTML = '';
+    window._awaitingTakeoutGame = false;
+    setStatus('ready', 'Waiting for Throw');
+  });
   socket.on('awaiting_takeout', (data) => {
+    window._awaitingTakeoutGame = true;
     const prompt = document.getElementById('bullseye-prompt');
     if (prompt) {
       prompt.innerHTML = '🎯 Remove darts from the board';
@@ -1173,11 +1297,35 @@ function connectSocket() {
 
   // Between-turn takeout: show prompt in game turn info area
   socket.on('turn_takeout', (data) => {
+    window._awaitingTakeoutGame = true;
     const turnInfo = document.getElementById('game-turn-info');
     if (turnInfo) {
       turnInfo.innerHTML = '<span style="color:var(--yellow);font-size:18px;">🎯 Remove darts from the board!</span>';
     }
     setStatus('takeout', 'Remove Darts');
+  });
+
+  // Practice 3-throw takeout events
+  socket.on('practice_awaiting_takeout', (data) => {
+    const banner = document.getElementById('practice-takeout-banner');
+    if (banner) banner.style.display = 'flex';
+    setStatus('takeout', 'Remove Darts — 3 Thrown');
+    addLog('[PRACTICE] 3 darts thrown — remove from board');
+  });
+
+  socket.on('practice_reset', () => {
+    const banner = document.getElementById('practice-takeout-banner');
+    if (banner) banner.style.display = 'none';
+    resetTurn();
+    setStatus('ready', 'Board Reset — Throw Again');
+    addLog('[PRACTICE] Board auto-reset after takeout');
+    const side = document.querySelector('.prac-score-side');
+    if (side) {
+      side.classList.remove('reset-flash');
+      void side.offsetWidth;
+      side.classList.add('reset-flash');
+      setTimeout(() => side.classList.remove('reset-flash'), 700);
+    }
   });
 }
 
@@ -1199,7 +1347,14 @@ function onDartScored(data) {
   addHistoryRow(label, score);
   placeDot(x_mm, y_mm);
   setStatus('scored', label + ' = ' + score);
-  setTimeout(() => { setStatus('ready', 'Waiting for Throw'); }, 2000);
+  setTimeout(() => {
+    // Don't override status if in game takeout wait OR practice banner visible
+    if (window._awaitingTakeoutGame) return;
+    const banner = document.getElementById('practice-takeout-banner');
+    if (!banner || banner.style.display === 'none' || banner.style.display === '') {
+      setStatus('ready', 'Waiting for Throw');
+    }
+  }, 2000);
   addLog(`[SCORE] ${label} = ${score} pts (${x_mm.toFixed(1)}, ${y_mm.toFixed(1)})mm`);
 
   // Update debug panel per-camera info
@@ -1209,6 +1364,8 @@ function onDartScored(data) {
 function onCamStatus(data) { updateCamDots(data); }
 function onState(data) {
   const s = data.state || '';
+  // Skip status overwrite while we're waiting for takeout (game/bullseye/turn)
+  if (window._awaitingTakeoutGame) return;
   // Only update the indicator when detection is active (practice started or game mode)
   if (!practiceActive && currentPage !== 'game') return;
   if (s === 'WAIT') setStatus('ready', 'Waiting for Throw');
@@ -1228,8 +1385,6 @@ function onTakeout() {
   setTimeout(() => { setStatus('ready', 'Waiting for Throw'); }, 2000);
 }
 
-// ══════════════════════════════════════════════════════════════════════
-// Practice Navigation
 // ══════════════════════════════════════════════════════════════════════
 
 function leavePractice() {
@@ -1427,7 +1582,6 @@ function saveSettings() {
     standby_time: document.getElementById('set-standby').value,
     triangle_k_factor: parseFloat(document.getElementById('set-triangle-k').value),
     approximate_distortion: document.getElementById('set-approx-dist').checked,
-    annotation_mode: document.getElementById('set-annotation').checked,
     blur_kernel: parseInt(document.getElementById('set-blur').value),
     binary_thresh: parseInt(document.getElementById('set-bin-thresh').value),
   };
@@ -1545,21 +1699,7 @@ function stopSysStats() {
   if (_sysStatsInterval) { clearInterval(_sysStatsInterval); _sysStatsInterval = null; }
 }
 
-async function updateAnnotationCount() {
-  try {
-    const res = await fetch('/api/status');
-    const data = await res.json();
-    const el = document.getElementById('ann-count');
-    if (el) el.textContent = data.annotation_count || 0;
-  } catch (e) { }
-  // Also fetch board annotation count
-  try {
-    const res = await fetch('/api/board-annotate/count');
-    const data = await res.json();
-    const el = document.getElementById('board-ann-count');
-    if (el) el.textContent = data.count || 0;
-  } catch (e) { }
-}
+
 // ══════════════════════════════════════════════════════════════════════
 // Board Profile Management
 // ══════════════════════════════════════════════════════════════════════
@@ -1734,9 +1874,6 @@ function toggleDebugCams() {
     switchDebugCam(_debugActiveCam);
   } else {
     document.getElementById('debug-cam-view').src = '';
-    cancelTipMark();
-    const mkBtn = document.getElementById('btn-debug-mark');
-    if (mkBtn) mkBtn.style.display = 'none';
   }
 }
 
@@ -1757,7 +1894,6 @@ function switchDebugCam(camId) {
 
 function updateDebugCamInfo(details) {
   if (!_debugCamsActive) return;
-  let hasRejected = false;
   details.forEach(d => {
     const el = document.getElementById('debug-info-' + d.cam);
     if (!el) return;
@@ -1771,180 +1907,10 @@ function updateDebugCamInfo(details) {
     } else {
       el.innerHTML = `<b>${d.label}</b> (${d.score}pts) · ${d.method}<br>(${d.x_mm}, ${d.y_mm})mm · r=${d.r_mm} · area=${d.area} · <i>rejected</i>`;
       el.classList.add('rejected');
-      hasRejected = true;
-    }
-  });
-  // Show Mark Tip button when there's data to review
-  const mkBtn = document.getElementById('btn-debug-mark');
-  if (mkBtn) mkBtn.style.display = '';
-}
-
-// ── Tip Mark Annotation (click-to-mark inaccuracy) ──────────────────
-
-let _tipMarkMode = false;
-let _markedTip = null;       // {x, y} in image-native coords
-
-function enterTipMarkMode() {
-  _tipMarkMode = true;
-  _markedTip = null;
-  const overlay = document.getElementById('debug-cam-overlay');
-  overlay.style.pointerEvents = 'auto';
-  overlay.style.cursor = 'crosshair';
-  // Size canvas to match image
-  const img = document.getElementById('debug-cam-view');
-  overlay.width = img.naturalWidth || img.width;
-  overlay.height = img.naturalHeight || img.height;
-  const ctx = overlay.getContext('2d');
-  ctx.clearRect(0, 0, overlay.width, overlay.height);
-  // Show hint + cancel, hide mark button
-  document.getElementById('debug-tip-hint').style.display = '';
-  document.getElementById('btn-debug-mark').style.display = 'none';
-  document.getElementById('btn-debug-cancel').style.display = '';
-  document.getElementById('btn-debug-save').style.display = 'none';
-  // Listen for clicks
-  overlay.onclick = onDebugOverlayClick;
-}
-
-function cancelTipMark() {
-  _tipMarkMode = false;
-  _markedTip = null;
-  const overlay = document.getElementById('debug-cam-overlay');
-  overlay.style.pointerEvents = 'none';
-  overlay.style.cursor = '';
-  overlay.onclick = null;
-  const ctx = overlay.getContext('2d');
-  ctx.clearRect(0, 0, overlay.width, overlay.height);
-  document.getElementById('debug-tip-hint').style.display = 'none';
-  document.getElementById('btn-debug-mark').style.display = '';
-  document.getElementById('btn-debug-cancel').style.display = 'none';
-  document.getElementById('btn-debug-save').style.display = 'none';
-}
-
-function onDebugOverlayClick(e) {
-  const overlay = document.getElementById('debug-cam-overlay');
-  const img = document.getElementById('debug-cam-view');
-  const rect = overlay.getBoundingClientRect();
-  const natW = img.naturalWidth || overlay.width;
-  const natH = img.naturalHeight || overlay.height;
-
-  // Account for object-fit:contain letterboxing — the image may not
-  // fill the entire element, leaving black bars on sides or top/bottom.
-  const elemW = rect.width;
-  const elemH = rect.height;
-  const imgAspect = natW / natH;
-  const elemAspect = elemW / elemH;
-  let rendW, rendH, offX, offY;
-  if (imgAspect > elemAspect) {
-    // Image wider than element → bars top/bottom
-    rendW = elemW;
-    rendH = elemW / imgAspect;
-    offX = 0;
-    offY = (elemH - rendH) / 2;
-  } else {
-    // Image taller than element → bars left/right
-    rendH = elemH;
-    rendW = elemH * imgAspect;
-    offX = (elemW - rendW) / 2;
-    offY = 0;
-  }
-  // Convert click position to image-native pixel coordinates
-  const clickX = e.clientX - rect.left;
-  const clickY = e.clientY - rect.top;
-  const x = ((clickX - offX) / rendW) * natW;
-  const y = ((clickY - offY) / rendH) * natH;
-  // Clamp to image bounds
-  if (x < 0 || x >= natW || y < 0 || y >= natH) return;
-  _markedTip = { x: Math.round(x), y: Math.round(y) };
-  // Draw crosshair + dot
-  const ctx = overlay.getContext('2d');
-  ctx.clearRect(0, 0, overlay.width, overlay.height);
-  // Red crosshair
-  ctx.strokeStyle = '#ff3333';
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  ctx.moveTo(x - 15, y); ctx.lineTo(x + 15, y);
-  ctx.moveTo(x, y - 15); ctx.lineTo(x, y + 15);
-  ctx.stroke();
-  // Green dot at center
-  ctx.fillStyle = '#4ade80';
-  ctx.beginPath();
-  ctx.arc(x, y, 4, 0, Math.PI * 2);
-  ctx.fill();
-  // Coordinate label
-  ctx.fillStyle = '#fff';
-  ctx.font = '12px monospace';
-  ctx.fillText(`(${_markedTip.x}, ${_markedTip.y})`, x + 10, y - 10);
-  // Show save button
-  document.getElementById('btn-debug-save').style.display = '';
-}
-
-async function saveTipAnnotation() {
-  const btn = document.getElementById('btn-debug-save');
-  btn.textContent = '⏳ Saving…';
-  btn.disabled = true;
-  try {
-    const body = {
-      cam_id: _debugActiveCam,
-      tip_x: _markedTip ? _markedTip.x : null,
-      tip_y: _markedTip ? _markedTip.y : null,
-    };
-    const res = await fetch('/api/debug/screenshot', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
-    const data = await res.json();
-    if (data.ok) {
-      btn.textContent = '✓ Saved!';
-      btn.style.borderColor = '#4ade80';
-      btn.style.color = '#4ade80';
-      addLog(`[DBG] Inaccuracy saved → ${data.path} (${data.files} files)`);
-    } else {
-      btn.textContent = '✗ Failed';
-    }
-  } catch (e) {
-    btn.textContent = '✗ Error';
-  }
-  setTimeout(() => {
-    cancelTipMark();
-    btn.textContent = '💾 Save';
-    btn.style.borderColor = '';
-    btn.style.color = '';
-    btn.disabled = false;
-  }, 1500);
-}
-
-// ── Annotation toggle – immediately tell the server when toggled ────
-document.getElementById('set-annotation').addEventListener('change', function () {
-  if (socket && socket.connected) {
-    socket.emit('update_settings', { annotation_mode: this.checked });
-    addLog('Annotation mode: ' + (this.checked ? 'ON' : 'OFF'));
-  }
-});
-
-// YOLO-Only toggle – immediately tell server
-document.getElementById('set-yolo-only').addEventListener('change', function () {
-  if (socket && socket.connected) {
-    socket.emit('update_settings', { yolo_only: this.checked });
-    addLog('YOLO-Only mode: ' + (this.checked ? 'ON (model only)' : 'OFF (math + YOLO)'));
-  }
-  toggleTraditionalCVSettings(!this.checked);
-});
-
-// Grey out traditional CV settings when YOLO-Only is active
-function toggleTraditionalCVSettings(enabled) {
-  const ids = ['set-tip-offset', 'set-dart-min', 'set-dart-max', 'set-stable', 'set-speed'];
-  ids.forEach(id => {
-    const el = document.getElementById(id);
-    if (el) {
-      el.disabled = !enabled;
-      const row = el.closest('.setting-row');
-      if (row) row.style.opacity = enabled ? '1' : '0.35';
     }
   });
 }
-// Apply on page load in case browser auto-fills the toggle
-toggleTraditionalCVSettings(!document.getElementById('set-yolo-only').checked);
+
 
 // Load settings from server and sync UI inputs
 async function loadServerSettings() {
@@ -1959,12 +1925,6 @@ async function loadServerSettings() {
       const calRes = document.getElementById('cal-resolution');
       if (calRes && [...calRes.options].some(o => o.value === s.resolution)) calRes.value = s.resolution;
     }
-    // YOLO-Only toggle
-    const yoloEl = document.getElementById('set-yolo-only');
-    if (yoloEl) {
-      yoloEl.checked = !!s.yolo_only;
-      toggleTraditionalCVSettings(!yoloEl.checked);
-    }
     // Detection inputs
     const map = {
       'set-tip-offset': s.tip_offset_px,
@@ -1978,204 +1938,11 @@ async function loadServerSettings() {
       const el = document.getElementById(id);
       if (el) {
         el.value = val;
-        // Update range display if present
-        const disp = el.closest('.setting-row')?.querySelector('.range-value');
+        const disp = el.closest('.setting-row')?.querySelector('.range-val');
         if (disp) disp.textContent = val;
       }
     }
   } catch (e) { console.warn('Failed to load server settings', e); }
-}
-
-// ══════════════════════════════════════════════════════════════════════
-// Annotation Tool
-// ══════════════════════════════════════════════════════════════════════
-
-const ANN_DART_COLORS = ['#ef4444', '#eab308', '#3b82f6'];
-let annCurrentDart = 0;          // 0-indexed
-let annClicks = {};              // { camIdx: { dartNum: {x, y} } }
-let annUndoStack = [];           // [{cam, dart}]
-let annFrameSizes = [];          // [{w,h}, ...]
-let annPanelElems = [];          // DOM elements
-
-function openAnnotationModal(data) {
-  const overlay = document.getElementById('ann-overlay');
-  const panelsDiv = document.getElementById('ann-panels');
-  document.getElementById('ann-cv-label').textContent =
-    `${data.cv_label} = ${data.cv_score}`;
-  document.getElementById('ann-actual-score').value = '';
-
-  // Reset state
-  annCurrentDart = 0;
-  annClicks = {};
-  annUndoStack = [];
-  annFrameSizes = data.frame_sizes || [];
-  annPanelElems = [];
-
-  // Reset dart selector
-  selectAnnDart(0);
-
-  // Build camera panels
-  panelsDiv.innerHTML = '';
-  const nCams = data.frames.length;
-  const panelW = Math.floor((window.innerWidth * 0.92 - (nCams + 1) * 10) / nCams);
-
-  data.frames.forEach((b64, i) => {
-    if (!b64) return;
-    annClicks[i] = {};
-
-    const panel = document.createElement('div');
-    panel.className = 'ann-panel';
-    panel.style.width = panelW + 'px';
-    panel.dataset.cam = i;
-
-    const img = document.createElement('img');
-    img.src = 'data:image/jpeg;base64,' + b64;
-    panel.appendChild(img);
-
-    // Cam label
-    const label = document.createElement('div');
-    label.className = 'ann-panel-label';
-    label.textContent = 'Cam ' + i;
-    panel.appendChild(label);
-
-    // CV tip marker (green circle)
-    if (data.cv_tips && data.cv_tips[i]) {
-      const sz = annFrameSizes[i];
-      if (sz) {
-        const panelH = panelW * sz[1] / sz[0]; // actual displayed height
-        const sx = panelW / sz[0];
-        const sy = panelH / sz[1];
-        const cvx = data.cv_tips[i][0] * sx;
-        const cvy = data.cv_tips[i][1] * sy;
-
-        const cvMarker = document.createElement('div');
-        cvMarker.className = 'ann-cv-marker';
-        cvMarker.style.left = cvx + 'px';
-        cvMarker.style.top = cvy + 'px';
-        const cvLabel = document.createElement('span');
-        cvLabel.className = 'ann-cv-label';
-        cvLabel.textContent = 'CV';
-        cvMarker.appendChild(cvLabel);
-        panel.appendChild(cvMarker);
-      }
-    }
-
-    // Click handler
-    panel.addEventListener('click', (e) => {
-      const rect = panel.getBoundingClientRect();
-      const px = e.clientX - rect.left;
-      const py = e.clientY - rect.top;
-      placeAnnMarker(i, annCurrentDart, px, py, panel);
-    });
-
-    panelsDiv.appendChild(panel);
-    annPanelElems.push(panel);
-  });
-
-  overlay.style.display = 'flex';
-  updateAnnClickCount();
-}
-
-function placeAnnMarker(camIdx, dartNum, px, py, panel) {
-  // Remove existing marker for this cam+dart
-  const existId = `ann-m-${camIdx}-${dartNum}`;
-  const old = document.getElementById(existId);
-  if (old) old.remove();
-
-  // Store click (in display coords)
-  if (!annClicks[camIdx]) annClicks[camIdx] = {};
-  annClicks[camIdx][dartNum] = { x: px, y: py };
-  annUndoStack.push({ cam: camIdx, dart: dartNum });
-
-  // Create marker
-  const marker = document.createElement('div');
-  marker.className = 'ann-marker';
-  marker.id = existId;
-  marker.style.left = px + 'px';
-  marker.style.top = py + 'px';
-  marker.style.color = ANN_DART_COLORS[dartNum % 3];
-
-  const dot = document.createElement('div');
-  dot.className = 'ann-marker-dot';
-  marker.appendChild(dot);
-
-  const lbl = document.createElement('span');
-  lbl.className = 'ann-marker-label';
-  lbl.textContent = 'D' + (dartNum + 1);
-  marker.appendChild(lbl);
-
-  panel.appendChild(marker);
-  updateAnnClickCount();
-}
-
-function selectAnnDart(n) {
-  annCurrentDart = n;
-  document.querySelectorAll('.ann-dart-btn').forEach(b => {
-    b.classList.toggle('active', parseInt(b.dataset.dart) === n);
-  });
-}
-
-function undoAnnClick() {
-  if (annUndoStack.length === 0) return;
-  const last = annUndoStack.pop();
-  const el = document.getElementById(`ann-m-${last.cam}-${last.dart}`);
-  if (el) el.remove();
-  if (annClicks[last.cam]) delete annClicks[last.cam][last.dart];
-  updateAnnClickCount();
-}
-
-function updateAnnClickCount() {
-  let total = 0;
-  for (const cam in annClicks) {
-    total += Object.keys(annClicks[cam]).length;
-  }
-  const el = document.getElementById('ann-click-count');
-  if (el) el.textContent = total + ' tip' + (total !== 1 ? 's' : '') + ' placed';
-}
-
-function saveAnnotation() {
-  // Convert display coords → original image coords
-  const tips = {};
-  let maxDart = 0;
-
-  for (const camStr in annClicks) {
-    const cam = parseInt(camStr);
-    const panel = annPanelElems.find(p => parseInt(p.dataset.cam) === cam);
-    if (!panel) continue;
-
-    const displayW = panel.clientWidth;
-    const displayH = panel.clientHeight;
-    const sz = annFrameSizes[cam];
-    if (!sz) continue;
-
-    const sx = sz[0] / displayW;
-    const sy = sz[1] / displayH;
-
-    tips[camStr] = {};
-    for (const dartStr in annClicks[camStr]) {
-      const click = annClicks[camStr][dartStr];
-      tips[camStr][dartStr] = [
-        Math.round(click.x * sx * 10) / 10,
-        Math.round(click.y * sy * 10) / 10,
-      ];
-      maxDart = Math.max(maxDart, parseInt(dartStr) + 1);
-    }
-  }
-
-  const actual = document.getElementById('ann-actual-score').value.trim();
-
-  socket.emit('save_annotation', {
-    tips: tips,
-    actual_score: actual,
-    num_darts: maxDart || 1,
-  });
-
-  document.getElementById('ann-overlay').style.display = 'none';
-}
-
-function skipAnnotation() {
-  socket.emit('skip_annotation');
-  document.getElementById('ann-overlay').style.display = 'none';
 }
 
 // ══════════════════════════════════════════════════════════════════════
@@ -2256,6 +2023,7 @@ function endGame() {
 }
 
 function skipTakeout() {
+  window._awaitingTakeoutGame = false;
   if (socket) socket.emit('skip_takeout');
 }
 
@@ -2361,28 +2129,28 @@ let _prevGamePlayer = null;
 function onGameState(state) {
   if (state.error) { console.error('Game error:', state.error); return; }
   if (state.type === 'idle') return;
+  // Only clear the takeout guard when this is a REAL game state (not a held-back
+  // awaiting_takeout state). Held-back states keep the guard so onState can't
+  // overwrite the Remove Darts status.
+  if (!state.awaiting_takeout) {
+    window._awaitingTakeoutGame = false;
+  }
 
   const $active = document.getElementById('game-active');
   if ($active.style.display === 'none') {
     document.getElementById('bullseye-phase').style.display = 'none';
     $active.style.display = '';
     _prevGamePlayer = state.current_player;
+    // Clear any leftover "Press Continue" status from the bullseye takeout
+    setStatus('ready', 'Waiting for Throw');
   }
 
-  // Clear dart dots and show "Remove darts" when turn switches
-  if (state.darts_this_turn && state.darts_this_turn.length === 0) {
+  // Clear dart dots only when a genuine new player turn starts (NOT for held-back
+  // awaiting_takeout states — those still have the old player's darts on the board).
+  // clear_board_dots event handles dot removal after physical takeout.
+  if (!state.awaiting_takeout && state.darts_this_turn && state.darts_this_turn.length === 0) {
     const dotsG = document.getElementById('game-board-dots');
     if (dotsG) dotsG.innerHTML = '';
-
-    // Show "Remove darts" prompt if the player changed (turn just ended)
-    if (_prevGamePlayer !== null && _prevGamePlayer !== state.current_player && !state.winner) {
-      const turnInfo = document.getElementById('game-turn-info');
-      if (turnInfo) {
-        turnInfo.innerHTML = '<span style="color:var(--yellow);font-size:20px;">🎯 Remove darts from the board!</span>';
-      }
-      setStatus('takeout', 'Remove Darts');
-      setTimeout(() => { setStatus('ready', 'Waiting for Throw'); }, 4000);
-    }
   }
   _prevGamePlayer = state.current_player;
 
@@ -2421,7 +2189,8 @@ function onGameOver(state) {
 function renderX01State(s) {
   document.getElementById('game-title').textContent = s.starting_score + ' Game';
   document.getElementById('cricket-grid').style.display = 'none';
-  document.getElementById('countup-rounds').style.display = 'none';
+  document.getElementById('game-countup-rounds').style.display = 'none';
+
 
   // Scores
   document.getElementById('pp1-score').textContent = s.scores[0];
@@ -2463,7 +2232,7 @@ const CRICKET_DISPLAY = { 15: '15', 16: '16', 17: '17', 18: '18', 19: '19', 20: 
 function renderCricketState(s) {
   document.getElementById('game-title').textContent = 'Cricket';
   document.getElementById('cricket-grid').style.display = '';
-  document.getElementById('countup-rounds').style.display = 'none';
+  document.getElementById('game-countup-rounds').style.display = 'none';
 
   // Points
   document.getElementById('pp1-score').textContent = s.points[0];
@@ -2515,7 +2284,7 @@ function cricketMarksDisplay(count) {
 function renderCountUpState(s) {
   document.getElementById('game-title').textContent = 'Count Up (' + s.total_rounds + ' rounds)';
   document.getElementById('cricket-grid').style.display = 'none';
-  document.getElementById('countup-rounds').style.display = '';
+  document.getElementById('game-countup-rounds').style.display = '';
 
   // Scores
   document.getElementById('pp1-score').textContent = s.scores[0];
@@ -2528,7 +2297,7 @@ function renderCountUpState(s) {
   document.getElementById('player-panel-2').classList.toggle('active-turn', s.current_player === 2);
 
   // Round grid
-  const roundsEl = document.getElementById('countup-rounds');
+  const roundsEl = document.getElementById('game-countup-rounds');
   let html = '<div class="cu-header"><span>Rd</span><span>P1</span><span>P2</span></div>';
   for (let i = 0; i < s.total_rounds; i++) {
     const p1r = s.round_scores[0][i];
