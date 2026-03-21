@@ -642,7 +642,7 @@ async function autoCalibrate() {
  * direction: -1 = counter-clockwise (left), +1 = clockwise (right)
  */
 function calRotatePoints(direction) {
-  if (calPoints.length !== 4) return;
+  if (calPoints.length !== 4 && calPoints.length !== 8) return;
 
   // Board space setup (same as drawPerspectiveWireframe)
   const BS = 500, bCx = BS / 2, bCy = BS / 2;
@@ -657,26 +657,31 @@ function calRotatePoints(direction) {
     };
   });
 
-  // Homography: board → camera
-  const camPts = calPoints.map(p => ({ x: p.x, y: p.y }));
-  const H = computeHomography(boardPts, camPts);
+  const outerCamPts = calPoints.slice(0, 4).map(p => ({ x: p.x, y: p.y }));
+  const H = computeHomography(boardPts, outerCamPts);
   if (!H) return;
 
   // Compute NEW board-space positions (shifted by one 18° segment)
   const shift = direction * BOARD_SECTOR_ANGLE;
-  const newBoardPts = BOARD_DST_WIRE_ANGLES.map(a => {
+  const newOuter = BOARD_DST_WIRE_ANGLES.map(a => {
     const rad = (a + shift) * Math.PI / 180;
-    return {
-      x: bCx + BOARD_RADII_MM.double_outer * sc * Math.cos(rad),
-      y: bCy - BOARD_RADII_MM.double_outer * sc * Math.sin(rad),
-    };
-  });
-
-  // Transform new board positions to camera space using existing H
-  calPoints = newBoardPts.map(bp => {
+    const bp = { x: bCx + BOARD_RADII_MM.double_outer * sc * Math.cos(rad), y: bCy - BOARD_RADII_MM.double_outer * sc * Math.sin(rad) };
     const cp = applyH(H, bp.x, bp.y);
     return { x: cp.x, y: cp.y };
   });
+
+  if (calPoints.length === 8) {
+    // Also rotate inner triple-ring pts by the same board-space shift
+    const newInner = BOARD_DST_WIRE_ANGLES.map(a => {
+      const rad = (a + shift) * Math.PI / 180;
+      const bp = { x: bCx + BOARD_RADII_MM.triple_outer * sc * Math.cos(rad), y: bCy - BOARD_RADII_MM.triple_outer * sc * Math.sin(rad) };
+      const cp = applyH(H, bp.x, bp.y);
+      return { x: cp.x, y: cp.y };
+    });
+    calPoints = [...newOuter, ...newInner];
+  } else {
+    calPoints = newOuter;
+  }
 
   calDraw();
 }
@@ -759,18 +764,9 @@ function drawPerspectiveWireframe(ctx) {
     };
   });
 
-  // In 8-pt mode: add the 4 triple-ring board points so all 8 pairs go into the homography
-  if (calPoints.length === 8) {
-    BOARD_DST_WIRE_ANGLES.forEach(a => {
-      const rad = a * Math.PI / 180;
-      boardPts.push({
-        x: bCx + BOARD_RADII_MM.triple_outer * sc * Math.cos(rad),
-        y: bCy - BOARD_RADII_MM.triple_outer * sc * Math.sin(rad),
-      });
-    });
-  }
-
-  const H = computeHomography(boardPts, calPoints.map(p => ({ x: p.x, y: p.y })));
+  // Always use only the outer 4 pts for perspective H
+  // (computeHomography implements the DLT with exactly 4 correspondence pairs)
+  const H = computeHomography(boardPts, calPoints.slice(0, 4).map(p => ({ x: p.x, y: p.y })));
   if (!H) return;
 
   function boardToCamera(angleDeg, rMM) {
