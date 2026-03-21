@@ -279,6 +279,37 @@ const CAL_LABELS = [
   'T20/T1', 'T6/T10', 'T3/T19', 'T11/T14',      // inner triple ring
 ];
 let calActivePoint = 0;  // which point zoom follows
+let calMode = 8;          // 4 = legacy outer-only, 8 = outer+inner (precise)
+
+// Update toolbar toggle + instruction hint to match calMode
+function calSyncModeUI() {
+  document.getElementById('btn-cal-4pt').classList.toggle('active', calMode === 4);
+  document.getElementById('btn-cal-8pt').classList.toggle('active', calMode === 8);
+  const nEl = document.getElementById('cal-hint-n');
+  const innerEl = document.getElementById('cal-hint-inner');
+  if (nEl) nEl.textContent = calMode === 8 ? '8 points' : '4 points';
+  if (innerEl) innerEl.style.display = calMode === 8 ? '' : 'none';
+}
+
+// Switch between 4-pt (legacy) and 8-pt (precise) modes
+function calSetMode(n) {
+  calMode = n;
+  calSyncModeUI();
+  if (!calImage) return;
+  const cx = calImage.width / 2, cy = calImage.height / 2;
+  const ro = Math.min(calImage.width, calImage.height) * 0.40;
+  const ri = ro * (107.0 / 170.0);
+  const angs = [81, 351, 261, 171].map(a => a * Math.PI / 180);
+  const outer = angs.map(a => ({ x: cx + ro * Math.cos(a), y: cy - ro * Math.sin(a) }));
+  if (n === 4) {
+    calPoints = outer;
+  } else {
+    const inner = angs.map(a => ({ x: cx + ri * Math.cos(a), y: cy - ri * Math.sin(a) }));
+    calPoints = [...outer, ...inner];
+  }
+  calActivePoint = 0;
+  calDraw();
+}
 
 async function launchCalibration() {
   showPage('calibration');
@@ -342,6 +373,8 @@ async function calCaptureFrame(retries = 5, keepPoints = false) {
           const sx = img.width / calW;
           const sy = img.height / calH;
           calPoints = info.src_points.map(p => ({ x: p[0] * sx, y: p[1] * sy }));
+          calMode = n;  // sync toggle to saved mode
+          calSyncModeUI();
         } else {
           // Default: 8-point layout
           const cx = img.width / 2, cy = img.height / 2;
@@ -355,6 +388,8 @@ async function calCaptureFrame(retries = 5, keepPoints = false) {
             // 4 triple ring (same angles, inner radius)
             ...angs.map(a => ({ x: cx + ri * Math.cos(a), y: cy - ri * Math.sin(a) })),
           ];
+          calMode = 8;
+          calSyncModeUI();
         }
       }
       // Sync resolution dropdown with actual frame size

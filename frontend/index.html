@@ -621,6 +621,13 @@
           <button class="btn btn-sm btn-secondary cal-cam-btn" onclick="calSelectCam(1)">Cam 2</button>
           <button class="btn btn-sm btn-secondary cal-cam-btn" onclick="calSelectCam(2)">Cam 3</button>
         </span>
+        <!-- Point mode toggle -->
+        <span class="cal-mode-toggle" title="Calibration point mode">
+          <button class="btn btn-sm btn-secondary cal-mode-btn active" id="btn-cal-4pt"
+            onclick="calSetMode(4)" title="Legacy: 4 outer double-ring points">4-pt</button>
+          <button class="btn btn-sm btn-secondary cal-mode-btn" id="btn-cal-8pt"
+            onclick="calSetMode(8)" title="Precise: 4 outer + 4 inner triple-ring points">8-pt</button>
+        </span>
         <button class="btn btn-sm btn-accent" id="btn-auto-cal" onclick="autoCalibrate()"
           title="Auto-detect dartboard">⚡ Auto</button>
         <button class="btn btn-sm btn-secondary" onclick="calRotatePoints(-1)"
@@ -661,12 +668,10 @@
         <span>System Offline — Connect to calibrate</span>
       </div>
     </div>
-    <div class="cal-instructions">
-      Drag 4 points to the <strong>outer double-ring wire intersections</strong>:
-      <strong style="color:#ff4444">●</strong> D20/D1 (top-right)
-      <strong style="color:#44ff44">●</strong> D6/D10 (bottom-right)
-      <strong style="color:#4488ff">●</strong> D3/D19 (bottom-left)
-      <strong style="color:#ffaa00">●</strong> D11/D14 (top-left)
+    <div class="cal-instructions" id="cal-hint">
+      Drag <strong id="cal-hint-n">8 points</strong> to the dartboard wire intersections:
+      <span id="cal-hint-outer"><strong style="color:#00d4ff">●</strong> D20/D1 <strong style="color:#00d4ff">●</strong> D6/D10 <strong style="color:#00d4ff">●</strong> D3/D19 <strong style="color:#00d4ff">●</strong> D11/D14</span>
+      <span id="cal-hint-inner">&nbsp;+&nbsp;<strong style="color:#ff8c00">●</strong> T20/T1 <strong style="color:#ff8c00">●</strong> T6/T10 <strong style="color:#ff8c00">●</strong> T3/T19 <strong style="color:#ff8c00">●</strong> T11/T14</span>
       &nbsp;|&nbsp; Arrow keys = nudge &nbsp;|&nbsp; Accept when aligned
     </div>
   </main>

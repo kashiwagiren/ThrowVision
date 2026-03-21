@@ -1300,6 +1300,27 @@ body {
   color: #fff;
 }
 
+.cal-mode-toggle {
+  display: flex;
+  gap: 2px;
+  margin-right: 8px;
+  background: rgba(255,255,255,0.05);
+  border-radius: 7px;
+  padding: 2px;
+}
+
+.cal-mode-btn {
+  border-radius: 5px !important;
+  font-size: 12px;
+  padding: 3px 9px;
+}
+
+.cal-mode-btn.active {
+  background: var(--accent) !important;
+  border-color: var(--accent) !important;
+  color: #fff;
+}
+
 /* ── Settings ──────────────────────────────────────────────── */
 #page-settings {
   padding: 0 clamp(28px, 5vw, 80px);
