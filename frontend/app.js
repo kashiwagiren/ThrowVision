@@ -781,6 +781,27 @@ function drawPerspectiveWireframe(ctx) {
     ctx.stroke();
   }
 
+  // In 8-pt mode: highlight the triple ring band in orange as an alignment
+  // reference for the 4 inner (orange) calibration points
+  if (calMode === 8) {
+    ctx.strokeStyle = 'rgba(255, 140, 0, 0.85)';
+    ctx.lineWidth = 2.5;
+    for (const rMM of [BOARD_RADII_MM.triple_inner, BOARD_RADII_MM.triple_outer]) {
+      ctx.beginPath();
+      for (let deg = 0; deg <= 360; deg += 3) {
+        const cp = boardToCamera(deg, rMM);
+        if (deg === 0) ctx.moveTo(cp.x, cp.y);
+        else ctx.lineTo(cp.x, cp.y);
+      }
+      ctx.closePath();
+      ctx.stroke();
+    }
+  }
+
+  // Restore cyan for sector wires
+  ctx.strokeStyle = 'rgba(0, 255, 255, 0.7)';
+  ctx.lineWidth = 1;
+
   // Sector wires
   const angles = boardSectorBoundaryAngles();
   for (const ang of angles) {
