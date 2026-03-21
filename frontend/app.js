@@ -610,7 +610,15 @@ async function autoCalibrate() {
     const data = await res.json();
     const np = data.n_points || (data.points && data.points.length);
     if (data.ok && data.points && (np === 4 || np === 8)) {
-      calPoints = data.points.map(p => ({ x: p[0], y: p[1] }));
+      if (calMode === 8 && np === 4 && calPoints.length === 8) {
+        // Auto detected outer ring only — update outer 4, keep existing inner 4 orange pts
+        const outer = data.points.map(p => ({ x: p[0], y: p[1] }));
+        calPoints = [...outer, ...calPoints.slice(4)];
+      } else {
+        calPoints = data.points.map(p => ({ x: p[0], y: p[1] }));
+        calMode = np;
+        calSyncModeUI();
+      }
       calActivePoint = 0;
       calDraw();
       addLog(`Auto-calibrate Cam ${calCamId + 1}: ${np} points detected (${data.method})`);
@@ -750,6 +758,17 @@ function drawPerspectiveWireframe(ctx) {
       y: bCy - BOARD_RADII_MM.double_outer * sc * Math.sin(rad),
     };
   });
+
+  // In 8-pt mode: add the 4 triple-ring board points so all 8 pairs go into the homography
+  if (calPoints.length === 8) {
+    BOARD_DST_WIRE_ANGLES.forEach(a => {
+      const rad = a * Math.PI / 180;
+      boardPts.push({
+        x: bCx + BOARD_RADII_MM.triple_outer * sc * Math.cos(rad),
+        y: bCy - BOARD_RADII_MM.triple_outer * sc * Math.sin(rad),
+      });
+    });
+  }
 
   const H = computeHomography(boardPts, calPoints.map(p => ({ x: p.x, y: p.y })));
   if (!H) return;
@@ -1869,7 +1888,7 @@ async function closeConfirmModal(confirmed) {
 let _warpPreviewTimer = null;
 
 function calUpdateWarpPreview() {
-  if (!calImage || calPoints.length !== 4) return;
+  if (!calImage || calPoints.length < 4) return;
   const pts = calPoints.map(p => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(',');
   const img = document.getElementById('cal-warp-img');
   if (img) img.src = `/api/cal/preview/${calCamId}?pts=${pts}&t=${Date.now()}`;
