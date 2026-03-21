@@ -1665,7 +1665,25 @@ async function lensPreview(camId) {
   const img  = document.getElementById('lens-preview-img');
   if (!wrap || !img) return;
   wrap.style.display = '';
-  img.src = `/api/lens/frame/${camId}?t=${Date.now()}`;
+
+  // Fetch so we can detect non-image error responses
+  try {
+    const res = await fetch(`/api/lens/frame/${camId}?t=${Date.now()}`);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: 'Camera unavailable' }));
+      wrap.innerHTML = `<p style="color:#f87171;padding:10px;font-size:13px">⚠ ${err.error || 'Camera not available'} — click <strong>Open Cameras</strong> above first</p>`;
+      return;
+    }
+    const blob = await res.blob();
+    img.src = URL.createObjectURL(blob);
+    // Make sure the img is visible (wrap may have been replaced)
+    if (!wrap.querySelector('img')) {
+      wrap.innerHTML = '';
+      wrap.appendChild(img);
+    }
+  } catch (e) {
+    wrap.innerHTML = `<p style="color:#f87171;padding:10px;font-size:13px">⚠ ${e.message}</p>`;
+  }
 }
 
 async function lensCapture(camId) {
@@ -1673,11 +1691,13 @@ async function lensCapture(camId) {
   if (btn) { btn.textContent = '⏳'; btn.disabled = true; }
   try {
     const d = await fetch(`/api/lens/capture/${camId}`, { method: 'POST' }).then(r => r.json());
-    if (d.ok) {
+    if (d.error) {
+      _lensSetStatus(camId, `⚠ ${d.error}`, false);
+    } else if (d.ok) {
       _lensSetStatus(camId, `${d.count}/20 frames`, null);
       addLog(`Lens Cam ${camId + 1}: frame ${d.count}/${d.need} captured`);
     } else {
-      _lensSetStatus(camId, 'No pattern found — adjust angle', false);
+      _lensSetStatus(camId, 'No pattern found — adjust angle or open cameras', false);
     }
     // Refresh preview to show corners
     lensPreview(camId);

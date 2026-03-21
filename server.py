@@ -452,14 +452,16 @@ def api_lens_status(cam_id):
 def api_lens_frame(cam_id):
     """Return a JPEG showing live corner detection (for UI preview)."""
     import cv2
+    import numpy as np
     if cam_id < 0 or cam_id >= len(_detectors):
         return {"error": "Invalid camera ID"}, 400
     det = _detectors[cam_id]
-    if not det.active:
-        return {"error": f"Camera {cam_id} not active"}, 503
-    frame = det._grab()
+    # Try last_frame first (works even if cameras aren't actively open)
+    frame = det.last_frame
+    if frame is None or np.mean(frame) <= 5:
+        frame = det._grab() if det.active else None
     if frame is None:
-        return {"error": "No frame"}, 500
+        return {"error": "No frame — open cameras first"}, 503
     # Use a LensCalibrator instance for detection preview (don't add to collection)
     lc = _lens_cals.setdefault(cam_id, LensCalibrator(cam_id))
     if not isinstance(lc, LensCalibrator):
@@ -473,14 +475,15 @@ def api_lens_frame(cam_id):
 @app.route("/api/lens/capture/<int:cam_id>", methods=["POST"])
 def api_lens_capture(cam_id):
     """Capture one frame, detect corners, add to collection if valid."""
+    import numpy as np
     if cam_id < 0 or cam_id >= len(_detectors):
         return {"error": "Invalid camera ID"}, 400
     det = _detectors[cam_id]
-    if not det.active:
-        return {"error": f"Camera {cam_id} not active"}, 503
-    frame = det._grab()
+    frame = det.last_frame
+    if frame is None or np.mean(frame) <= 5:
+        frame = det._grab() if det.active else None
     if frame is None:
-        return {"error": "No frame"}, 500
+        return jsonify({"ok": False, "error": "No frame — open cameras first", "count": 0, "need": 20})
     lc = _lens_cals.setdefault(cam_id, LensCalibrator(cam_id))
     if not isinstance(lc, LensCalibrator):
         lc = LensCalibrator(cam_id)
