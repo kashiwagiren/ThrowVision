@@ -165,7 +165,6 @@ function createMain() {
       splashWindow = null;
     }
     mainWindow.show();
-    if (isDev) mainWindow.webContents.openDevTools();
   });
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
