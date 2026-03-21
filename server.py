@@ -448,6 +448,41 @@ def api_lens_status(cam_id):
     })
 
 
+@app.route("/api/lens/autoframe/<int:cam_id>")
+def api_lens_autoframe(cam_id):
+    """Grab frame, auto-detect corners, capture if found. Returns JPEG + X-Lens-* headers."""
+    import cv2
+    import numpy as np
+    if cam_id < 0 or cam_id >= len(_detectors):
+        return {"error": "Invalid camera ID"}, 400
+    det = _detectors[cam_id]
+    frame = det.last_frame
+    if frame is None or np.mean(frame) <= 5:
+        frame = det._grab() if det.active else None
+    if frame is None:
+        return {"error": "No frame — open cameras first"}, 503
+
+    lc = _lens_cals.setdefault(cam_id, LensCalibrator(cam_id))
+    if not isinstance(lc, LensCalibrator):
+        lc = LensCalibrator(cam_id)
+        _lens_cals[cam_id] = lc
+
+    found, vis = lc.detect(frame)
+    count = lc.count
+    coverage = lc.coverage_pct()
+    if found and count < 20:
+        _, count = lc.add_frame(frame)
+        coverage = lc.coverage_pct()
+
+    _, buf = cv2.imencode('.jpg', vis, [cv2.IMWRITE_JPEG_QUALITY, 75])
+    resp = Response(buf.tobytes(), mimetype='image/jpeg')
+    resp.headers['X-Lens-Count']    = str(count)
+    resp.headers['X-Lens-Coverage'] = str(coverage)
+    resp.headers['X-Lens-Found']    = '1' if found else '0'
+    resp.headers['Access-Control-Expose-Headers'] = 'X-Lens-Count,X-Lens-Coverage,X-Lens-Found'
+    return resp
+
+
 @app.route("/api/lens/frame/<int:cam_id>")
 def api_lens_frame(cam_id):
     """Return a JPEG showing live corner detection (for UI preview)."""

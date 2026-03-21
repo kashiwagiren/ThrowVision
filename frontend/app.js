@@ -1726,10 +1726,101 @@ async function lensReset(camId) {
   addLog(`Lens Cam ${camId + 1}: reset`);
 }
 
-function lensRefreshAll() {
-  [0, 1, 2].forEach(lensRefreshStatus);
+async function lensRefreshAll() {
+  for (const camId of [0, 1, 2]) {
+    try {
+      const d = await fetch(`/api/lens/status/${camId}`).then(r => r.json());
+      const badge = document.getElementById(`lens-badge-${camId}`);
+      if (badge) {
+        if (d.calibrated) {
+          badge.textContent = `Cam ${camId + 1} ✓ ${d.rms}px`;
+          badge.className = 'lens-badge ok';
+        } else {
+          badge.textContent = `Cam ${camId + 1} —`;
+          badge.className = 'lens-badge';
+        }
+      }
+      // also keep old status spans if they exist
+      _lensSetStatus(camId, d.calibrated ? `✓ Calibrated RMS: ${d.rms} px` : 'Uncalibrated', d.calibrated || null);
+    } catch { /* ignore */ }
+  }
 }
 
+// ── Fullscreen Lens Calibration Modal ─────────────────────────────────
+let _lcmCam = 0;
+let _lcmTimer = null;
+
+function lensCalOpen(camId) {
+  _lcmCam = camId;
+  lensCalSetCam(camId);
+  const modal = document.getElementById('lens-cal-modal');
+  if (modal) modal.style.display = 'flex';
+  // Reset UI
+  _lcmUpdateProgress(0, 0);
+  lensReset(camId);
+  _lcmStartPoll();
+}
+
+function lensCalSetCam(camId) {
+  _lcmCam = camId;
+  document.querySelectorAll('.lcm-tab').forEach((t, i) => {
+    t.classList.toggle('active', i === camId);
+  });
+  _lcmUpdateProgress(0, 0);
+  if (_lcmTimer) { clearInterval(_lcmTimer); _lcmTimer = null; }
+  _lcmStartPoll();
+}
+
+function lensCalClose() {
+  if (_lcmTimer) { clearInterval(_lcmTimer); _lcmTimer = null; }
+  const modal = document.getElementById('lens-cal-modal');
+  if (modal) modal.style.display = 'none';
+}
+
+function _lcmStartPoll() {
+  if (_lcmTimer) clearInterval(_lcmTimer);
+  _lcmTimer = setInterval(_lcmPollFrame, 400);
+}
+
+async function _lcmPollFrame() {
+  const feed     = document.getElementById('lcm-feed');
+  const noFeed   = document.getElementById('lcm-no-cam');
+  try {
+    const res = await fetch(`/api/lens/autoframe/${_lcmCam}?t=${Date.now()}`);
+    if (!res.ok) {
+      // Cameras not open
+      if (feed) feed.style.display = 'none';
+      if (noFeed) noFeed.style.display = '';
+      return;
+    }
+    if (noFeed) noFeed.style.display = 'none';
+    if (feed) feed.style.display = '';
+    const count    = parseInt(res.headers.get('X-Lens-Count')    || '0');
+    const coverage = parseInt(res.headers.get('X-Lens-Coverage') || '0');
+    _lcmUpdateProgress(count, coverage);
+    const blob = await res.blob();
+    if (feed) feed.src = URL.createObjectURL(blob);
+
+    // Auto-finish: ≥20 images OR coverage ≥ 95%
+    if (count >= 20 || coverage >= 95) {
+      clearInterval(_lcmTimer); _lcmTimer = null;
+      lensCalClose();
+      await lensCompute(_lcmCam);
+      lensRefreshAll();
+    }
+  } catch { /* network err - ignore */ }
+}
+
+function _lcmUpdateProgress(count, coverage) {
+  const imgBar  = document.getElementById('lcm-img-bar');
+  const imgTxt  = document.getElementById('lcm-img-text');
+  const covBar  = document.getElementById('lcm-cov-bar');
+  const covTxt  = document.getElementById('lcm-cov-text');
+  if (imgBar) imgBar.style.width = Math.min(100, count / 20 * 100) + '%';
+  if (imgTxt) imgTxt.textContent = `${count}/20`;
+  if (covBar) covBar.style.width = Math.min(100, coverage / 95 * 100) + '%';
+  if (covTxt) covTxt.textContent = `${coverage}%/95%`;
+}
 
 function saveSettings() {
   const settings = {

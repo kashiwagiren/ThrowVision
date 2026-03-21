@@ -50,6 +50,7 @@ class LensCalibrator:
         self._dist: Optional[np.ndarray] = None
         self._rms: float = 0.0
         self._img_size: Optional[Tuple[int, int]] = None
+        self._cells_covered: set = set()   # (gx, gy) grid cells for coverage %
 
     # ------------------------------------------------------------------
     def _make_obj_pt(self) -> np.ndarray:
@@ -80,6 +81,23 @@ class LensCalibrator:
             cv2.drawChessboardCorners(vis, self.pattern, sub, found)
         return found, vis
 
+    # ------------------------------------------------------------------
+    # Coverage helpers
+    # ------------------------------------------------------------------
+    _GRID_COLS = 5
+    _GRID_ROWS = 4
+
+    def _update_coverage(self, corners: np.ndarray, w: int, h: int) -> None:
+        gc, gr = self._GRID_COLS, self._GRID_ROWS
+        for pt in corners.reshape(-1, 2):
+            gx = min(int(pt[0] / w * gc), gc - 1)
+            gy = min(int(pt[1] / h * gr), gr - 1)
+            self._cells_covered.add((gx, gy))
+
+    def coverage_pct(self) -> int:
+        total = self._GRID_COLS * self._GRID_ROWS  # 20 cells
+        return min(100, int(len(self._cells_covered) / total * 100))
+
     def add_frame(self, frame: np.ndarray) -> Tuple[bool, int]:
         """Detect and, if successful, add this frame to the collection.
 
@@ -96,6 +114,7 @@ class LensCalibrator:
                                SUBPIX_CRITERIA)
         self._img_pts.append(sub)
         self._img_size = (gray.shape[1], gray.shape[0])
+        self._update_coverage(sub, gray.shape[1], gray.shape[0])
         return True, len(self._img_pts)
 
     # ------------------------------------------------------------------
@@ -169,6 +188,7 @@ class LensCalibrator:
     def reset(self) -> None:
         self._img_pts.clear()
         self._img_size = None
+        self._cells_covered.clear()
 
     @property
     def count(self) -> int:
