@@ -99,19 +99,29 @@ class LensCalibrator:
         return min(100, int(len(self._cells_covered) / total * 100))
 
     def draw_coverage_overlay(self, frame: np.ndarray) -> np.ndarray:
-        """Return a copy of *frame* with covered grid cells tinted red."""
-        if not self._cells_covered:
-            return frame
+        """Return a copy of *frame* with covered grid cells tinted red + blue guide ring."""
         h, w = frame.shape[:2]
-        gc, gr = self._GRID_COLS, self._GRID_ROWS
-        overlay = np.zeros_like(frame)
-        for (gx, gy) in self._cells_covered:
-            x1 = int(gx / gc * w)
-            y1 = int(gy / gr * h)
-            x2 = int((gx + 1) / gc * w)
-            y2 = int((gy + 1) / gr * h)
-            cv2.rectangle(overlay, (x1, y1), (x2, y2), (40, 40, 210), -1)  # red (BGR)
-        return cv2.addWeighted(frame, 1.0, overlay, 0.45, 0)
+
+        if self._cells_covered:
+            gc, gr = self._GRID_COLS, self._GRID_ROWS
+            overlay = np.zeros_like(frame)
+            for (gx, gy) in self._cells_covered:
+                x1 = int(gx / gc * w)
+                y1 = int(gy / gr * h)
+                x2 = int((gx + 1) / gc * w)
+                y2 = int((gy + 1) / gr * h)
+                cv2.rectangle(overlay, (x1, y1), (x2, y2), (40, 40, 210), -1)  # red (BGR)
+            result = cv2.addWeighted(frame, 1.0, overlay, 0.45, 0)
+        else:
+            result = frame.copy()
+
+        # Blue guide ellipse — shows the area to sweep the checkerboard across
+        cx, cy = w // 2, h // 2
+        rx = int(w * 0.44)
+        ry = int(h * 0.44)
+        cv2.ellipse(result, (cx, cy), (rx, ry), 0, 0, 360, (210, 100, 30), 2)
+
+        return result
 
     def add_frame(self, frame: np.ndarray) -> Tuple[bool, int]:
         """Detect and, if successful, add this frame to the collection.
