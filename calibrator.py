@@ -333,97 +333,61 @@ class BoardCalibrator:
     # ------------------------------------------------------------------
     def auto_detect_anchors(self, frame: np.ndarray,
                             n_points: int = 8) -> Optional[np.ndarray]:
-        """Detect board anchor points automatically from a camera frame.
+        """Fully automatic 1-click anchor detection using HSV Color Segmentation.
 
-        Strategy:
-        1. HoughCircles to find the outer double ring
-        2. Canny + ellipse fit as fallback
-        3. Project expected anchor angles onto detected circle/ellipse
-        4. Edge-snap each projected point to the nearest wire edge
-
-        Returns float32 array of shape (n_points, 2) or None on failure.
+        Finds the dartboard by masking red/green, fits a perspective-accurate
+        ellipse, and parametrically generates the rough starting anchor points.
         """
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) if frame.ndim == 3 else frame
-        h, w = gray.shape
+        # 1. Isolate the dartboard (Red + Green beds)
+        hsv  = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        red1 = cv2.inRange(hsv, (0,   70, 50), (10,  255, 255))
+        red2 = cv2.inRange(hsv, (165, 70, 50), (180, 255, 255))
+        grn  = cv2.inRange(hsv, (35,  50, 50), (85,  255, 255))
+        mask = red1 | red2 | grn
 
-        blurred = cv2.GaussianBlur(gray, (7, 7), 2)
+        # 2. Aggressive morphological close to bridge the spider wires
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
+        mask   = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=3)
 
-        # ── Step 1: HoughCircles ────────────────────────────────────
-        circles = cv2.HoughCircles(
-            blurred, cv2.HOUGH_GRADIENT, dp=1.2,
-            minDist=min(w, h) // 4,
-            param1=80, param2=50,
-            minRadius=int(min(w, h) * 0.15),
-            maxRadius=int(min(w, h) * 0.48),
-        )
-
-        best_cx, best_cy, best_rx, best_ry, best_angle = None, None, None, None, 0.0
-
-        if circles is not None:
-            circles = np.round(circles[0]).astype(int)
-            img_cx, img_cy = w / 2, h / 2
-            best_dist = float('inf')
-            for cx, cy, r in circles:
-                d = math.hypot(cx - img_cx, cy - img_cy)
-                if d < best_dist:
-                    best_dist = d
-                    best_cx, best_cy = float(cx), float(cy)
-                    best_rx = best_ry = float(r)
-
-        # ── Step 2: Ellipse fit fallback ────────────────────────────
-        if best_cx is None:
-            edges = cv2.Canny(blurred, 30, 80)
-            # Dilate to connect broken edges
-            edges = cv2.dilate(edges, np.ones((3, 3), np.uint8), iterations=1)
-            contours, _ = cv2.findContours(
-                edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
-            best_area = 0
-            for cnt in contours:
-                if len(cnt) < 50:
-                    continue
-                area = cv2.contourArea(cnt)
-                if area < (min(w, h) * 0.08) ** 2:
-                    continue
-                try:
-                    (ecx, ecy), (ma, Mi), angle = cv2.fitEllipse(cnt)
-                    ratio = min(ma, Mi) / max(ma, Mi) if max(ma, Mi) > 0 else 0
-                    if ratio > 0.55 and area > best_area:
-                        best_area = area
-                        best_cx, best_cy = float(ecx), float(ecy)
-                        best_rx = float(max(ma, Mi) / 2)
-                        best_ry = float(min(ma, Mi) / 2)
-                        best_angle = float(angle)
-                except Exception:
-                    continue
-
-        if best_cx is None:
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL,
+                                       cv2.CHAIN_APPROX_SIMPLE)
+        if not contours:
             return None
 
-        # ── Step 3: Project anchors onto detected circle/ellipse ────
+        main_contour = max(contours, key=cv2.contourArea)
+
+        # Reject if detected area is too small to be a dartboard
+        if len(main_contour) < 20 or cv2.contourArea(main_contour) < 5000:
+            return None
+
+        # 3. Fit an ellipse to the outer bounds of the dartboard
+        (cx, cy), (width, height), angle_deg = cv2.fitEllipse(main_contour)
+
+        a = width / 2.0
+        b = height / 2.0
+        ell_ang_rad = math.radians(angle_deg)
+
         angles = _ANCHOR_ANGLES if n_points >= 4 else _ANCHOR_ANGLES[:n_points]
         if n_points == 8:
-            angles_all = angles + angles
+            angles_all  = angles + angles
             radii_scale = [1.0] * 4 + [TRIPLE_OUTER / DOUBLE_OUTER] * 4
         else:
-            angles_all = angles
+            angles_all  = angles
             radii_scale = [1.0] * 4
 
+        # 4. Generate anchor points parametrically
         raw_pts = []
-        for ang, rs in zip(angles_all, radii_scale):
-            rad = math.radians(ang)
-            px = best_cx + best_rx * rs * math.cos(rad)
-            py = best_cy - best_ry * rs * math.sin(rad)
+        for board_ang, rs in zip(angles_all, radii_scale):
+            # Image Y goes down, physical Y goes up
+            t     = math.radians(360 - board_ang)
+            x_ell = rs * a * math.cos(t)
+            y_ell = rs * b * math.sin(t)
+            # Apply perspective rotation and translate to centre
+            px = cx + x_ell * math.cos(ell_ang_rad) - y_ell * math.sin(ell_ang_rad)
+            py = cy + x_ell * math.sin(ell_ang_rad) + y_ell * math.cos(ell_ang_rad)
             raw_pts.append([px, py])
 
-        # ── Step 4: Edge-snap ────────────────────────────────────────
-        edges = cv2.Canny(blurred, 25, 70)
-        snapped = []
-        snap_radius = max(12, int(best_rx * 0.06))
-        for px, py in raw_pts:
-            snapped.append(self._snap_to_edge(edges, px, py, snap_radius))
-
-        result = np.array(snapped, dtype=np.float32)
-        return result
+        return np.array(raw_pts, dtype=np.float32)
 
     @staticmethod
     def _snap_to_edge(edge_map: np.ndarray,

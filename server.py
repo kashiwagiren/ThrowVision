@@ -854,18 +854,52 @@ def _do_open_cameras():
             det.start_reader()
         time.sleep(0.3)
 
-        # Quick warmup (2 s instead of 5)
-        print("[SRV] Warming up cameras (2 s)…")
+        # --- Wait for cameras to stabilize (phase-correlation logic) ---
+        print("[SRV] Waiting for cameras to stabilize...")
+        socketio.emit("srv_status", {"message": "Waiting for cameras to stabilize...", "type": "loading"})
+
+        stable_cams = set()
+        prev_frames = {det.cam_id: None for det in active}
+        iteration = 0
+
+        # Max 5 seconds to prevent infinite hang if someone is shaking the stand
         t0 = time.perf_counter()
-        while time.perf_counter() - t0 < 1.5:
-            for det in _detectors:
-                det._grab()
+        while len(stable_cams) < len(active) and (time.perf_counter() - t0) < 5.0:
+            for det in active:
+                if det.cam_id in stable_cams:
+                    continue
+
+                frame = det._grab()
+                if frame is None:
+                    continue
+
+                # Scale down for lightning-fast correlation
+                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                gray_small = cv2.resize(gray, (480, 270))
+                curr_f32 = np.float32(gray_small)
+
+                if prev_frames[det.cam_id] is not None:
+                    shift, corr = cv2.phaseCorrelate(prev_frames[det.cam_id], curr_f32)
+                    print(f"[SRV] Cam wait for stable camId={det.cam_id} correlation={corr:.7f} iteration={iteration}")
+                    if corr >= 0.990:
+                        print(f"[SRV] Cam is now stable camId={det.cam_id}")
+                        stable_cams.add(det.cam_id)
+
+                prev_frames[det.cam_id] = curr_f32
+
+            iteration += 1
+            time.sleep(0.1)
+
+        # Capture the stable reference for detection
         for det in _detectors:
-            det.capture_reference()
+            if det.active:
+                det.capture_reference()
+
         time.sleep(0.5)
         for det in _detectors:
-            det._grab()
-            det.capture_reference()
+            if det.active:
+                det._grab()
+                det.capture_reference()
 
         _cameras_open = True
         print("[SRV] Cameras ready.")
