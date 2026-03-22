@@ -1452,6 +1452,15 @@ function connectSocket() {
     setStatus('takeout', 'Remove Darts');
   });
 
+  // Undo during takeout: cancel the Remove Darts prompt and resume the same player
+  socket.on('cancel_takeout', () => {
+    window._awaitingTakeoutGame = false;
+    // Restore normal turn-info display — game_state event will update dart count
+    const turnInfo = document.getElementById('game-turn-info');
+    if (turnInfo) turnInfo.innerHTML = '';
+    setStatus('detecting', 'Waiting for Throw');
+  });
+
   // Practice 3-throw takeout events
   socket.on('practice_awaiting_takeout', (data) => {
     const banner = document.getElementById('practice-takeout-banner');

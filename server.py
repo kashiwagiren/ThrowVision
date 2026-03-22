@@ -1115,7 +1115,20 @@ def on_start_game(data):
 @socketio.on("undo_dart")
 def on_undo_dart():
     """Undo the last dart in the current game."""
+    global _awaiting_takeout, _takeout_hand_seen, _pending_turn_state
+    global _takeout_reason, _needs_takeout_init
     if _game is not None and not _game.is_finished:
+        # If Undo is pressed while we're waiting for darts to be removed
+        # after the 3rd dart, cancel the takeout so we stay on the same player
+        if _awaiting_takeout and _takeout_reason == 'turn':
+            _awaiting_takeout    = False
+            _takeout_hand_seen   = False
+            _pending_turn_state  = None
+            _needs_takeout_init  = False
+            _takeout_reason      = ''
+            socketio.emit('cancel_takeout', {})     # dismiss Remove Darts banner
+            print("[GAME] Undo during takeout — takeout cancelled")
+
         state = _game.undo_dart()
         socketio.emit("game_state", state)
         print("[GAME] Dart undone")
