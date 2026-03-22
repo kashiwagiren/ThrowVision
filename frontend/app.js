@@ -2512,12 +2512,25 @@ function onGameState(state) {
     setStatus('ready', 'Waiting for Throw');
   }
 
-  // Clear dart dots only when a genuine new player turn starts (NOT for held-back
-  // awaiting_takeout states — those still have the old player's darts on the board).
-  // clear_board_dots event handles dot removal after physical takeout.
-  if (!state.awaiting_takeout && state.darts_this_turn && state.darts_this_turn.length === 0) {
-    const dotsG = document.getElementById('game-board-dots');
-    if (dotsG) dotsG.innerHTML = '';
+  // ── Sync board dots to match darts_this_turn exactly ──────────────
+  // This handles undo (removes extra dot), new dart (adds dot), and
+  // cross-turn undo (clears previous player's dots and restores prior turn).
+  const dotsG = document.getElementById('game-board-dots');
+  if (dotsG && state.darts_this_turn !== undefined) {
+    dotsG.innerHTML = '';
+    for (const dart of state.darts_this_turn) {
+      if (dart.coord && dart.coord[0] !== null && dart.coord[1] !== null) {
+        const scale = TOTAL_R / 170;
+        const sx = BOARD_CX + dart.coord[0] * scale;
+        const sy = BOARD_CY - dart.coord[1] * scale;
+        const dot = document.createElementNS(SVG_NS, 'circle');
+        dot.setAttribute('cx', sx); dot.setAttribute('cy', sy); dot.setAttribute('r', '4');
+        dot.setAttribute('fill', '#ff4444'); dot.setAttribute('stroke', '#fff');
+        dot.setAttribute('stroke-width', '1.2'); dot.setAttribute('opacity', '0.9');
+        dot.classList.add('dart-dot');
+        dotsG.appendChild(dot);
+      }
+    }
   }
   _prevGamePlayer = state.current_player;
 
