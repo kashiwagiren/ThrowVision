@@ -2348,6 +2348,28 @@ function endGame() {
     const g = document.getElementById(id);
     if (g) g.innerHTML = '';
   });
+  // ── Reset bullseye pre-game UI so next session starts clean ──────────
+  const prompt   = document.getElementById('bullseye-prompt');
+  const p1dist   = document.getElementById('bp1-distance');
+  const p2dist   = document.getElementById('bp2-distance');
+  const p1label  = document.getElementById('bp1-label');
+  const p2label  = document.getElementById('bp2-label');
+  const tiebreak = document.getElementById('bullseye-tiebreak');
+  const bp1      = document.getElementById('bullseye-p1');
+  const bp2      = document.getElementById('bullseye-p2');
+  if (prompt)   { prompt.textContent = ''; prompt.className = 'bullseye-prompt'; }
+  if (p1dist)   p1dist.textContent  = '—';
+  if (p2dist)   p2dist.textContent  = '—';
+  if (p1label)  p1label.textContent = '';
+  if (p2label)  p2label.textContent = '';
+  if (tiebreak) tiebreak.style.display = 'none';
+  if (bp1)      bp1.classList.remove('active', 'winner');
+  if (bp2)      bp2.classList.remove('active', 'winner');
+  // Reset phase divs so bullseye appears fresh on next entry
+  const bphase  = document.getElementById('bullseye-phase');
+  const gactive = document.getElementById('game-active');
+  if (bphase)  bphase.style.display  = '';
+  if (gactive) gactive.style.display = 'none';
   showPage('home');
 }
 

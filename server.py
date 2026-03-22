@@ -1125,16 +1125,20 @@ def on_undo_dart():
 def on_end_game():
     """End the current game and return to idle."""
     global _game_mode, _game, _bullseye, _awaiting_takeout, _takeout_hand_seen
+    global _game_pending_mode, _game_pending_opts, _practice_dart_count
     if _game is not None and _game.is_finished:
         try:
             game_stats.save_game(_game.stats_summary())
         except Exception as e:
             print(f"[STATS] Error saving on end: {e}")
-    _game_mode = None
-    _game = None
-    _bullseye = None
-    _awaiting_takeout = False
-    _takeout_hand_seen = False
+    _game_mode          = None
+    _game               = None
+    _bullseye           = None
+    _awaiting_takeout   = False
+    _takeout_hand_seen  = False
+    _game_pending_mode  = None   # reset so next game start is clean
+    _game_pending_opts  = {}
+    _practice_dart_count = 0
     # Clear scored tips so next session starts clean
     for det in _detectors:
         det.clear_scored_tips()
