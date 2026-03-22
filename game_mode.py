@@ -244,12 +244,29 @@ class GameX01:
 
     # ------------------------------------------------------------------
     def undo_dart(self) -> dict:
-        """Undo the last dart in the current turn."""
-        if not self.darts_this_turn:
-            return self.state()
-        dart = self.darts_this_turn.pop()
-        if not dart.get("bust"):
-            self.scores[self.current_player] += dart["score"]
+        """Undo the last dart. Crosses the turn boundary if needed."""
+        if self.darts_this_turn:
+            # Mid-turn: revert the last dart
+            dart = self.darts_this_turn.pop()
+            if not dart.get("bust"):
+                self.scores[self.current_player] += dart["score"]
+        elif self.turn_history:
+            # Turn already ended — restore previous player's turn minus last dart
+            last_turn = self.turn_history.pop()
+            prev_player = last_turn["player"] - 1
+            self.current_player = prev_player
+            # Restore score to start-of-turn value, then re-apply all darts except last
+            score_before = last_turn.get("score_before",
+                self.scores[prev_player] + last_turn["total"])
+            self.scores[prev_player] = score_before
+            darts = list(last_turn["darts"])
+            if darts:
+                darts.pop()   # discard the last dart (the one being undone)
+            for d in darts:
+                if not d.get("bust"):
+                    self.scores[prev_player] -= d["score"]
+            self.darts_this_turn = darts
+            self._turn_score_before = score_before
         return self.state()
 
     # ------------------------------------------------------------------
@@ -261,6 +278,7 @@ class GameX01:
             "darts": list(self.darts_this_turn),
             "total": turn_total if not busted else 0,
             "busted": busted,
+            "score_before": self._turn_score_before,   # ← store for undo
         })
         self.darts_this_turn = []
         # Switch player
@@ -414,13 +432,51 @@ class GameCricket:
 
     # ------------------------------------------------------------------
     def undo_dart(self) -> dict:
-        if not self.darts_this_turn:
-            return self.state()
-        dart = self.darts_this_turn.pop()
-        p = self.current_player
-        if dart["target"] is not None:
-            self.marks[p][dart["target"]] -= dart["marks_added"]
-            self.points[p] -= dart["points_added"]
+        """Undo the last dart. Crosses the turn boundary if needed."""
+        if self.darts_this_turn:
+            dart = self.darts_this_turn.pop()
+            p = self.current_player
+            if dart["target"] is not None:
+                self.marks[p][dart["target"]] -= dart["marks_added"]
+                self.points[p] -= dart["points_added"]
+        elif self.turn_history:
+            last_turn = self.turn_history.pop()
+            prev_player = last_turn["player"] - 1
+            self.current_player = prev_player
+            # Restore marks/points from snapshot stored at turn end
+            if "marks_snapshot" in last_turn:
+                # Full snapshot: just revert to pre-turn state, then re-apply all but last dart
+                self.marks = [{k: v for k, v in m.items()}
+                              for m in last_turn["marks_snapshot"]]
+                self.points = list(last_turn["points_snapshot"])
+                # marks_snapshot is the state AFTER the turn, so we need to reverse all darts
+                for dart in reversed(last_turn["darts"]):
+                    if dart["target"] is not None:
+                        self.marks[prev_player][dart["target"]] -= dart["marks_added"]
+                        self.points[prev_player] -= dart["points_added"]
+                # Now re-apply all except the last dart
+                darts = list(last_turn["darts"])
+                if darts:
+                    darts.pop()
+                for dart in darts:
+                    if dart["target"] is not None:
+                        self.marks[prev_player][dart["target"]] += dart["marks_added"]
+                        self.points[prev_player] += dart["points_added"]
+                self.darts_this_turn = darts
+            else:
+                # Fallback: dart-by-dart reversal without snapshot
+                darts = list(last_turn["darts"])
+                for dart in reversed(darts):
+                    if dart["target"] is not None:
+                        self.marks[prev_player][dart["target"]] -= dart["marks_added"]
+                        self.points[prev_player] -= dart["points_added"]
+                if darts:
+                    darts.pop()
+                for dart in darts:
+                    if dart["target"] is not None:
+                        self.marks[prev_player][dart["target"]] += dart["marks_added"]
+                        self.points[prev_player] += dart["points_added"]
+                self.darts_this_turn = darts
         return self.state()
 
     # ------------------------------------------------------------------
@@ -433,6 +489,8 @@ class GameCricket:
         self.turn_history.append({
             "player": self.current_player + 1,
             "darts": list(self.darts_this_turn),
+            "marks_snapshot": [{k: v for k, v in m.items()} for m in self.marks],
+            "points_snapshot": list(self.points),
         })
         self.darts_this_turn = []
         self.current_player = 1 - self.current_player
@@ -541,10 +599,23 @@ class GameCountUp:
 
     # ------------------------------------------------------------------
     def undo_dart(self) -> dict:
-        if not self.darts_this_turn:
-            return self.state()
-        dart = self.darts_this_turn.pop()
-        self.scores[self.current_player] -= dart["score"]
+        """Undo the last dart. Crosses the turn boundary if needed."""
+        if self.darts_this_turn:
+            dart = self.darts_this_turn.pop()
+            self.scores[self.current_player] -= dart["score"]
+        elif self.turn_history:
+            last_turn = self.turn_history.pop()
+            prev_player = last_turn["player"] - 1
+            self.current_player = prev_player
+            # Remove from round_scores
+            if self.round_scores[prev_player]:
+                self.round_scores[prev_player].pop()
+            # Reconstruct: subtract the last dart's score only
+            darts = list(last_turn["darts"])
+            if darts:
+                last_dart = darts.pop()
+                self.scores[prev_player] -= last_dart["score"]
+            self.darts_this_turn = darts
         return self.state()
 
     # ------------------------------------------------------------------
