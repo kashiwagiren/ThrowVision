@@ -26,6 +26,8 @@ import logging
 logging.getLogger("werkzeug").setLevel(logging.ERROR)  # silence HTTP request logs
 
 import sys
+import cv2
+import numpy as np
 
 from flask import Flask, send_from_directory, Response, jsonify, request
 from flask_socketio import SocketIO
