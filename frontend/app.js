@@ -1379,14 +1379,12 @@ function connectSocket() {
   socket.on('cam_status', onCamStatus);
   socket.on('srv_status', (data) => {
     // Server-side phase updates (Opening cameras…, Cameras ready, etc.)
-    // Only update if not in an active practice/game detecting state
-    if (!practiceActive && currentPage !== 'game') {
-      const type = data.type || 'idle';
-      const msg  = data.message || '';
-      if (type === 'loading') setStatus('waiting', msg);
-      else if (type === 'ready') setStatus('ready', msg);
-      else setStatus('idle', msg);
-    }
+    // Show on ALL pages so the user always sees camera state transitions
+    const type = data.type || 'idle';
+    const msg  = data.message || '';
+    if (type === 'loading') setStatus('waiting', msg);
+    else if (type === 'ready') setStatus('ready', msg);
+    else setStatus('idle', msg);
   });
 
   socket.on('state', onState);
@@ -2329,6 +2327,9 @@ function startGame() {
   document.getElementById('bullseye-phase').style.display = '';
   document.getElementById('game-active').style.display = 'none';
   document.getElementById('game-result-overlay').style.display = 'none';
+
+  // Show opening cameras status immediately before server starts the process
+  setStatus('waiting', 'Opening cameras…');
 
   // Start bullseye throw on server
   socket.emit('start_bullseye', { mode: _gameMode, options: _gameOpts });
