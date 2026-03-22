@@ -2366,7 +2366,9 @@ function endGame() {
   const tiebreak = document.getElementById('bullseye-tiebreak');
   const bp1      = document.getElementById('bullseye-p1');
   const bp2      = document.getElementById('bullseye-p2');
-  if (prompt)   { prompt.textContent = ''; prompt.className = 'bullseye-prompt'; }
+  const turnInfo = document.getElementById('game-turn-info');
+  // Use innerHTML (not textContent) so ▶ Continue button markup is fully removed
+  if (prompt)   { prompt.innerHTML = ''; prompt.className = 'bullseye-prompt'; }
   if (p1dist)   p1dist.textContent  = '—';
   if (p2dist)   p2dist.textContent  = '—';
   if (p1label)  p1label.textContent = '';
@@ -2374,11 +2376,15 @@ function endGame() {
   if (tiebreak) tiebreak.style.display = 'none';
   if (bp1)      bp1.classList.remove('active', 'winner');
   if (bp2)      bp2.classList.remove('active', 'winner');
+  if (turnInfo) turnInfo.innerHTML  = '';
+  window._awaitingTakeoutGame = false;
   // Reset phase divs so bullseye appears fresh on next entry
   const bphase  = document.getElementById('bullseye-phase');
   const gactive = document.getElementById('game-active');
   if (bphase)  bphase.style.display  = '';
   if (gactive) gactive.style.display = 'none';
+  // Reset status bar to neutral
+  setStatus('ready', 'Ready');
   showPage('home');
 }
 
