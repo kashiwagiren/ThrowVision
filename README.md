@@ -14,7 +14,7 @@
 
 ## What's New in v1.1.0
 
-### 🔬 Lens Distortion Calibration (Autodarts-style)
+### 🔬 Lens Distortion Calibration
 - Full-screen calibration modal — move a checkerboard around each camera frame
 - **Live red heatmap overlay** shows covered areas (8×6 grid, 48 cells)
 - **Blue guide ellipse** drawn on live feed to guide coverage sweeping
@@ -303,7 +303,7 @@ flowchart TD
 ## Changelog
 
 ### v1.1.0 — 2026-03-22
-- **NEW** Lens distortion calibration: Autodarts-style fullscreen modal, heatmap overlay, blue guide ring, auto-compute at 95% coverage
+- **NEW** Lens distortion calibration: fullscreen modal, live heatmap overlay, blue guide ring, auto-compute at 95% coverage
 - **NEW** 8-point board calibration mode with RANSAC homography
 - **NEW** 🎯 Auto-Refine button: HSV color ring detection → sub-pixel accuracy
 - **NEW** `auto_ellipse.py` — coarse-to-fine ring detector (warped-space HSV → circle fitting → RANSAC)
