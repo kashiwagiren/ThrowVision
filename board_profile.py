@@ -167,8 +167,8 @@ class BoardProfile:
 
         src = self.src_points.reshape(-1, 1, 2)
         dst = cv2.perspectiveTransform(src, H)
-        result = dst.reshape(4, 2)
+        result = dst.reshape(-1, 2)
 
-        print(f"[BOARD] Feature match: {len(good)} matches, {inliers} inliers -> 4 points")
+        print(f"[BOARD] Feature match: {len(good)} matches, {inliers} inliers -> {len(result)} points")
         return result
 
