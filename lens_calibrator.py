@@ -84,8 +84,8 @@ class LensCalibrator:
     # ------------------------------------------------------------------
     # Coverage helpers
     # ------------------------------------------------------------------
-    _GRID_COLS = 5
-    _GRID_ROWS = 4
+    _GRID_COLS = 8
+    _GRID_ROWS = 6
 
     def _update_coverage(self, corners: np.ndarray, w: int, h: int) -> None:
         gc, gr = self._GRID_COLS, self._GRID_ROWS
@@ -95,8 +95,23 @@ class LensCalibrator:
             self._cells_covered.add((gx, gy))
 
     def coverage_pct(self) -> int:
-        total = self._GRID_COLS * self._GRID_ROWS  # 20 cells
+        total = self._GRID_COLS * self._GRID_ROWS  # 48 cells
         return min(100, int(len(self._cells_covered) / total * 100))
+
+    def draw_coverage_overlay(self, frame: np.ndarray) -> np.ndarray:
+        """Return a copy of *frame* with covered grid cells tinted red."""
+        if not self._cells_covered:
+            return frame
+        h, w = frame.shape[:2]
+        gc, gr = self._GRID_COLS, self._GRID_ROWS
+        overlay = np.zeros_like(frame)
+        for (gx, gy) in self._cells_covered:
+            x1 = int(gx / gc * w)
+            y1 = int(gy / gr * h)
+            x2 = int((gx + 1) / gc * w)
+            y2 = int((gy + 1) / gr * h)
+            cv2.rectangle(overlay, (x1, y1), (x2, y2), (40, 40, 210), -1)  # red (BGR)
+        return cv2.addWeighted(frame, 1.0, overlay, 0.45, 0)
 
     def add_frame(self, frame: np.ndarray) -> Tuple[bool, int]:
         """Detect and, if successful, add this frame to the collection.

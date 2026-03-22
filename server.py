@@ -470,9 +470,12 @@ def api_lens_autoframe(cam_id):
     found, vis = lc.detect(frame)
     count = lc.count
     coverage = lc.coverage_pct()
-    if found and count < 20:
+    if found and coverage < 95:   # keep capturing until 95% coverage
         _, count = lc.add_frame(frame)
         coverage = lc.coverage_pct()
+
+    # Composite red coverage heatmap onto the frame
+    vis = lc.draw_coverage_overlay(vis)
 
     _, buf = cv2.imencode('.jpg', vis, [cv2.IMWRITE_JPEG_QUALITY, 75])
     resp = Response(buf.tobytes(), mimetype='image/jpeg')

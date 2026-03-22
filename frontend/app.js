@@ -1816,8 +1816,8 @@ function _lcmUpdateProgress(count, coverage) {
   const imgTxt  = document.getElementById('lcm-img-text');
   const covBar  = document.getElementById('lcm-cov-bar');
   const covTxt  = document.getElementById('lcm-cov-text');
-  if (imgBar) imgBar.style.width = Math.min(100, count / 20 * 100) + '%';
-  if (imgTxt) imgTxt.textContent = `${count}/20`;
+  if (imgBar) imgBar.style.width = Math.min(100, count / 15 * 100) + '%';
+  if (imgTxt) imgTxt.textContent = `${count}/15`;
   if (covBar) covBar.style.width = Math.min(100, coverage / 95 * 100) + '%';
   if (covTxt) covTxt.textContent = `${coverage}%/95%`;
 }
