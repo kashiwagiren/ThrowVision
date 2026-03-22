@@ -636,6 +636,82 @@ async function autoCalibrate() {
   setTimeout(() => { btn.textContent = orig; }, 2000);
 }
 
+async function calAutoRefine() {
+  if (!calPoints || calPoints.length < 4) {
+    alert('Place at least 4 rough calibration points first, then click Refine.');
+    return;
+  }
+  const btn = document.getElementById('btn-refine-cal');
+  const orig = btn ? btn.textContent : '🎯 Refine';
+  if (btn) { btn.textContent = '⏳ Detecting rings…'; btn.disabled = true; }
+
+  try {
+    const pts = calPoints.map(p => [p.x, p.y]);
+    const res = await fetch(`/api/cal/refine/${calCamId}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pts }),
+    });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      alert('Ring detection failed: ' + (err.error || res.statusText));
+      if (btn) btn.textContent = '✗ Failed';
+      setTimeout(() => { if (btn) btn.textContent = orig; }, 2000);
+      if (btn) btn.disabled = false;
+      return;
+    }
+
+    const nRings = parseInt(res.headers.get('X-Refine-Rings') || '0');
+    const refinedPtsRaw = JSON.parse(res.headers.get('X-Refine-Pts') || '[]');
+
+    if (!refinedPtsRaw.length) {
+      alert('No rings detected — try adjusting lighting or rough point positions.');
+      if (btn) btn.textContent = '✗ No rings';
+      setTimeout(() => { if (btn) btn.textContent = orig; }, 2000);
+      if (btn) btn.disabled = false;
+      return;
+    }
+
+    // Show annotated warp visualisation as a brief dismissible overlay
+    const blob = await res.blob();
+    const imgUrl = URL.createObjectURL(blob);
+    const overlay = document.createElement('div');
+    overlay.style.cssText = 'position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.8);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;cursor:pointer';
+    const imgEl = document.createElement('img');
+    imgEl.src = imgUrl;
+    imgEl.style.cssText = 'max-width:90vw;max-height:75vh;border-radius:8px';
+    const cap = document.createElement('p');
+    cap.style.cssText = 'color:#e5e7eb;font-size:14px;margin:0';
+    cap.textContent = `✓ ${nRings} ring(s) detected — ${refinedPtsRaw.length} correspondences. Click to dismiss.`;
+    overlay.append(imgEl, cap);
+    overlay.addEventListener('click', () => overlay.remove());
+    document.body.appendChild(overlay);
+    setTimeout(() => overlay.remove(), 6000);
+
+    // Snap each calPoint to the nearest refined point
+    const refined2d = refinedPtsRaw.map(([x, y]) => ({ x, y }));
+    for (let i = 0; i < calPoints.length; i++) {
+      const cp = calPoints[i];
+      let best = null, bestD = Infinity;
+      for (const rp of refined2d) {
+        const d = Math.hypot(rp.x - cp.x, rp.y - cp.y);
+        if (d < bestD) { bestD = d; best = rp; }
+      }
+      if (best && bestD < 220) calPoints[i] = { x: best.x, y: best.y };
+    }
+    calDraw();
+    addLog(`🎯 Refine Cam ${calCamId + 1}: ${nRings} rings, ${refinedPtsRaw.length} pts`);
+    if (btn) btn.textContent = `✓ ${nRings} rings`;
+  } catch (err) {
+    alert('Refine error: ' + err.message);
+    if (btn) btn.textContent = '✗ Error';
+  }
+
+  if (btn) btn.disabled = false;
+  setTimeout(() => { if (btn) btn.textContent = orig; }, 3000);
+}
+
 /**
  * Rotate all 4 calibration points by one dartboard segment (18°).
  * Uses the homography to rotate in BOARD SPACE (perspective-correct)

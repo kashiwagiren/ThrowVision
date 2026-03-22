@@ -54,6 +54,7 @@ from board_profile import BoardProfile
 from game_mode import BullseyeThrow, GameX01, GameCricket, GameCountUp
 import stats as game_stats
 from lens_calibrator import LensCalibrator
+from auto_ellipse import refine_calibration
 
 _board_profile = BoardProfile()
 # Load first available profile if any exist
@@ -250,6 +251,53 @@ def api_cal_info(cam_id):
         info["src_points"] = cal._src_pts.tolist()
         info["n_points"] = len(cal._src_pts)
     return info
+
+
+@app.route("/api/cal/refine/<int:cam_id>", methods=["POST"])
+def api_cal_refine(cam_id):
+    """Refine board calibration using HSV ring detection (coarse-to-fine).
+
+    Body JSON: {"pts": [[x,y], ...]}  – 4 or 8 rough calibration points.
+    Returns JPEG of the warped detection view + JSON headers:
+      X-Refine-Pts   : JSON array of refined src pts (camera space)
+      X-Refine-Rings : number of rings detected
+    """
+    import cv2
+    import numpy as np
+    if cam_id < 0 or cam_id >= len(_detectors):
+        return jsonify({"ok": False, "error": "Invalid cam_id"}), 400
+
+    body = request.get_json(force=True, silent=True) or {}
+    pts_raw = body.get("pts")
+    if not pts_raw or len(pts_raw) < 4:
+        return jsonify({"ok": False, "error": "Need at least 4 pts"}), 400
+
+    rough_src = np.array(pts_raw, dtype=np.float32)
+
+    det   = _detectors[cam_id]
+    frame = det.last_frame
+    if frame is None or np.mean(frame) <= 5:
+        frame = det._grab() if det.active else None
+    if frame is None:
+        return jsonify({"ok": False, "error": "No frame — open cameras first"}), 503
+
+    frame = _apply_undistort(cam_id, frame)
+
+    cal    = _calibrators[cam_id]
+    result = refine_calibration(frame, rough_src, cal)
+    if result is None:
+        return jsonify({"ok": False,
+                        "error": "Ring detection failed — try better lighting or adjust rough points"}), 422
+
+    refined_src, _refined_dst_mm, vis = result
+    n_rings = len(refined_src) // 24
+
+    _, buf = cv2.imencode('.jpg', vis, [cv2.IMWRITE_JPEG_QUALITY, 85])
+    resp = Response(buf.tobytes(), mimetype='image/jpeg')
+    resp.headers['X-Refine-Pts']   = json.dumps(refined_src.tolist())
+    resp.headers['X-Refine-Rings'] = str(n_rings)
+    resp.headers['Access-Control-Expose-Headers'] = 'X-Refine-Pts,X-Refine-Rings'
+    return resp
 
 
 @app.route("/api/cal/auto/<int:cam_id>")
