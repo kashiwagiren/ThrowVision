@@ -1240,7 +1240,7 @@ def _start_pending_game(winner: int):
     _pending_game_winner = winner
     _awaiting_takeout = True
     _takeout_hand_seen = False
-    _takeout_ready_at = time.time() + 1.5  # 1.5s cooldown (was 3s, too long)
+    _takeout_ready_at = time.time() + 3.0  # 3s cooldown — enough time to press Undo
     _takeout_reason = 'bullseye'
     _needs_takeout_init = True              # trigger one-shot reference capture
     socketio.emit("awaiting_takeout", {"message": "Remove darts from the board to start the game!"})
@@ -1337,7 +1337,7 @@ def _emit_dart(label: str, score: int, x_mm: float, y_mm: float,
             _pending_turn_state = game_state                 # emit this after takeout
             _awaiting_takeout = True
             _takeout_hand_seen = False
-            _takeout_ready_at = time.time() + 1.5
+            _takeout_ready_at = time.time() + 3.0
             _takeout_reason = 'turn'
             _needs_takeout_init = True
             socketio.emit('turn_takeout', {'message': 'Remove darts from the board!'})
@@ -1356,7 +1356,7 @@ def _emit_dart(label: str, score: int, x_mm: float, y_mm: float,
     if _practice_dart_count >= 3:
         _awaiting_takeout = True
         _takeout_hand_seen = False
-        _takeout_ready_at = time.time() + 1.5  # 1.5s cooldown
+        _takeout_ready_at = time.time() + 3.0  # 3s cooldown
         _takeout_reason = 'practice'
         _needs_takeout_init = True
         socketio.emit('practice_awaiting_takeout', {'message': 'Remove darts from the board!'})
