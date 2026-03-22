@@ -198,6 +198,11 @@ class DartDetector:
         self._last_step_frame_id: int = 0
         self._last_raw_frame_id: int = 0
 
+        # Lens undistortion callback — set by server.py after lens calibration.
+        # Signature: fn(frame: np.ndarray) -> np.ndarray
+        # If None, raw frames are used as-is.
+        self._undistort_fn = None
+
         # Per-camera health metrics -- track detection reliability
         self._health_frames: int = 0      # total frames processed
         self._health_darts: int = 0       # times reached DART state
@@ -394,6 +399,11 @@ class DartDetector:
         w, h = self.cfg.resolution
         if frame.shape[1] != w or frame.shape[0] != h:
             frame = cv2.resize(frame, (w, h))
+
+        # Apply lens undistortion immediately after capture (Fix 1)
+        if self._undistort_fn is not None:
+            frame = self._undistort_fn(frame)
+
         self.last_frame = frame
 
         # Warp to top-down board view (used by every detection stage)

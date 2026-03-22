@@ -588,6 +588,10 @@ def api_lens_compute(cam_id):
     if ok:
         # Invalidate cached (K, dist) tuple so _apply_undistort reloads from disk
         _lens_cals[cam_id] = lc
+        # Refresh the detector's undistort callback so new coeff take effect immediately
+        if 0 <= cam_id < len(_detectors):
+            cid = cam_id
+            _detectors[cam_id]._undistort_fn = lambda f, c=cid: _apply_undistort(c, f)
     return jsonify({"ok": ok, "rms": round(rms, 3) if ok else None, "message": msg})
 
 
@@ -1460,6 +1464,13 @@ def _run_detection(cam_ids: List[int], cfg) -> None:
     for cid, cal in zip(cam_ids, calibrators):
         detectors.append(DartDetector(cid, cfg, cal))
     _detectors = detectors
+
+    # Wire lens undistortion into every detector so _grab() applies it
+    # immediately after every cap.read(). Uses a closure to capture cid.
+    def _make_undistort(cid):
+        return lambda f: _apply_undistort(cid, f)
+    for det in detectors:
+        det._undistort_fn = _make_undistort(det.cam_id)
 
     # ── Cameras stay OFF until explicitly opened ──────────────────────────────
     # Set initial cam states to OFFLINE

@@ -149,13 +149,23 @@ class BoardCalibrator:
         if n == 4:
             self._M    = cv2.getPerspectiveTransform(src, dst_px)
             self._M_mm = cv2.getPerspectiveTransform(src, dst_mm)
+        elif n == 8:
+            # Least-squares (method=0): distributes error evenly across all
+            # 8 manual clicks — RANSAC would discard valid points as "outliers"
+            M, _   = cv2.findHomography(src, dst_px, 0)
+            if M is None:
+                raise ValueError("Least-squares homography failed for 8-pt")
+            self._M = M
+            Mmm, _ = cv2.findHomography(src, dst_mm, 0)
+            self._M_mm = Mmm if Mmm is not None else M
         else:
+            # Many auto-refine correspondences → RANSAC is fine to filter noise
             M, mask = cv2.findHomography(src, dst_px, cv2.RANSAC, 3.0)
             if M is None:
                 raise ValueError("RANSAC failed to find a valid homography")
             self._M = M
             Mmm, _ = cv2.findHomography(src, dst_mm, cv2.RANSAC, 3.0)
-            self._M_mm = Mmm if Mmm is not None else self._M
+            self._M_mm = Mmm if Mmm is not None else M
         self._M_inv = np.linalg.inv(self._M)
         self._M_wobble = None   # reset wobble correction on recalibrate
         self._wireframe_prims = None   # invalidate cached primitives
