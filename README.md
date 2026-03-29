@@ -6,9 +6,29 @@
 ![License](https://img.shields.io/badge/License-MIT-yellow)
 ![Cameras](https://img.shields.io/badge/Cameras-3×_USB-orange)
 ![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux-lightgrey)
-![Version](https://img.shields.io/badge/Version-1.1.0-brightgreen)
+![Version](https://img.shields.io/badge/Version-1.2.0-brightgreen)
 
 **ThrowVision** is an open-source, camera-based automatic dart scoring system. Three USB webcams at 120° intervals detect dart tips with millimetre accuracy using frame differencing, perspective homography, and multi-camera consensus fusion.
+
+---
+
+## What's New in v1.2.0
+
+### 🎨 UI/UX & Visual Enhancements
+- Modernized frontend with a focus on visual aesthetics and responsive performance.
+- Automatically maximized Electron app window on startup.
+- Fullscreen capabilities with an "Esc" key toggle on the home page.
+- Major UI scaling for game modes: Increased font sizes for player scores and names.
+- Broadcast-quality redesign of the Count-Up mode with a prominent large-text layout.
+
+### 🛡️ System Reliability & Pre-flight Checks
+- **Strict Pre-flight Checks:** Enforced checks for "Practice" and "Game" modes to verify camera status, calibration, and board profiles before starting.
+- **Robust Camera Verification:** System checker now verifies actual physical camera connections, preventing false positives when cameras are unplugged.
+- Fixed a major scoring bug in 301 where valid checkouts were incorrectly registered as busts.
+- Fixed a double-saving bug in the stats persistence layer for Count-Up, ensuring accurate game statistics.
+
+### 🏗️ Architecture & Refactoring
+- Systematically refactored and modularized backend and frontend code for improved maintainability.
 
 ---
 
@@ -301,6 +321,15 @@ flowchart TD
 ---
 
 ## Changelog
+
+### v1.2.0 — 2026-03-29
+- **NEW** Extensive UI/UX modernizations, including game mode UI resizing, broadcast-quality Count-Up display, and fullscreen behaviors.
+- **NEW** Maximized application window on startup.
+- **NEW** Strict pre-flight system checks (verifying physical cameras, calibration, and board profiles) before launching games.
+- **FIX** 301 Bust bug that incorrectly reverted valid checkouts.
+- **FIX** Count-Up stats double-saving bug and restored data integrity.
+- **FIX** Camera system checker properly detects unplugged physical cameras.
+- **REFACTOR** Systematic modularization of frontend and backend architecture.
 
 ### v1.1.0 — 2026-03-22
 - **NEW** Lens distortion calibration: fullscreen modal, live heatmap overlay, blue guide ring, auto-compute at 95% coverage

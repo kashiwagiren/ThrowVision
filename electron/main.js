@@ -1,6 +1,6 @@
 'use strict';
 
-const { app, BrowserWindow, shell, Menu, dialog } = require('electron');
+const { app, BrowserWindow, shell, Menu, dialog, ipcMain } = require('electron');
 const { spawn, execFileSync } = require('child_process');
 const path = require('path');
 const http = require('http');
@@ -41,14 +41,14 @@ function getServerConfig() {
     };
   } else {
     // Development: use the virtualenv Python
-    const venvWin   = path.join(root, '.venv', 'Scripts', 'python.exe');
+    const venvWin = path.join(root, '.venv', 'Scripts', 'python.exe');
     const venvLinux = path.join(root, '.venv', 'bin', 'python');
-    const venvMac   = path.join(root, '.venv', 'bin', 'python3');
+    const venvMac = path.join(root, '.venv', 'bin', 'python3');
 
     let pythonPath;
-    if (process.platform === 'win32'  && fs.existsSync(venvWin))   pythonPath = venvWin;
-    else if (process.platform === 'linux'  && fs.existsSync(venvLinux)) pythonPath = venvLinux;
-    else if (process.platform === 'darwin' && fs.existsSync(venvMac))   pythonPath = venvMac;
+    if (process.platform === 'win32' && fs.existsSync(venvWin)) pythonPath = venvWin;
+    else if (process.platform === 'linux' && fs.existsSync(venvLinux)) pythonPath = venvLinux;
+    else if (process.platform === 'darwin' && fs.existsSync(venvMac)) pythonPath = venvMac;
     else pythonPath = process.platform === 'win32' ? 'python' : 'python3';
 
     return {
@@ -141,12 +141,13 @@ function createSplash() {
 // ─── Main application window ───────────────────────────────────────────────
 function createMain() {
   mainWindow = new BrowserWindow({
-    width: 1280,
-    height: 800,
+    width: 1920,
+    height: 1080,
     minWidth: 900,
     minHeight: 600,
     center: true,
     show: false,
+    fullscreen: true,
     title: 'ThrowVision',
     backgroundColor: '#0a0a12',
     webPreferences: {
@@ -165,6 +166,13 @@ function createMain() {
       splashWindow = null;
     }
     mainWindow.show();
+  });
+
+  // IPC: renderer can request fullscreen toggle
+  ipcMain.on('set-fullscreen', (_event, enabled) => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.setFullScreen(enabled);
+    }
   });
 
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {

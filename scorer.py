@@ -276,44 +276,51 @@ class ScoreMapper:
                     print(f"[SCR] All outliers — using closest pair "
                           f"(dist={best_dist:.0f}mm)")
                 elif areas:
-                    # Closest pair > 40mm — too far to average.
-                    # Prefer any camera whose tip is ON the board (r <= DOUBLE_OUTER).
-                    # Only fall back to largest area if none are on-board.
+                    # Closest pair > 40mm — too far to average. All cameras disagree.
                     on_board = [
                         (j, ci, mm)
                         for j, (ci, mm) in enumerate(mm_coords)
                         if math.hypot(mm[0], mm[1]) <= DOUBLE_OUTER
                     ]
+
+                    def _fallback_score(t):
+                        j, ci, mm = t
+                        m_rank = _METHOD_RANK.get(methods[ci], 0) if methods else 0
+                        a = areas[ci] if areas else 0
+                        # Heavily penalize massive blobs (shadows/flights stretched by warp)
+                        if a > 2500:
+                            m_rank -= 5
+                        return (m_rank, a)
+
                     if on_board:
-                        # Among on-board cameras, pick the one with the largest area
-                        best_ob = max(on_board,
-                                      key=lambda t: areas[t[1]] if areas else 0)
+                        # Smart Fallback: Prioritize Method Rank, then area
+                        best_ob = max(on_board, key=_fallback_score)
                         j_ob, ci_ob, _ = best_ob
                         mm_coords = [mm_coords[j_ob]]
+                        best_method = methods[ci_ob] if methods else 'UNKNOWN'
+                        best_area = areas[ci_ob] if areas else '?'
                         print(f"[SCR] All outliers, pair too far "
-                              f"({best_dist:.0f}mm) — on-board fallback "
-                              f"Cam {ci_ob} (area={areas[ci_ob] if areas else '?'})")
+                              f"({best_dist:.0f}mm) — smart on-board fallback "
+                              f"Cam {ci_ob} (method={best_method}, area={best_area})")
                     else:
-                        # No camera on the board — fall back to largest area
-                        cam_areas = [(j, areas[ci])
-                                     for j, (ci, _) in enumerate(mm_coords)
-                                     if areas[ci] > 0]
+                        # No camera on the board — fall back to highest rank/area overall
+                        cam_areas = [(j, ci, mm) for j, (ci, mm) in enumerate(mm_coords) if areas[ci] > 0]
                         if cam_areas:
-                            best = max(cam_areas, key=lambda x: x[1])
-                            if best[1] >= 200:
-                                ci_best = mm_coords[best[0]][0]
-                                mm_coords = [mm_coords[best[0]]]
+                            best = max(cam_areas, key=_fallback_score)
+                            j_best, ci_best, _ = best
+                            if areas[ci_best] >= 200 and areas[ci_best] < 3000:
+                                mm_coords = [mm_coords[j_best]]
+                                best_method = methods[ci_best] if methods else 'UNKNOWN'
                                 print(f"[SCR] All outliers, pair too far "
-                                      f"({best_dist:.0f}mm) — area fallback "
-                                      f"Cam {ci_best} (area={best[1]})")
+                                      f"({best_dist:.0f}mm) — smart area fallback "
+                                      f"Cam {ci_best} (method={best_method}, area={areas[ci_best]})")
                             else:
                                 print(f"[SCR] All cameras disagree "
-                                      f"(pair={best_dist:.0f}mm, "
-                                      f"best area={best[1]}) — skipping")
+                                      f"(pair={best_dist:.0f}mm, best area invalid) — skipping")
                                 return ("SKIP", -1, (0.0, 0.0))
                         else:
                             print(f"[SCR] All cameras disagree "
-                                  f"(pair={best_dist:.0f}mm) — skipping")
+                                  f"(pair={best_dist:.0f}mm, no areas) — skipping")
                             return ("SKIP", -1, (0.0, 0.0))
                 else:
                     print(f"[SCR] All cameras disagree "

@@ -110,6 +110,70 @@ def api_status():
         }
 
 
+@app.route("/api/cameras/probe")
+def api_cameras_probe():
+    """Quick hardware probe: check how many cameras are physically connected.
+
+    If cameras are already open, returns the cached cam_states (accurate).
+    If cameras are closed, attempts a lightweight VideoCapture open per camera
+    with a 2-second timeout so we can detect unplugged cameras without the
+    full 8-second warmup.
+    """
+    import threading
+
+    cam_ids = [det.cam_id for det in _detectors]
+    total = len(cam_ids)
+
+    # Fast path: cameras already open — cam_states is accurate
+    if _cameras_open:
+        with _state_lock:
+            states = _cam_states.copy()
+        cameras = [
+            {"id": cid, "connected": bool(states.get(cid, {}).get("active", False))}
+            for cid in cam_ids
+        ]
+        return {
+            "total": total,
+            "connected": sum(1 for c in cameras if c["connected"]),
+            "cameras": cameras,
+        }
+
+    # Slow path: cameras not open — do a quick probe per camera
+    def _probe_one(cam_id, result_list, idx):
+        """Try to open camera briefly; store True/False in result_list[idx]."""
+        try:
+            import cv2 as _cv2
+            cap = _cv2.VideoCapture(cam_id, _cv2.CAP_DSHOW)
+            if not cap.isOpened():
+                cap.release()
+                result_list[idx] = False
+                return
+            # One read confirms the hardware actually delivers frames
+            ok, _ = cap.read()
+            cap.release()
+            result_list[idx] = ok
+        except Exception:
+            result_list[idx] = False
+
+    results = [False] * total
+    threads = []
+    for i, cid in enumerate(cam_ids):
+        t = threading.Thread(target=_probe_one, args=(cid, results, i), daemon=True)
+        threads.append(t)
+        t.start()
+
+    # Wait up to 3 seconds for all probes to finish
+    for t in threads:
+        t.join(timeout=3.0)
+
+    cameras = [{"id": cam_ids[i], "connected": results[i]} for i in range(total)]
+    return {
+        "total": total,
+        "connected": sum(1 for c in cameras if c["connected"]),
+        "cameras": cameras,
+    }
+
+
 @app.route("/api/settings")
 def api_settings():
     """Return current config values so the frontend can sync UI state."""
@@ -260,9 +324,11 @@ def api_cal_refine(cam_id):
     """Refine board calibration using HSV ring detection (coarse-to-fine).
 
     Body JSON: {"pts": [[x,y], ...]}  – 4 or 8 rough calibration points.
+    Detects ring radii via polar projection, builds a refined homography from
+    the dense correspondences, and COMMITS it directly to the calibrator.
     Returns JPEG of the warped detection view + JSON headers:
-      X-Refine-Pts   : JSON array of refined src pts (camera space)
-      X-Refine-Rings : number of rings detected
+      X-Refine-Accepted : "1" if calibration was committed, "0" otherwise
+      X-Refine-Rings    : number of rings detected
     """
     import cv2
     import numpy as np
@@ -291,15 +357,54 @@ def api_cal_refine(cam_id):
         return jsonify({"ok": False,
                         "error": "Ring detection failed — try better lighting or adjust rough points"}), 422
 
-    refined_src, _refined_dst_mm, vis = result
-    n_rings = len(refined_src) // 24
+    refined_src, refined_dst_mm, vis = result
+    n_rings = max(1, len(refined_src) // 36)
+
+    # ── Commit refined homography directly ─────────────────────────────────
+    # Build pixel-space dst from mm coordinates using calibrator's scale
+    bs   = cal.board_size
+    cx   = cy = bs / 2.0
+    sc   = cal._scale
+    refined_dst_px = np.column_stack([
+        cx + refined_dst_mm[:, 0] * sc,
+        cy - refined_dst_mm[:, 1] * sc,
+    ]).astype(np.float32)
+
+    accepted = False
+    try:
+        # Use RANSAC since we have many (~100-150) correspondences — it filters noise
+        M, mask = cv2.findHomography(refined_src, refined_dst_px, cv2.RANSAC, 3.0)
+        Mmm, _  = cv2.findHomography(refined_src, refined_dst_mm,  cv2.RANSAC, 3.0)
+        if M is not None and Mmm is not None:
+            cal._M     = M
+            cal._M_mm  = Mmm
+            cal._M_inv = np.linalg.inv(M)
+            cal._M_wobble = None
+            cal._wireframe_prims = None
+            # Persist the refined calibration — keep original rough src_pts but
+            # overwrite the matrix file with the new, better homography
+            np.savez(cal.matrix_path,
+                     matrix=M,
+                     src_points=rough_src,
+                     resolution=np.array([cal.w, cal.h]))
+            cal._src_pts = rough_src
+            cal._build_mask()
+            det.cal = cal
+            det.capture_reference()
+            det.reset_to_wait()
+            accepted = True
+            print(f"[CAL] Camera {cam_id}: refined homography committed "
+                  f"({n_rings} rings, {len(refined_src)} corr)")
+    except Exception as e:
+        print(f"[CAL] Camera {cam_id}: refine commit failed: {e}")
 
     _, buf = cv2.imencode('.jpg', vis, [cv2.IMWRITE_JPEG_QUALITY, 85])
     resp = Response(buf.tobytes(), mimetype='image/jpeg')
-    resp.headers['X-Refine-Pts']   = json.dumps(refined_src.tolist())
-    resp.headers['X-Refine-Rings'] = str(n_rings)
-    resp.headers['Access-Control-Expose-Headers'] = 'X-Refine-Pts,X-Refine-Rings'
+    resp.headers['X-Refine-Accepted'] = '1' if accepted else '0'
+    resp.headers['X-Refine-Rings']    = str(n_rings)
+    resp.headers['Access-Control-Expose-Headers'] = 'X-Refine-Accepted,X-Refine-Rings'
     return resp
+
 
 
 @app.route("/api/cal/auto/<int:cam_id>")
@@ -1139,11 +1244,9 @@ def on_end_game():
     """End the current game and return to idle."""
     global _game_mode, _game, _bullseye, _awaiting_takeout, _takeout_hand_seen
     global _game_pending_mode, _game_pending_opts, _practice_dart_count
-    if _game is not None and _game.is_finished:
-        try:
-            game_stats.save_game(_game.stats_summary())
-        except Exception as e:
-            print(f"[STATS] Error saving on end: {e}")
+    # Stats were already saved when the game finished (in the dart-detection path).
+    # Do NOT save again here — that caused every win to be recorded twice.
+
     _game_mode          = None
     _game               = None
     _bullseye           = None

@@ -56,6 +56,9 @@
             <span class="btn-icon-lg">⚙</span> Settings
             <span class="btn-hotkey">S</span>
           </button>
+          <button class="btn btn-lg btn-exit" onclick="quitApp()">
+            <span class="btn-icon-lg">✕</span> Exit
+          </button>
         </div>
       </div>
     </div>
@@ -525,13 +528,7 @@
           <button class="btn btn-accent" onclick="lensCalOpen(1)">🔬 Cam 2</button>
           <button class="btn btn-accent" onclick="lensCalOpen(2)">🔬 Cam 3</button>
         </div>
-      </section>
-
-      <!-- System -->
-      <section class="settings-card">
-        <h3><span class="card-icon">⚡</span> System</h3>
-
-        <div class="setting-row">
+        <div class="setting-row" style="margin-top:14px">
           <label>Blur Kernel</label>
           <select id="set-blur">
             <option value="3">3 × 3</option>
@@ -546,6 +543,8 @@
           <span class="range-val">30</span>
         </div>
       </section>
+
+
 
       <!-- Camera Preview -->
       <section class="settings-card cam-preview-card" id="cam-preview-section" style="display:none;">

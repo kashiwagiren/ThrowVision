@@ -52,6 +52,8 @@ function makeSlice(cx, cy, r1, r2, a1, a2, fill) {
 
 function buildDartboard(svgEl) {
   svgEl.innerHTML = '';
+  // Expand viewBox by 20px on all sides so larger segment numbers don't clip
+  svgEl.setAttribute('viewBox', '-20 -20 482 480');
   const gSec = document.createElementNS(SVG_NS, 'g');
   const gWire = document.createElementNS(SVG_NS, 'g');
   const gNums = document.createElementNS(SVG_NS, 'g');
@@ -90,13 +92,13 @@ function buildDartboard(svgEl) {
 
   SECTOR_ORDER.forEach((val, i) => {
     const angle = i * SECTOR_ANGLE;
-    const nr = R.doubleOuter + 16;
+    const nr = R.doubleOuter + 20;
     const [nx, ny] = polarToCart(cx, cy, nr, angle);
     const t = document.createElementNS(SVG_NS, 'text');
     t.setAttribute('x', nx); t.setAttribute('y', ny);
     t.setAttribute('text-anchor', 'middle'); t.setAttribute('dominant-baseline', 'central');
-    t.setAttribute('font-size', '12'); t.setAttribute('font-weight', '700');
-    t.setAttribute('font-family', "'Inter', sans-serif"); t.setAttribute('fill', '#9999aa');
+    t.setAttribute('font-size', '30'); t.setAttribute('font-weight', '800');
+    t.setAttribute('font-family', "'Inter', sans-serif"); t.setAttribute('fill', '#ffffff');
     t.textContent = val;
     gNums.appendChild(t);
   });
@@ -147,6 +149,12 @@ function showPage(name) {
   }
   const prevPage = currentPage;
   currentPage = name;
+  // Fullscreen: re-enter fullscreen whenever leaving the home page
+  if (window.throwvision && window.throwvision.setFullScreen) {
+    if (name !== 'home') {
+      window.throwvision.setFullScreen(true);
+    }
+  }
   if (name === 'home') {
     $homeBoard.classList.remove('launch-practice');
     if (socket && socket.connected) $homeBoard.classList.add('spinning');
@@ -189,6 +197,17 @@ function showPage(name) {
     loadStats(null);
   }
 }
+
+// ── Fullscreen: Esc on home page toggles fullscreen ───────────────────
+let _appFullscreen = true; // starts fullscreen
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && currentPage === 'home') {
+    if (window.throwvision && window.throwvision.setFullScreen) {
+      _appFullscreen = !_appFullscreen;
+      window.throwvision.setFullScreen(_appFullscreen);
+    }
+  }
+});
 
 // ── Camera Preview Streams ─────────────────────────────────────────────
 let _camViewMode = 'raw';
@@ -422,12 +441,8 @@ async function calCaptureFrame(retries = 5, keepPoints = false) {
   }
 }
 
-// Auto-refresh calibration frame when user tabs back to the page
-document.addEventListener('visibilitychange', () => {
-  if (!document.hidden && currentPage === 'calibration' && calImage) {
-    calCaptureFrame();
-  }
-});
+
+
 
 function calDraw() {
   const canvas = document.getElementById('cal-canvas');
@@ -587,7 +602,7 @@ function showProfileModal() {
   if (input) { input.value = ''; setTimeout(() => input.focus(), 100); }
 }
 
-function closeProfileModal(save) {
+async function closeProfileModal(save) {
   const modal = document.getElementById('profile-modal');
   if (modal) modal.style.display = 'none';
   if (save) {
@@ -595,7 +610,7 @@ function closeProfileModal(save) {
     const name = (input && input.value.trim()) || 'default';
     const nameInput = document.getElementById('profile-name-input');
     if (nameInput) nameInput.value = name;
-    registerBoard();
+    await registerBoard();   // wait for the fetch to complete BEFORE closing cameras
   }
   if (socket) socket.emit('close_cameras');
 }
@@ -662,19 +677,11 @@ async function calAutoRefine() {
       return;
     }
 
-    const nRings = parseInt(res.headers.get('X-Refine-Rings') || '0');
-    const refinedPtsRaw = JSON.parse(res.headers.get('X-Refine-Pts') || '[]');
-
-    if (!refinedPtsRaw.length) {
-      alert('No rings detected — try adjusting lighting or rough point positions.');
-      if (btn) btn.textContent = '✗ No rings';
-      setTimeout(() => { if (btn) btn.textContent = orig; }, 2000);
-      if (btn) btn.disabled = false;
-      return;
-    }
+    const nRings    = parseInt(res.headers.get('X-Refine-Rings')    || '0');
+    const accepted  = res.headers.get('X-Refine-Accepted') === '1';
 
     // Show annotated warp visualisation as a brief dismissible overlay
-    const blob = await res.blob();
+    const blob   = await res.blob();
     const imgUrl = URL.createObjectURL(blob);
     const overlay = document.createElement('div');
     overlay.style.cssText = 'position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.8);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;cursor:pointer';
@@ -683,26 +690,28 @@ async function calAutoRefine() {
     imgEl.style.cssText = 'max-width:90vw;max-height:75vh;border-radius:8px';
     const cap = document.createElement('p');
     cap.style.cssText = 'color:#e5e7eb;font-size:14px;margin:0';
-    cap.textContent = `✓ ${nRings} ring(s) detected — ${refinedPtsRaw.length} correspondences. Click to dismiss.`;
+    if (accepted) {
+      cap.textContent = `✓ ${nRings} ring(s) detected — calibration refined and applied! Click to dismiss.`;
+    } else {
+      cap.textContent = `⚠ ${nRings} ring(s) detected but refinement could not be committed. Check lighting. Click to dismiss.`;
+    }
     overlay.append(imgEl, cap);
     overlay.addEventListener('click', () => overlay.remove());
     document.body.appendChild(overlay);
     setTimeout(() => overlay.remove(), 6000);
 
-    // Snap each calPoint to the nearest refined point
-    const refined2d = refinedPtsRaw.map(([x, y]) => ({ x, y }));
-    for (let i = 0; i < calPoints.length; i++) {
-      const cp = calPoints[i];
-      let best = null, bestD = Infinity;
-      for (const rp of refined2d) {
-        const d = Math.hypot(rp.x - cp.x, rp.y - cp.y);
-        if (d < bestD) { bestD = d; best = rp; }
-      }
-      if (best && bestD < 220) calPoints[i] = { x: best.x, y: best.y };
+    if (accepted) {
+      // Server has already updated + saved the calibration.
+      // Reload the frame keeping current rough points so the user can see result.
+      addLog(`🎯 Refine Cam ${calCamId + 1}: ${nRings} rings detected — calibration committed`);
+      if (btn) btn.textContent = `✓ ${nRings} rings`;
+      // Brief delay to let server settle, then refresh frame
+      await new Promise(r => setTimeout(r, 600));
+      await calCaptureFrame(3, /*keepPoints=*/true);
+    } else {
+      addLog(`🎯 Refine Cam ${calCamId + 1}: ${nRings} rings detected (not committed — check lighting)`);
+      if (btn) btn.textContent = nRings > 0 ? `⚠ ${nRings} rings` : '✗ No rings';
     }
-    calDraw();
-    addLog(`🎯 Refine Cam ${calCamId + 1}: ${nRings} rings, ${refinedPtsRaw.length} pts`);
-    if (btn) btn.textContent = `✓ ${nRings} rings`;
   } catch (err) {
     alert('Refine error: ' + err.message);
     if (btn) btn.textContent = '✗ Error';
@@ -833,17 +842,50 @@ function drawPerspectiveWireframe(ctx) {
   const BS = 500, bCx = BS / 2, bCy = BS / 2;
   const sc = BS / BOARD_CANVAS_MM;
 
-  const boardPts = BOARD_DST_WIRE_ANGLES.map(a => {
-    const rad = a * Math.PI / 180;
-    return {
-      x: bCx + BOARD_RADII_MM.double_outer * sc * Math.cos(rad),
-      y: bCy - BOARD_RADII_MM.double_outer * sc * Math.sin(rad),
-    };
-  });
-
-  // Always use only the outer 4 pts for perspective H
-  // (computeHomography implements the DLT with exactly 4 correspondence pairs)
-  const H = computeHomography(boardPts, calPoints.slice(0, 4).map(p => ({ x: p.x, y: p.y })));
+  // In 8-pt mode use all 8 correspondences for a more accurate perspective.
+  // We build the homography from board-space → camera-space.
+  let H = null;
+  if (calMode === 8 && calPoints.length === 8) {
+    // Build board-space points: 4 outer double + 4 outer triple
+    const tripleInnerPts = BOARD_DST_WIRE_ANGLES.map(a => {
+      const rad = a * Math.PI / 180;
+      return {
+        x: bCx + BOARD_RADII_MM.triple_outer * sc * Math.cos(rad),
+        y: bCy - BOARD_RADII_MM.triple_outer * sc * Math.sin(rad),
+      };
+    });
+    const outerPts = BOARD_DST_WIRE_ANGLES.map(a => {
+      const rad = a * Math.PI / 180;
+      return {
+        x: bCx + BOARD_RADII_MM.double_outer * sc * Math.cos(rad),
+        y: bCy - BOARD_RADII_MM.double_outer * sc * Math.sin(rad),
+      };
+    });
+    // Use least-squares over all 8 pairs: pick 4 best-spread pairs to keep
+    // the 4x4 DLT stable, then refine with the inner 4 for a better fit.
+    // Simplest robust approach: use outer 4 for the base H, then use all 8
+    // as a secondary refinement via average correction.
+    const H4 = computeHomography(outerPts, calPoints.slice(0, 4).map(p => ({ x: p.x, y: p.y })));
+    const H4i = computeHomography(tripleInnerPts, calPoints.slice(4, 8).map(p => ({ x: p.x, y: p.y })));
+    if (H4 && H4i) {
+      // Blend: average the two homographies (works well when both are valid)
+      H = H4.map((row, r) => row.map((v, c) => (v + H4i[r][c]) / 2));
+      // Re-normalise so H[2][2] = 1
+      const s = H[2][2];
+      H = H.map(row => row.map(v => v / s));
+    } else {
+      H = H4;
+    }
+  } else {
+    const boardPts = BOARD_DST_WIRE_ANGLES.map(a => {
+      const rad = a * Math.PI / 180;
+      return {
+        x: bCx + BOARD_RADII_MM.double_outer * sc * Math.cos(rad),
+        y: bCy - BOARD_RADII_MM.double_outer * sc * Math.sin(rad),
+      };
+    });
+    H = computeHomography(boardPts, calPoints.slice(0, 4).map(p => ({ x: p.x, y: p.y })));
+  }
   if (!H) return;
 
   function boardToCamera(angleDeg, rMM) {
@@ -967,6 +1009,8 @@ async function launchGame() {
     el.querySelector('.ls-icon').textContent = icon;
   }
 
+  const failures = [];
+
   try {
     // 1. Connection
     setStep('gs-connection', 'active', '🔄');
@@ -975,7 +1019,7 @@ async function launchGame() {
     if (socket && socket.connected) {
       setStep('gs-connection', 'done', '✓');
     } else {
-      setStep('gs-connection', 'warn', '✗');
+      setStep('gs-connection', 'fail', '✗');
       statusEl.textContent = 'Connection failed';
       await new Promise(r => setTimeout(r, 2000));
       overlay.classList.add('fade-out');
@@ -986,16 +1030,20 @@ async function launchGame() {
     // 2. Cameras
     setStep('gs-cameras', 'active', '🔄');
     statusEl.textContent = 'Checking cameras…';
-    let camCount = 0;
+    let numCamsRequired = 3;
+    let activeCams = 0;
     try {
-      const camRes = await fetch('/api/status');
+      const camRes = await fetch('/api/cameras/probe');
       const camData = await camRes.json();
-      camCount = camData.num_cameras || 0;
-      const states = camData.cam_states || {};
-      const activeCams = Object.values(states).filter(c => c.active).length;
-      if (activeCams > 0) camCount = activeCams;
+      numCamsRequired = camData.total || 3;
+      activeCams = camData.connected || 0;
     } catch (e) {}
-    setStep('gs-cameras', camCount > 0 ? 'done' : 'warn', camCount > 0 ? '✓' : '⚠');
+    if (activeCams >= numCamsRequired) {
+      setStep('gs-cameras', 'done', '✓');
+    } else {
+      setStep('gs-cameras', 'fail', '✗');
+      failures.push(`Only ${activeCams}/${numCamsRequired} cameras connected — plug in all cameras and try again.`);
+    }
 
     // 3. Calibration
     setStep('gs-calibration', 'active', '🔄');
@@ -1009,7 +1057,12 @@ async function launchGame() {
         if (d.calibrated) calCount++;
       } catch (e) {}
     }
-    setStep('gs-calibration', calCount === 3 ? 'done' : 'warn', calCount === 3 ? '✓' : '⚠');
+    if (calCount === 3) {
+      setStep('gs-calibration', 'done', '✓');
+    } else {
+      setStep('gs-calibration', 'fail', '✗');
+      failures.push(`Only ${calCount}/3 cameras calibrated — run Calibration for all cameras first.`);
+    }
 
     // 4. Board profile
     setStep('gs-profile', 'active', '🔄');
@@ -1018,14 +1071,31 @@ async function launchGame() {
     try {
       const pRes = await fetch('/api/board/status');
       const pData = await pRes.json();
-      setStep('gs-profile', pData.registered ? 'done' : 'warn', pData.registered ? '✓' : '⚠');
-    } catch (e) { setStep('gs-profile', 'warn', '⚠'); }
+      if (pData.registered) {
+        setStep('gs-profile', 'done', '✓');
+      } else {
+        setStep('gs-profile', 'fail', '✗');
+        failures.push('No board profile saved — calibrate and save a board profile first.');
+      }
+    } catch (e) {
+      setStep('gs-profile', 'fail', '✗');
+      failures.push('Could not load board profile — server error.');
+    }
 
     // 5. Detection engine
     setStep('gs-detection', 'active', '🔄');
     statusEl.textContent = 'Starting detection engine…';
     await new Promise(r => setTimeout(r, 500));
     setStep('gs-detection', 'done', '✓');
+
+    // Block if any critical failures
+    if (failures.length > 0) {
+      statusEl.innerHTML = failures.map(f => '❌ ' + f).join('<br>');
+      await new Promise(r => setTimeout(r, 4000));
+      overlay.classList.add('fade-out');
+      setTimeout(() => { overlay.style.display = 'none'; showPage('home'); }, 500);
+      return;
+    }
 
     statusEl.textContent = 'Ready!';
     _systemChecked = true;
@@ -1034,6 +1104,9 @@ async function launchGame() {
   } catch (err) {
     statusEl.textContent = 'Error: ' + err.message;
     await new Promise(r => setTimeout(r, 2000));
+    overlay.classList.add('fade-out');
+    setTimeout(() => { overlay.style.display = 'none'; showPage('home'); }, 500);
+    return;
   }
 
   overlay.classList.add('fade-out');
@@ -1042,6 +1115,7 @@ async function launchGame() {
     showPage('game-select');
   }, 500);
 }
+
 
 
 function openStats() {
@@ -1056,6 +1130,11 @@ function openStats() {
   }
   showPage('stats');
 }
+
+function quitApp() {
+  window.close();
+}
+
 
 async function launchPractice() {
 
@@ -1103,6 +1182,8 @@ async function launchPractice() {
     el.querySelector('.ls-icon').textContent = icon;
   }
 
+  const failures = [];
+
   try {
     // 1. Connection check
     setStep('ls-connection', 'active', '🔄');
@@ -1111,7 +1192,7 @@ async function launchPractice() {
     if (socket && socket.connected) {
       setStep('ls-connection', 'done', '✓');
     } else {
-      setStep('ls-connection', 'warn', '✗');
+      setStep('ls-connection', 'fail', '✗');
       statusEl.textContent = 'Connection failed';
       await new Promise(r => setTimeout(r, 2000));
       overlay.classList.add('fade-out');
@@ -1119,23 +1200,22 @@ async function launchPractice() {
       return;
     }
 
-    // 2. Camera check — just verify cameras are configured (don't open them)
+    // 2. Camera check — verify all required cameras are connected
     setStep('ls-cameras', 'active', '🔄');
     statusEl.textContent = 'Checking cameras…';
-    let camCount = 0;
+    let numCamsRequired = 3;
+    let activeCams = 0;
     try {
-      const camRes = await fetch('/api/status');
+      const camRes = await fetch('/api/cameras/probe');
       const camData = await camRes.json();
-      camCount = camData.num_cameras || 0;
-      // Also check if already open
-      const states = camData.cam_states || {};
-      const activeCams = Object.values(states).filter(c => c.active).length;
-      if (activeCams > 0) camCount = activeCams;
-    } catch (e) { }
-    if (camCount > 0) {
+      numCamsRequired = camData.total || 3;
+      activeCams = camData.connected || 0;
+    } catch (e) {}
+    if (activeCams >= numCamsRequired) {
       setStep('ls-cameras', 'done', '✓');
     } else {
-      setStep('ls-cameras', 'warn', '⚠');
+      setStep('ls-cameras', 'fail', '✗');
+      failures.push(`Only ${activeCams}/${numCamsRequired} cameras connected — plug in all cameras and try again.`);
     }
 
     // 3. Calibration check
@@ -1148,12 +1228,13 @@ async function launchPractice() {
         const r = await fetch(`/api/cal/info/${i}`);
         const d = await r.json();
         if (d.calibrated) calCount++;
-      } catch (e) { }
+      } catch (e) {}
     }
     if (calCount === 3) {
       setStep('ls-calibration', 'done', '✓');
     } else {
-      setStep('ls-calibration', 'warn', '⚠');
+      setStep('ls-calibration', 'fail', '✗');
+      failures.push(`Only ${calCount}/3 cameras calibrated — run Calibration for all cameras first.`);
     }
 
     // 4. Board profile
@@ -1166,15 +1247,28 @@ async function launchPractice() {
       if (pData.registered) {
         setStep('ls-profile', 'done', '✓');
       } else {
-        setStep('ls-profile', 'warn', '⚠');
+        setStep('ls-profile', 'fail', '✗');
+        failures.push('No board profile saved — calibrate and save a board profile first.');
       }
-    } catch (e) { setStep('ls-profile', 'warn', '⚠'); }
+    } catch (e) {
+      setStep('ls-profile', 'fail', '✗');
+      failures.push('Could not load board profile — server error.');
+    }
 
     // 5. Detection engine
     setStep('ls-detection', 'active', '🔄');
     statusEl.textContent = 'Starting detection engine…';
     await new Promise(r => setTimeout(r, 500));
     setStep('ls-detection', 'done', '✓');
+
+    // Block if any critical failures
+    if (failures.length > 0) {
+      statusEl.innerHTML = failures.map(f => '❌ ' + f).join('<br>');
+      await new Promise(r => setTimeout(r, 4000));
+      overlay.classList.add('fade-out');
+      setTimeout(() => { overlay.style.display = 'none'; showPage('home'); }, 500);
+      return;
+    }
 
     // All done
     statusEl.textContent = 'Ready!';
@@ -1184,7 +1278,11 @@ async function launchPractice() {
   } catch (err) {
     statusEl.textContent = 'Error: ' + err.message;
     await new Promise(r => setTimeout(r, 2000));
+    overlay.classList.add('fade-out');
+    setTimeout(() => { overlay.style.display = 'none'; showPage('home'); }, 500);
+    return;
   }
+
 
   // Fade out loading screen and go straight to practice (no board animation on first load)
   overlay.classList.add('fade-out');
@@ -2391,6 +2489,12 @@ function endGame() {
 
 function skipTakeout() {
   window._awaitingTakeoutGame = false;
+  // Immediately clear the "Darts removed! ▶ Continue" banner so it doesn't linger
+  const turnInfo = document.getElementById('game-turn-info');
+  if (turnInfo) turnInfo.innerHTML = '';
+  const prompt = document.getElementById('bullseye-prompt');
+  if (prompt) { prompt.textContent = 'Next player up…'; prompt.className = 'bullseye-prompt'; }
+  setStatus('detecting', 'Waiting for Throw');
   if (socket) socket.emit('skip_takeout');
 }
 
@@ -2570,7 +2674,9 @@ function renderX01State(s) {
   document.getElementById('game-title').textContent = s.starting_score + ' Game';
   document.getElementById('cricket-grid').style.display = 'none';
   document.getElementById('game-countup-rounds').style.display = 'none';
-
+  const gb = document.querySelector('.game-body');
+  gb?.classList.remove('cricket-mode');
+  gb?.classList.remove('countup-mode');
 
   // Scores
   document.getElementById('pp1-score').textContent = s.scores[0];
@@ -2611,46 +2717,74 @@ const CRICKET_DISPLAY = { 15: '15', 16: '16', 17: '17', 18: '18', 19: '19', 20: 
 
 function renderCricketState(s) {
   document.getElementById('game-title').textContent = 'Cricket';
-  document.getElementById('cricket-grid').style.display = '';
+  // In new design, marks live inside player panels — hide the old center grid
+  document.getElementById('cricket-grid').style.display = 'none';
   document.getElementById('game-countup-rounds').style.display = 'none';
+  document.querySelector('.game-body')?.classList.add('cricket-mode');
 
-  // Points
+  // Turn info
+  const turnInfo = document.getElementById('game-turn-info');
+  if (turnInfo) {
+    const darts = (s.darts_this_turn || []);
+    const turnTotal = darts.reduce((sum, d) => sum + (d.score || 0), 0);
+    turnInfo.innerHTML = `<span>Darts: ${darts.length}/3</span>${turnTotal > 0 ? `<span class="gt-turn-pts">+${turnTotal}</span>` : ''}`;
+  }
+
+  // Points (scores)
   document.getElementById('pp1-score').textContent = s.points[0];
   document.getElementById('pp2-score').textContent = s.points[1];
 
-  document.getElementById('pp1-indicator').textContent = s.current_player === 1 ? '◀ Throwing' : '';
-  document.getElementById('pp2-indicator').textContent = s.current_player === 2 ? 'Throwing ▶' : '';
-
+  // Active turn highlight
+  document.getElementById('pp1-indicator').textContent = s.current_player === 1 ? '▶ Throwing' : '';
+  document.getElementById('pp2-indicator').textContent = s.current_player === 2 ? '▶ Throwing' : '';
   document.getElementById('player-panel-1').classList.toggle('active-turn', s.current_player === 1);
   document.getElementById('player-panel-2').classList.toggle('active-turn', s.current_player === 2);
 
-  // Cricket marks grid
-  const body = document.getElementById('cg-body');
-  body.innerHTML = '';
-  (s.numbers || [15, 16, 17, 18, 19, 20, 25]).forEach(n => {
-    const key = String(n);
-    const p1m = (s.marks[0] || {})[key] || 0;
-    const p2m = (s.marks[1] || {})[key] || 0;
-    const row = document.createElement('div');
-    row.className = 'cg-row';
-    row.innerHTML = `
-      <span class="cg-marks">${cricketMarksDisplay(p1m)}</span>
-      <span class="cg-target">${CRICKET_DISPLAY[n] || n}</span>
-      <span class="cg-marks">${cricketMarksDisplay(p2m)}</span>
-    `;
-    body.appendChild(row);
-  });
+  // Render cricket mark rows inside each player's darts container
+  const numbers = s.numbers || [15, 16, 17, 18, 19, 20, 25];
+  const CRICKET_DISPLAY = { 15: '15', 16: '16', 17: '17', 18: '18', 19: '19', 20: '20', 25: 'Bull' };
 
-  // Darts this turn
-  const dartsEl = s.current_player === 1 ?
-    document.getElementById('pp1-darts') :
-    document.getElementById('pp2-darts');
-  dartsEl.innerHTML = (s.darts_this_turn || []).map(d =>
-    `<span class="dart-chip">${d.label}</span>`
-  ).join('');
+  function buildMarkRows(marks, darts_this_turn, playerIdx) {
+    const isActive = s.current_player === playerIdx + 1;
+    const rows = numbers.map(n => {
+      const key = String(n);
+      const m = (marks[playerIdx] || {})[key] || 0;
+      const label = CRICKET_DISPLAY[n] || n;
+      const closed = m >= 3;
+
+      // 3 dot indicators
+      const dots = [1, 2, 3].map(i => {
+        if (closed) return `<span class="cr-dot cr-dot-closed">✕</span>`;
+        if (i === 1 && m >= 1) return `<span class="cr-dot cr-dot-hit cr-dot-slash">/</span>`;
+        if (i === 2 && m >= 2) return `<span class="cr-dot cr-dot-hit">✕</span>`;
+        return `<span class="cr-dot cr-dot-empty"></span>`;
+      }).join('');
+
+      return `
+        <div class="cr-target-row${closed ? ' cr-closed' : ''}">
+          <span class="cr-num">${label}</span>
+          <span class="cr-dots">${dots}</span>
+          ${closed ? '<span class="cr-closed-badge">CLOSED</span>' : ''}
+        </div>`;
+    }).join('');
+
+    // Darts this turn (shown for active player only)
+    let dartsHtml = '';
+    if (isActive && darts_this_turn && darts_this_turn.length > 0) {
+      dartsHtml = `<div class="cr-darts-row">${darts_this_turn.map(d =>
+        `<span class="dart-chip cr-dart-chip">${d.label}</span>`
+      ).join('')}</div>`;
+    }
+
+    return `<div class="cr-marks-panel">${rows}</div>${dartsHtml}`;
+  }
+
+  document.getElementById('pp1-darts').innerHTML = buildMarkRows(s.marks, s.darts_this_turn, 0);
+  document.getElementById('pp2-darts').innerHTML = buildMarkRows(s.marks, s.darts_this_turn, 1);
 
   renderTurnHistory(s.turn_history);
 }
+
 
 function cricketMarksDisplay(count) {
   if (count === 0) return '<span class="cm-empty"></span>';
@@ -2662,45 +2796,81 @@ function cricketMarksDisplay(count) {
 // ── Count Up Renderer ───────────────────────────────────────────────
 
 function renderCountUpState(s) {
-  document.getElementById('game-title').textContent = 'Count Up (' + s.total_rounds + ' rounds)';
+  document.getElementById('game-title').textContent = 'Count Up';
   document.getElementById('cricket-grid').style.display = 'none';
-  document.getElementById('game-countup-rounds').style.display = '';
+  // Hide the old center round table — we render inside player panels now
+  document.getElementById('game-countup-rounds').style.display = 'none';
+  const gb = document.querySelector('.game-body');
+  gb?.classList.remove('cricket-mode');
+  gb?.classList.add('countup-mode');
 
   // Scores
   document.getElementById('pp1-score').textContent = s.scores[0];
   document.getElementById('pp2-score').textContent = s.scores[1];
 
-  document.getElementById('pp1-indicator').textContent = s.current_player === 1 ? '◀ Throwing' : '';
-  document.getElementById('pp2-indicator').textContent = s.current_player === 2 ? 'Throwing ▶' : '';
+  document.getElementById('pp1-indicator').textContent = s.current_player === 1 ? '▶ Throwing' : '';
+  document.getElementById('pp2-indicator').textContent = s.current_player === 2 ? '▶ Throwing' : '';
 
   document.getElementById('player-panel-1').classList.toggle('active-turn', s.current_player === 1);
   document.getElementById('player-panel-2').classList.toggle('active-turn', s.current_player === 2);
 
-  // Round grid
-  const roundsEl = document.getElementById('game-countup-rounds');
-  let html = '<div class="cu-header"><span>Rd</span><span>P1</span><span>P2</span></div>';
-  for (let i = 0; i < s.total_rounds; i++) {
-    const p1r = s.round_scores[0][i];
-    const p2r = s.round_scores[1][i];
-    html += `<div class="cu-row">
-      <span class="cu-rd">${i + 1}</span>
-      <span class="cu-score">${p1r ? p1r.total : '—'}</span>
-      <span class="cu-score">${p2r ? p2r.total : '—'}</span>
-    </div>`;
-  }
-  roundsEl.innerHTML = html;
-
-  // Darts this turn
-  const dartsEl = s.current_player === 1 ?
-    document.getElementById('pp1-darts') :
-    document.getElementById('pp2-darts');
-  dartsEl.innerHTML = (s.darts_this_turn || []).map(d =>
-    `<span class="dart-chip">${d.label} (${d.score})</span>`
-  ).join('');
-
+  // Round / turn info in center
+  const curRound = s.current_round || 1;
+  const turnDarts = s.darts_this_turn || [];
+  const turnTotal = turnDarts.reduce((sum, d) => sum + (d.score || 0), 0);
   const turnInfo = document.getElementById('game-turn-info');
-  const rc = s.rounds_completed || [0, 0];
-  turnInfo.innerHTML = `<span>Round ${s.current_round || 1} / ${s.total_rounds}</span>`;
+  if (turnInfo) {
+    turnInfo.innerHTML =
+      `<span class="cu-round-badge">Round ${curRound} <span class="cu-round-of">/ ${s.total_rounds}</span></span>` +
+      `<span class="cu-dart-count">${turnDarts.length}/3 darts</span>` +
+      (turnTotal > 0 ? `<span class="cu-turn-pts">+${turnTotal}</span>` : '');
+  }
+
+  // Build per-player panel content: round history cards + live darts
+  function buildPlayerPanel(playerIdx) {
+    const isActive = s.current_player === playerIdx + 1;
+    const roundScores = s.round_scores[playerIdx] || [];
+
+    let rows = '';
+    for (let i = 0; i < s.total_rounds; i++) {
+      const r = roundScores[i];
+      const isCurrent = (i + 1) === curRound;
+      const isPast    = r && r.total !== undefined;
+
+      let scoreHtml;
+      if (isPast) {
+        const cls = r.total >= 100 ? 'cu-score-high' : (r.total <= 20 ? 'cu-score-low' : '');
+        scoreHtml = `<span class="cu-panel-score ${cls}">${r.total}</span>`;
+      } else if (isCurrent) {
+        scoreHtml = `<span class="cu-panel-score cu-score-pending">\u2026</span>`;
+      } else {
+        scoreHtml = `<span class="cu-panel-score cu-score-low">\u2014</span>`;
+      }
+
+      const dartsRow = isPast && (r.darts || []).length > 0
+        ? `<span class="cu-panel-darts">${(r.darts || []).map(d =>
+            `<span class="cu-dart-pill">${d.label}</span>`).join('')}</span>`
+        : '';
+
+      rows += `<div class="cu-panel-row${isCurrent ? ' cu-panel-current' : ''}${isPast ? ' cu-panel-done' : ''}">` +
+        `<span class="cu-panel-rd">RD ${i + 1}</span>` +
+        scoreHtml +
+        dartsRow +
+        `</div>`;
+    }
+
+    const dartsHtml = isActive && turnDarts.length > 0
+      ? `<div class="cu-live-darts">${turnDarts.map(d =>
+          `<span class="dart-chip cu-dart-chip">${d.label}<span class="cu-chip-pts">${d.score}</span></span>`
+        ).join('')}</div>`
+      : '';
+
+    return `<div class="cu-rounds-panel">${rows}</div>${dartsHtml}`;
+  }
+
+
+  document.getElementById('pp1-darts').innerHTML = buildPlayerPanel(0);
+  document.getElementById('pp2-darts').innerHTML = buildPlayerPanel(1);
 
   renderTurnHistory(s.turn_history);
 }

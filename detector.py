@@ -435,7 +435,7 @@ class DartDetector:
     # Scored-region exclusion mask
     # ==================================================================
 
-    _EXCLUSION_RADIUS_WARPED: int = 35  # ~15mm at 1080 board_size
+    _EXCLUSION_RADIUS_WARPED: int = 12  # ~5mm at 1080 board_size — just enough to mask the hole
 
     def _build_scored_exclusion_mask(
         self, shape: tuple, space: str = 'warped',
@@ -544,7 +544,11 @@ class DartDetector:
                             np.float32)
                     grabbed += 1
             self._ref_raw_gray = (acc / grabbed).astype(np.uint8)
-        self._settle_frames = self._SETTLE_FRAME_COUNT
+        # Increase settling time if darts are already on the board to allow sympathetic wobble to dampen
+        if len(self._scored_tips) > 0:
+            self._settle_frames = self._SETTLE_FRAME_COUNT + 12
+        else:
+            self._settle_frames = self._SETTLE_FRAME_COUNT
         self._dart_mask_raw = None  # clear stale mask for next dart
 
     # ==================================================================
@@ -844,6 +848,7 @@ class DartDetector:
 
             def _novelty(contour_area):
                 c = contour_area[0]
+                area = contour_area[1]
                 M = cv2.moments(c)
                 if M["m00"] > 0:
                     cx = M["m10"] / M["m00"]
@@ -851,16 +856,14 @@ class DartDetector:
                 else:
                     pts = c.reshape(-1, 2)
                     cx, cy = pts.mean(axis=0)
-                # Tier 1: blobs outside the board circle (flights, edge noise)
-                # are deprioritized with a large negative offset so they always
-                # rank below on-board candidates regardless of their min_d.
+
                 dist_from_centre = np.hypot(cx - bs_half, cy - bs_half)
                 off_board_penalty = -1e6 if dist_from_centre > board_radius_w else 0.0
-                # Tier 2: among on-board blobs, prefer the one furthest from
-                # all previously scored tips (= the newest dart).
-                min_d = min(np.hypot(cx - t[0], cy - t[1])
-                            for t in self._scored_tips)
-                return off_board_penalty + min_d
+
+                min_d = min((np.hypot(cx - t[0], cy - t[1]) for t in self._scored_tips), default=999.0)
+                wobble_penalty = -1e5 if min_d < 15.0 else 0.0
+
+                return off_board_penalty + wobble_penalty + area
             darts.sort(key=_novelty, reverse=True)
 
 
@@ -997,6 +1000,7 @@ class DartDetector:
                     _board_r = _bs_half * 0.90
                     def _raw_novelty(ca):
                         c = ca[0]
+                        area = ca[1]
                         M = cv2.moments(c)
                         if M['m00'] > 0:
                             cx = M['m10'] / M['m00']
@@ -1004,16 +1008,16 @@ class DartDetector:
                         else:
                             pts = c.reshape(-1, 2)
                             cx, cy = pts.mean(axis=0)
-                        # Project to warped board space for comparison
+
                         pt = np.array([[[cx, cy]]], dtype=np.float32)
                         bp = cv2.perspectiveTransform(pt, self.cal.matrix)
                         bx, by = float(bp[0, 0, 0]), float(bp[0, 0, 1])
-                        off_board = (-1e6 if np.hypot(bx - _bs_half,
-                                                      by - _bs_half)
-                                     > _board_r else 0.0)
-                        return off_board + min(
-                            np.hypot(bx - t[0], by - t[1])
-                            for t in self._scored_tips)
+
+                        off_board_penalty = -1e6 if np.hypot(bx - _bs_half, by - _bs_half) > _board_r else 0.0
+                        min_d = min((np.hypot(bx - t[0], by - t[1]) for t in self._scored_tips), default=999.0)
+                        wobble_penalty = -1e5 if min_d < 15.0 else 0.0
+
+                        return off_board_penalty + wobble_penalty + area
                     dart_contours.sort(key=_raw_novelty, reverse=True)
 
 
@@ -1078,8 +1082,8 @@ class DartDetector:
         projs = dx * vx + dy * vy
 
         proj_range = projs.max() - projs.min()
-        if proj_range < 5.0:
-            return False   # degenerate -- blob is too round
+        if proj_range < 25.0:
+            return False   # degenerate -- blob is too stubby (noise/shadow artifact)
 
         # -- 4. Identify the two "ends" (top 10 % of projections each side)
         n_end = max(3, int(len(projs) * 0.10))
@@ -1332,10 +1336,13 @@ class DartDetector:
 
         dart_contours.sort(key=lambda x: x[1], reverse=True)
 
-        # Novelty filter: prefer contour furthest from scored tips
+        # Novelty filter: prefer largest on-board blob, penalize wobble and off-board
         if len(dart_contours) > 1 and self._scored_tips:
+            _bs_half = self.cal.board_size / 2.0
+            _board_r = _bs_half * 0.90
             def _novelty(ca):
                 c = ca[0]
+                area = ca[1]
                 M = cv2.moments(c)
                 if M['m00'] > 0:
                     cx = M['m10'] / M['m00']
@@ -1343,11 +1350,16 @@ class DartDetector:
                 else:
                     pts = c.reshape(-1, 2)
                     cx, cy = pts.mean(axis=0)
+
                 pt = np.array([[[cx, cy]]], dtype=np.float32)
                 bp = cv2.perspectiveTransform(pt, self.cal.matrix)
                 bx, by = float(bp[0, 0, 0]), float(bp[0, 0, 1])
-                return min(np.hypot(bx - t[0], by - t[1])
-                           for t in self._scored_tips)
+
+                off_board_penalty = -1e6 if np.hypot(bx - _bs_half, by - _bs_half) > _board_r else 0.0
+                min_d = min((np.hypot(bx - t[0], by - t[1]) for t in self._scored_tips), default=999.0)
+                wobble_penalty = -1e5 if min_d < 15.0 else 0.0
+
+                return off_board_penalty + wobble_penalty + area
             dart_contours.sort(key=_novelty, reverse=True)
 
         raw_c = dart_contours[0][0]
@@ -1378,7 +1390,7 @@ class DartDetector:
         projs = dx * vx + dy * vy
 
         proj_range = projs.max() - projs.min()
-        if proj_range < 5.0:
+        if proj_range < 25.0:
             return None
 
         n_end = max(3, int(len(projs) * 0.10))

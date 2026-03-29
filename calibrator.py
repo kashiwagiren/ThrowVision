@@ -333,19 +333,22 @@ class BoardCalibrator:
     # ------------------------------------------------------------------
     def auto_detect_anchors(self, frame: np.ndarray,
                             n_points: int = 8) -> Optional[np.ndarray]:
-        """Fully automatic 1-click anchor detection using HSV Color Segmentation.
+        """Fully automatic 1-click anchor detection using HSV colour segmentation.
 
-        Finds the dartboard by masking red/green, fits a perspective-accurate
-        ellipse, and parametrically generates the rough starting anchor points.
+        Fits an ellipse to the outer boundary of the red+green ring region
+        (after morphological close).  That boundary sits approximately at the
+        double-outer ring, giving good starting anchor points.
         """
-        # 1. Isolate the dartboard (Red + Green beds)
+        h_img, w_img = frame.shape[:2]
+
+        # 1. Isolate the dartboard (Red + Green scoring beds)
         hsv  = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-        red1 = cv2.inRange(hsv, (0,   70, 50), (10,  255, 255))
-        red2 = cv2.inRange(hsv, (165, 70, 50), (180, 255, 255))
-        grn  = cv2.inRange(hsv, (35,  50, 50), (85,  255, 255))
+        red1 = cv2.inRange(hsv, (0,   60, 50), (10,  255, 255))
+        red2 = cv2.inRange(hsv, (160, 60, 50), (180, 255, 255))
+        grn  = cv2.inRange(hsv, (35,  40, 40), (90,  255, 255))
         mask = red1 | red2 | grn
 
-        # 2. Aggressive morphological close to bridge the spider wires
+        # 2. Aggressive morphological close to bridge the spider-wire gaps
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
         mask   = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=3)
 
@@ -360,10 +363,11 @@ class BoardCalibrator:
         if len(main_contour) < 20 or cv2.contourArea(main_contour) < 5000:
             return None
 
-        # 3. Fit an ellipse to the outer bounds of the dartboard
+        # 3. Fit an ellipse — the RETR_EXTERNAL contour outer boundary sits
+        #    approximately at the double-outer ring, so no scale correction needed.
         (cx, cy), (width, height), angle_deg = cv2.fitEllipse(main_contour)
 
-        a = width / 2.0
+        a = width  / 2.0
         b = height / 2.0
         ell_ang_rad = math.radians(angle_deg)
 
@@ -382,12 +386,16 @@ class BoardCalibrator:
             t     = math.radians(360 - board_ang)
             x_ell = rs * a * math.cos(t)
             y_ell = rs * b * math.sin(t)
-            # Apply perspective rotation and translate to centre
+            # Apply ellipse tilt and translate to centre
             px = cx + x_ell * math.cos(ell_ang_rad) - y_ell * math.sin(ell_ang_rad)
             py = cy + x_ell * math.sin(ell_ang_rad) + y_ell * math.cos(ell_ang_rad)
+            # Clamp to frame bounds
+            px = float(np.clip(px, 1, w_img - 1))
+            py = float(np.clip(py, 1, h_img - 1))
             raw_pts.append([px, py])
 
         return np.array(raw_pts, dtype=np.float32)
+
 
     @staticmethod
     def _snap_to_edge(edge_map: np.ndarray,
