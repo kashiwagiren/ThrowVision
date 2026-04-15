@@ -5160,8 +5160,20 @@ body {
 .stats-mode-tabs {
   display: flex;
   gap: 4px;
-  padding: 16px 28px 0;
-  border-bottom: 1px solid var(--border);
+  position: relative;
+  padding: 16px 28px 2px;
+  border-bottom: none;
+}
+
+.stats-mode-tabs::after {
+  content: "";
+  position: absolute;
+  left: 28px;
+  right: 28px;
+  bottom: 0;
+  height: 1px;
+  background: linear-gradient(90deg, rgba(42, 54, 82, 0.85), rgba(30, 40, 64, 0.92));
+  pointer-events: none;
 }
 
 .stats-tab {
@@ -5292,8 +5304,13 @@ body {
 .stats-section-tabs {
   display: flex;
   gap: 8px;
-  padding: 16px 28px 0;
-  border-bottom: 1px solid var(--border);
+  position: relative;
+  padding: 16px 28px 2px;
+  border-bottom: none;
+}
+
+.stats-section-tabs::after {
+  display: none;
 }
 
 .stats-section-tab {
@@ -5427,13 +5444,45 @@ body {
 }
 
 .accuracy-cards {
-  margin-bottom: 16px;
+  gap: 12px;
+  margin-bottom: 0;
+  flex-shrink: 0;
+}
+
+.accuracy-cards .stat-card {
+  min-width: 128px;
+  padding: 16px 18px;
+}
+
+.accuracy-cards .sc-value {
+  font-size: clamp(23px, 1.9vw, 34px);
+  line-height: 1.15;
+}
+
+.accuracy-cards .sc-label {
+  margin-top: 6px;
+  font-size: 10px;
+  letter-spacing: 0.65px;
+}
+
+.accuracy-cards .stat-card-wide {
+  flex: 1 1 420px;
+  min-width: 320px;
+  max-width: 760px;
+  padding: 18px 24px;
+}
+
+.accuracy-cards .stat-card-wide .sc-value {
+  font-size: clamp(20px, 1.65vw, 29px);
+  line-height: 1.12;
+  word-break: break-word;
 }
 
 .accuracy-agreement-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 16px;
+  flex-shrink: 0;
 }
 
 .accuracy-agreement-card {
@@ -5459,28 +5508,42 @@ body {
 }
 
 .accuracy-table-wrap {
-  margin-top: 16px;
   background: var(--bg-card);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  padding: 18px 20px;
+  padding: 16px 18px 10px;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .accuracy-table-title {
   font-size: 16px;
   font-weight: 800;
-  margin-bottom: 12px;
+  margin-bottom: 10px;
   color: var(--fg-dim);
+  flex-shrink: 0;
 }
 
 .accuracy-table-scroll {
-  overflow-x: auto;
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  overscroll-behavior: contain;
+}
+
+.accuracy-table-scroll::-webkit-scrollbar {
+  display: none;
 }
 
 .accuracy-table {
   width: 100%;
   border-collapse: collapse;
-  min-width: 980px;
+  min-width: 1280px;
 }
 
 .accuracy-table th,
@@ -5492,14 +5555,32 @@ body {
 }
 
 .accuracy-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--bg-card);
   color: var(--fg-dim);
   text-transform: uppercase;
   letter-spacing: 0.4px;
   font-weight: 700;
+  box-shadow: inset 0 -1px 0 var(--border);
 }
 
 .accuracy-table td {
   color: var(--fg);
+}
+
+.accuracy-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.stats-dashboard.accuracy-dashboard {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-height: 0;
+  overflow: hidden;
+  padding: 18px 28px 24px;
 }
 
 .accuracy-session-badge {
