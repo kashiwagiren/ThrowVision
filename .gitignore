@@ -20,9 +20,12 @@ calibration/profiles/*.npz
 
 # Logs
 *.log
+throw_debug.log
+build_log.txt
 
 # One-off generator scripts
 gen_*.py
+extract_cal.py
 
 # Electron / Node
 node_modules/
@@ -30,3 +33,10 @@ dist/
 dist-electron/
 package-lock.json
 
+# Local runtime / recovery artifacts
+_backup_probe/
+_restore_snapshots/
+build/
+darts-backend.exe_extracted/
+data/
+settings.json

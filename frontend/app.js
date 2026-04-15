@@ -26,8 +26,8 @@ const SECTOR_ANGLE = 360 / 20;
 
 const COL = {
   darkBase: '#1c1c1c', lightBase: '#e8d8b0',
-  tripleDark: '#1a6b1a', tripleLight: '#6b1a1a',
-  doubleDark: '#1a6b1a', doubleLight: '#6b1a1a',
+  tripleDark: '#6b1a1a', tripleLight: '#1a6b1a',
+  doubleDark: '#6b1a1a', doubleLight: '#1a6b1a',
   bullGreen: '#2d6b2d', bullRed: '#6b1a1a', wire: '#888',
 };
 
@@ -131,6 +131,135 @@ const $gameBoard = document.getElementById('game-board');
 if ($bullseyeBoard) buildDartboard($bullseyeBoard);
 if ($gameBoard) buildDartboard($gameBoard);
 
+const PRACTICE_WARP_CANVAS_MM = 451;
+const PRACTICE_WARP_CENTER_MM = PRACTICE_WARP_CANVAS_MM / 2;
+let activeCam = 0;
+let _practiceWarpVisible = false;
+let _practiceWarpLoadToken = 0;
+let _camerasKnownOpen = false;
+let _practiceTakeoutPending = false;
+let _practiceResetMode = null;
+let _statsMode = null;
+let _statsSection = 'games';
+let _gameTurnReviewReady = false;
+let _practiceAccuracySession = {
+  sessionId: null,
+  turnId: null,
+  context: 'practice',
+  sessionMode: 'practice',
+  modelName: '',
+  executionDevice: '',
+  detectionProfile: '',
+  boardProfile: '',
+  predictions: [],
+  actualDarts: [],
+  notes: '',
+  lastSavedSignature: '',
+  saveTimer: null,
+};
+let _missedDartDraft = {
+  mode: 'add',
+  predictionId: null,
+  actualId: null,
+  multiplier: 'single',
+  singleRing: 'inner',
+  number: 20,
+};
+let _practiceReviewModalOpen = false;
+let _practiceReviewFeedbackTimer = null;
+let _practiceReviewFocusPredictionId = null;
+
+function _clearSvgGroup(id) {
+  const group = document.getElementById(id);
+  if (group) group.innerHTML = '';
+}
+
+function clearPracticeBoardDots() {
+  _clearSvgGroup('practice-board-dots');
+  _clearSvgGroup('practice-board-warp-dots');
+}
+
+function clearBoardDots() {
+  ['practice-board-dots', 'practice-board-warp-dots', 'bullseye-board-dots', 'game-board-dots']
+    .forEach(_clearSvgGroup);
+}
+
+function _syncPracticeCamButtons() {
+  document.querySelectorAll('.p-cam-btn[data-cam]').forEach((btn) => {
+    btn.classList.toggle('active', parseInt(btn.dataset.cam, 10) === activeCam);
+  });
+}
+
+function _setPracticeCameraSelectorVisible(visible) {
+  const selector = document.querySelector('.prac-cam-selector');
+  if (selector) {
+    selector.hidden = !visible;
+    selector.style.display = visible ? '' : 'none';
+  }
+}
+
+function _clearPracticeResetFlash() {
+  const side = document.querySelector('.prac-score-side');
+  if (side) side.classList.remove('reset-flash');
+}
+
+function _setPracticeTakeoutBannerVisible(visible) {
+  const banner = document.getElementById('practice-takeout-banner');
+  _practiceTakeoutPending = !!visible;
+  if (banner) banner.style.display = visible ? 'grid' : 'none';
+  window._awaitingTakeoutGame = !!visible;
+}
+
+function _clearPracticeTransientUi() {
+  _practiceResetMode = null;
+  _setPracticeTakeoutBannerVisible(false);
+  _clearPracticeResetFlash();
+}
+
+function _setPracticeBoardStatic(options = {}) {
+  const { clearStream = false } = options;
+  const stage = document.getElementById('practice-board-stage');
+  const stream = document.getElementById('practice-board-stream');
+  _practiceWarpVisible = false;
+  if (stage) stage.classList.remove('is-loading', 'is-warped');
+  if (stream) {
+    stream.onload = null;
+    stream.onerror = null;
+    if (clearStream) {
+      stream.removeAttribute('src');
+      stream.src = '';
+    }
+  }
+}
+
+function _armPracticeWarpFeed() {
+  if (!practiceActive) return;
+  const stage = document.getElementById('practice-board-stage');
+  const stream = document.getElementById('practice-board-stream');
+  if (!stage || !stream) return;
+
+  const token = ++_practiceWarpLoadToken;
+  stage.classList.add('is-loading');
+
+  stream.onload = () => {
+    if (token !== _practiceWarpLoadToken) return;
+    _practiceWarpVisible = true;
+    stage.classList.remove('is-loading');
+    stage.classList.add('is-warped');
+  };
+
+  stream.onerror = () => {
+    if (token !== _practiceWarpLoadToken) return;
+    _practiceWarpVisible = false;
+    stage.classList.remove('is-loading', 'is-warped');
+  };
+
+  stream.src = `/api/stream/warped/${activeCam}?clean=1&t=${Date.now()}`;
+}
+
+_syncPracticeCamButtons();
+_setPracticeCameraSelectorVisible(false);
+
 
 // ══════════════════════════════════════════════════════════════════════
 // Page Navigation
@@ -161,6 +290,13 @@ function showPage(name) {
   }
   if (name === 'practice' && !practiceActive) {
     setStatus('idle', 'Idle');
+    _clearPracticeTransientUi();
+    _setPracticeCameraSelectorVisible(false);
+    _setPracticeBoardStatic({ clearStream: true });
+    _setPracticeFinishTurnVisible(false);
+  }
+  if (!['practice', 'game'].includes(name)) {
+    closePracticeReviewModal();
   }
   // Start/stop camera preview streams
   if (name === 'settings') {
@@ -174,6 +310,8 @@ function showPage(name) {
     stopCamPreview();
     checkBoardProfile();
     lensRefreshAll();
+    // Rebuild resolution dropdown — pass saved resolution so it stays selected
+    loadServerSettings();
   } else {
     stopCamPreview();
     // Close cameras when leaving settings — but NOT when going to calibration,
@@ -194,7 +332,7 @@ function showPage(name) {
   }
   // Stats page — auto-load stats
   if (name === 'stats') {
-    loadStats(null);
+    setStatsSection(_statsSection || 'games');
   }
 }
 
@@ -212,6 +350,20 @@ document.addEventListener('keydown', (e) => {
 // ── Camera Preview Streams ─────────────────────────────────────────────
 let _camViewMode = 'raw';
 let _hasActiveProfile = false;
+let _selectedPreviewCam = 0;
+
+function selectPreviewCam(camId) {
+  _selectedPreviewCam = camId;
+  // Update tab buttons
+  document.querySelectorAll('.cam-select-btn').forEach(b => {
+    b.classList.toggle('active', parseInt(b.dataset.cam) === camId);
+  });
+  // Show only the selected camera item
+  document.querySelectorAll('.cam-preview-item[data-cam-item]').forEach(item => {
+    const id = parseInt(item.dataset.camItem);
+    item.style.display = id === camId ? '' : 'none';
+  });
+}
 
 function setCamView(mode) {
   _camViewMode = mode;
@@ -227,8 +379,14 @@ function updateNoProfileOverlays() {
   for (let i = 0; i < 3; i++) {
     const overlay = document.getElementById('cam-no-profile-' + i);
     const img = document.getElementById('cam-preview-' + i);
+    const ph = document.getElementById('cam-offline-' + i);
     if (overlay) overlay.style.display = showOverlay ? 'flex' : 'none';
-    if (img && showOverlay) { img.onerror = null; img.src = ''; img.style.display = 'none'; }
+    if (showOverlay) {
+      // Hide the stream image and the "System Offline" placeholder so only
+      // the "No Board Profile" overlay is visible (prevents warped overlap).
+      if (img) { img.onerror = null; img.src = ''; img.style.display = 'none'; }
+      if (ph) ph.classList.add('hidden');
+    }
   }
 }
 
@@ -300,6 +458,128 @@ const CAL_LABELS = [
 ];
 let calActivePoint = 0;  // which point zoom follows
 let calMode = 8;          // 4 = legacy outer-only, 8 = outer+inner (precise)
+let calNoticeTimer = null;
+
+async function readJsonSafe(res) {
+  const text = await res.text();
+  try {
+    return { data: JSON.parse(text), raw: text };
+  } catch {
+    return { data: null, raw: text };
+  }
+}
+
+function showCalibrationNotice(message, kind = 'warn', timeoutMs = 4200) {
+  let toast = document.getElementById('calibration-toast');
+  if (!toast) {
+    toast = document.createElement('div');
+    toast.id = 'calibration-toast';
+    toast.dataset.baseStyle = [
+      'position:fixed',
+      'top:72px',
+      'left:50%',
+      'transform:translateX(-50%)',
+      'z-index:10001',
+      'min-width:320px',
+      'max-width:min(88vw,780px)',
+      'padding:12px 16px',
+      'border-radius:10px',
+      'box-shadow:0 10px 28px rgba(0,0,0,.35)',
+      'font:600 14px Inter, sans-serif',
+      'display:none',
+      'align-items:center',
+      'justify-content:center',
+      'text-align:center',
+      'cursor:pointer',
+      'backdrop-filter:blur(8px)',
+    ].join(';');
+    toast.style.cssText = toast.dataset.baseStyle;
+    toast.addEventListener('click', () => { toast.style.display = 'none'; });
+    document.body.appendChild(toast);
+  }
+
+  const styles = {
+    ok: 'background:rgba(16,185,129,.92);color:#f0fdf4;border:1px solid rgba(167,243,208,.45)',
+    warn: 'background:rgba(245,158,11,.94);color:#111827;border:1px solid rgba(253,230,138,.45)',
+    error: 'background:rgba(239,68,68,.94);color:#fff;border:1px solid rgba(254,202,202,.45)',
+  };
+  toast.style.cssText = toast.dataset.baseStyle + ';' + (styles[kind] || styles.warn);
+  toast.textContent = message;
+  toast.style.display = 'flex';
+
+  if (calNoticeTimer) clearTimeout(calNoticeTimer);
+  calNoticeTimer = setTimeout(() => {
+    if (toast) toast.style.display = 'none';
+  }, timeoutMs);
+}
+
+let _toastTimer = null;
+function showToast(message, kind = 'warn', timeoutMs = 4000) {
+  let el = document.getElementById('app-toast');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'app-toast';
+    el.dataset.baseStyle = [
+      'position:fixed', 'top:72px', 'left:50%', 'transform:translateX(-50%)',
+      'z-index:10002', 'min-width:300px', 'max-width:min(88vw,680px)',
+      'padding:12px 20px', 'border-radius:10px',
+      'box-shadow:0 10px 28px rgba(0,0,0,.35)',
+      'font:700 15px Inter, sans-serif',
+      'display:none', 'align-items:center', 'justify-content:center',
+      'text-align:center', 'cursor:pointer', 'backdrop-filter:blur(8px)',
+    ].join(';');
+    el.style.cssText = el.dataset.baseStyle;
+    el.addEventListener('click', () => { el.style.display = 'none'; });
+    document.body.appendChild(el);
+  }
+  const styles = {
+    ok: 'background:rgba(16,185,129,.92);color:#f0fdf4;border:1px solid rgba(167,243,208,.45)',
+    warn: 'background:rgba(245,158,11,.94);color:#111827;border:1px solid rgba(253,230,138,.45)',
+    foul: 'background:rgba(220,30,30,.94);color:#fff;border:1px solid rgba(254,150,150,.45)',
+    error: 'background:rgba(239,68,68,.94);color:#fff;border:1px solid rgba(254,202,202,.45)',
+  };
+  el.style.cssText = el.dataset.baseStyle + ';' + (styles[kind] || styles.warn);
+  el.textContent = message;
+  el.style.display = 'flex';
+  if (_toastTimer) clearTimeout(_toastTimer);
+  _toastTimer = setTimeout(() => { if (el) el.style.display = 'none'; }, timeoutMs);
+}
+
+let _foulNotifTimer = null;
+function _showFoulNotification(msg) {
+  let el = document.getElementById('foul-notification');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'foul-notification';
+    el.style.cssText = [
+      'position:fixed',
+      'bottom:48px',         // sits just above the bottom bar
+      'right:16px',
+      'z-index:10003',
+      'max-width:320px',
+      'min-width:220px',
+      'padding:10px 14px',
+      'border-radius:8px',
+      'border:1px solid rgba(224,82,82,0.5)',
+      'background:rgba(30,8,8,0.94)',
+      'backdrop-filter:blur(10px)',
+      'box-shadow:0 4px 20px rgba(220,30,30,.35)',
+      'font:600 12px Inter,sans-serif',
+      'color:#ffaaaa',
+      'display:none',
+      'align-items:flex-start',
+      'gap:8px',
+      'cursor:pointer',
+      'line-height:1.45',
+    ].join(';');
+    el.addEventListener('click', () => { el.style.display = 'none'; });
+    document.body.appendChild(el);
+  }
+  el.innerHTML = '<span style="font-size:14px;flex-shrink:0">⚠</span><span>' + msg + '</span>';
+  el.style.display = 'flex';
+  if (_foulNotifTimer) clearTimeout(_foulNotifTimer);
+  _foulNotifTimer = setTimeout(() => { if (el) el.style.display = 'none'; }, 6000);
+}
 
 // Update toolbar toggle + instruction hint to match calMode
 function calSyncModeUI() {
@@ -571,7 +851,7 @@ function resetCalPoints() {
 
 async function acceptCalibration() {
   if (calPoints.length !== 4 && calPoints.length !== 8) {
-    alert('Place all calibration points (4 or 8) before accepting.');
+    showCalibrationNotice('Place all calibration points (4 or 8) before accepting.', 'warn');
     return;
   }
   const points = calPoints.map(p => [p.x, p.y]);
@@ -591,8 +871,8 @@ async function acceptCalibration() {
         showPage('home');
         showProfileModal();
       }
-    } else { alert('Calibration failed: ' + (data.error || 'Unknown')); }
-  } catch (err) { alert('Failed: ' + err.message); }
+    } else { showCalibrationNotice('Calibration failed: ' + (data.error || 'Unknown'), 'error'); }
+  } catch (err) { showCalibrationNotice('Calibration failed: ' + err.message, 'error'); }
 }
 
 function showProfileModal() {
@@ -604,14 +884,30 @@ function showProfileModal() {
 
 async function closeProfileModal(save) {
   const modal = document.getElementById('profile-modal');
-  if (modal) modal.style.display = 'none';
-  if (save) {
-    const input = document.getElementById('profile-modal-name');
-    const name = (input && input.value.trim()) || 'default';
-    const nameInput = document.getElementById('profile-name-input');
-    if (nameInput) nameInput.value = name;
-    await registerBoard();   // wait for the fetch to complete BEFORE closing cameras
+  if (!save) {
+    if (modal) modal.style.display = 'none';
+    if (socket) socket.emit('close_cameras');
+    return;
   }
+
+  const input = document.getElementById('profile-modal-name');
+  const saveBtn = document.getElementById('profile-modal-save-btn');
+  const skipBtn = document.getElementById('profile-modal-skip-btn');
+  const name = (input && input.value.trim()) || 'default';
+  if (saveBtn) saveBtn.disabled = true;
+  if (skipBtn) skipBtn.disabled = true;
+
+  const ok = await registerBoard({
+    name,
+    camId: calCamId,
+    btnEl: saveBtn,
+  });
+
+  if (saveBtn) saveBtn.disabled = false;
+  if (skipBtn) skipBtn.disabled = false;
+  if (!ok) return;
+
+  if (modal) modal.style.display = 'none';
   if (socket) socket.emit('close_cameras');
 }
 
@@ -623,11 +919,50 @@ async function autoCalibrate() {
   btn.textContent = '⏳ Detecting…'; btn.disabled = true;
   try {
     const res = await fetch(`/api/cal/auto/${calCamId}`);
-    const data = await res.json();
-    const np = data.n_points || (data.points && data.points.length);
-    if (data.ok && data.points && (np === 4 || np === 8)) {
+    const { data, raw } = await readJsonSafe(res);
+
+    if (!data) {
+      const snippet = raw ? raw.slice(0, 140).replace(/\s+/g, ' ') : res.statusText;
+      showCalibrationNotice(`Auto-calibration error: ${snippet}`, 'error', 6500);
+      btn.textContent = '✗ Failed';
+      btn.disabled = false;
+      setTimeout(() => { btn.textContent = orig; }, 2000);
+      return;
+    }
+
+    // ── New response format: {success, H, rings_found, reprojection_error, preview_b64}
+    // The server has already committed the homography — just refresh the frame.
+    if (data.success === true) {
+      const nRings = data.rings_found || 0;
+      const err    = data.reprojection_error != null ? data.reprojection_error.toFixed(1) : '?';
+      addLog(`Auto-calibrate Cam ${calCamId + 1}: ${nRings} rings, reproj=${err}px — calibration committed`);
+      btn.textContent = `✓ ${nRings} rings`;
+
+      // Show preview image if provided
+      if (data.preview_b64) {
+        const overlay = document.createElement('div');
+        overlay.style.cssText = 'position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.82);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;cursor:pointer';
+        const imgEl = document.createElement('img');
+        imgEl.src = 'data:image/jpeg;base64,' + data.preview_b64;
+        imgEl.style.cssText = 'max-width:90vw;max-height:72vh;border-radius:8px';
+        const cap = document.createElement('p');
+        cap.style.cssText = 'color:#e5e7eb;font-size:14px;margin:0';
+        cap.textContent = `✓ ${nRings} rings detected · reproj ${err}px · Click to dismiss`;
+        overlay.append(imgEl, cap);
+        overlay.addEventListener('click', () => overlay.remove());
+        document.body.appendChild(overlay);
+        setTimeout(() => overlay.remove(), 6000);
+      }
+
+      // Reload the calibration frame (homography is now live)
+      await new Promise(r => setTimeout(r, 400));
+      await calCaptureFrame(3, /*keepPoints=*/false);
+
+    // ── Legacy response format: {ok, points, method, n_points}
+    // (board-profile feature matching still uses this path)
+    } else if (data.ok && data.points) {
+      const np = data.n_points || data.points.length;
       if (calMode === 8 && np === 4 && calPoints.length === 8) {
-        // Auto detected outer ring only — update outer 4, keep existing inner 4 orange pts
         const outer = data.points.map(p => ({ x: p[0], y: p[1] }));
         calPoints = [...outer, ...calPoints.slice(4)];
       } else {
@@ -639,12 +974,17 @@ async function autoCalibrate() {
       calDraw();
       addLog(`Auto-calibrate Cam ${calCamId + 1}: ${np} points detected (${data.method})`);
       btn.textContent = `✓ ${np} pts`;
+
+    // ── Failure path
     } else {
-      alert(data.error || 'Auto-detection failed');
+      const reason = data.reason || data.error || 'Auto-detection failed';
+      const rings  = data.rings_found != null ? ` (${data.rings_found} rings found)` : '';
+      showCalibrationNotice(`Auto-calibration failed: ${reason}${rings}`, 'warn', 5200);
+      addLog(`Auto-calibrate Cam ${calCamId + 1}: failed — ${reason}${rings}`);
       btn.textContent = '✗ Failed';
     }
   } catch (err) {
-    alert('Auto-calibrate error: ' + err.message);
+    showCalibrationNotice('Auto-calibration error: ' + err.message, 'error', 5200);
     btn.textContent = '✗ Failed';
   }
   btn.disabled = false;
@@ -653,7 +993,7 @@ async function autoCalibrate() {
 
 async function calAutoRefine() {
   if (!calPoints || calPoints.length < 4) {
-    alert('Place at least 4 rough calibration points first, then click Refine.');
+    showCalibrationNotice('Place at least 4 rough calibration points first, then click Refine.', 'warn');
     return;
   }
   const btn = document.getElementById('btn-refine-cal');
@@ -669,8 +1009,12 @@ async function calAutoRefine() {
     });
 
     if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      alert('Ring detection failed: ' + (err.error || res.statusText));
+      const parsed = await readJsonSafe(res);
+      const err = parsed.data || {};
+      const fallback = parsed.raw ? parsed.raw.slice(0, 140).replace(/\s+/g, ' ') : res.statusText;
+      const msg = 'Ring detection failed: ' + (err.error || fallback || res.statusText);
+      showCalibrationNotice(msg, 'warn', 5200);
+      addLog(`Refine Cam ${calCamId + 1}: ${msg}`);
       if (btn) btn.textContent = '✗ Failed';
       setTimeout(() => { if (btn) btn.textContent = orig; }, 2000);
       if (btn) btn.disabled = false;
@@ -713,7 +1057,7 @@ async function calAutoRefine() {
       if (btn) btn.textContent = nRings > 0 ? `⚠ ${nRings} rings` : '✗ No rings';
     }
   } catch (err) {
-    alert('Refine error: ' + err.message);
+    showCalibrationNotice('Refine error: ' + err.message, 'error', 5200);
     if (btn) btn.textContent = '✗ Error';
   }
 
@@ -1151,6 +1495,7 @@ async function launchPractice() {
     homePage.classList.add('transitioning');
     $homeBoard.classList.remove('spinning');
     $homeBoard.classList.add('launch-practice');
+    _resetPracticeState();
     setTimeout(() => {
       showPage('practice');
       const pb = document.getElementById('practice-board');
@@ -1287,6 +1632,7 @@ async function launchPractice() {
   // Fade out loading screen and go straight to practice (no board animation on first load)
   overlay.classList.add('fade-out');
 
+  _resetPracticeState();
   setTimeout(() => {
     overlay.style.display = 'none';
     showPage('practice');
@@ -1413,7 +1759,7 @@ document.addEventListener('keydown', (e) => {
 // ══════════════════════════════════════════════════════════════════════
 
 let socket = null, practiceActive = false;
-let throwData = [], totalScore = 0, throwCount = 0, activeCam = 0;
+let throwData = [], totalScore = 0, throwCount = 0;
 
 function connectSocket() {
   socket = io({ reconnection: true, reconnectionDelay: 1000 });
@@ -1458,6 +1804,9 @@ function connectSocket() {
         if (practiceActive) {
           practiceActive = false;
           _systemChecked = false;
+          _camerasKnownOpen = false;
+          _setPracticeBoardStatic({ clearStream: true });
+          _setPracticeFinishTurnVisible(false);
           const btn = document.getElementById('btn-practice-toggle');
           if (btn) { btn.textContent = 'Start'; btn.classList.remove('btn-reset'); btn.classList.add('btn-primary'); }
           const dbg = document.getElementById('toggle-debug');
@@ -1480,17 +1829,29 @@ function connectSocket() {
     // Show on ALL pages so the user always sees camera state transitions
     const type = data.type || 'idle';
     const msg  = data.message || '';
-    if (type === 'loading') setStatus('waiting', msg);
-    else if (type === 'ready') setStatus('ready', msg);
-    else setStatus('idle', msg);
+    if (type === 'loading') {
+      _camerasKnownOpen = false;
+      if (practiceActive) _setPracticeBoardStatic();
+      setStatus('waiting', msg);
+    } else if (type === 'ready') {
+      _camerasKnownOpen = true;
+      if (practiceActive) _armPracticeWarpFeed();
+      setStatus('ready', msg);
+    } else {
+      setStatus('idle', msg);
+    }
   });
 
   socket.on('state', onState);
   socket.on('takeout', onTakeout);
   socket.on('server_log', (data) => appendDebugLog(data.msg, data.ts));
   socket.on('cameras_state', (data) => {
-    if (data.open && practiceActive) {
+    _camerasKnownOpen = !!(data && data.open);
+    if (_camerasKnownOpen && practiceActive) {
+      _armPracticeWarpFeed();
       setStatus('ready', 'Waiting for Throw');
+    } else if (!_camerasKnownOpen) {
+      _setPracticeBoardStatic({ clearStream: true });
     }
   });
 
@@ -1500,13 +1861,13 @@ function connectSocket() {
   socket.on('game_state', onGameState);
   socket.on('game_over', onGameOver);
   socket.on('stats_data', onStatsData);
+  socket.on('accuracy_session', (data) => applyPracticeAccuracySession(data));
 
   // Clear dart dots from board when turn takeout is confirmed
   socket.on('clear_board_dots', () => {
-    ['practice-board-dots', 'bullseye-board-dots', 'game-board-dots'].forEach(id => {
-      const g = document.getElementById(id);
-      if (g) g.innerHTML = '';
-    });
+    clearBoardDots();
+    _gameTurnReviewReady = false;
+    _syncAccuracyReviewActionButtons();
     // Clear the Remove Darts banner in the game turn info
     const turnInfo = document.getElementById('game-turn-info');
     if (turnInfo) turnInfo.innerHTML = '';
@@ -1523,7 +1884,21 @@ function connectSocket() {
     setStatus('takeout', 'Remove Darts');
   });
 
-  socket.on('takeout_ready', () => {
+  socket.on('takeout_ready', (data = {}) => {
+    const reason = data.reason || 'bullseye';
+    if (reason === 'turn_review' && _isX01AccuracyContext()) {
+      window._awaitingTakeoutGame = false;
+      _gameTurnReviewReady = true;
+      void _syncPracticeAccuracyTurnFromServer();
+      const turnInfo = document.getElementById('game-turn-info');
+      if (turnInfo) {
+        turnInfo.innerHTML = '<span style="color:var(--green);font-size:16px;">✅ Darts removed. Review the turn, then continue the match.</span>';
+      }
+      _syncAccuracyReviewActionButtons();
+      setStatus('ready', 'Review Turn');
+      openPracticeReviewModal();
+      return;
+    }
     // Update bullseye prompt (for bullseye→game transition)
     const prompt = document.getElementById('bullseye-prompt');
     if (prompt && prompt.offsetParent !== null) {
@@ -1541,16 +1916,23 @@ function connectSocket() {
   // Between-turn takeout: show prompt in game turn info area
   socket.on('turn_takeout', (data) => {
     window._awaitingTakeoutGame = true;
+    _gameTurnReviewReady = false;
     const turnInfo = document.getElementById('game-turn-info');
     if (turnInfo) {
-      turnInfo.innerHTML = '<span style="color:var(--yellow);font-size:18px;">🎯 Remove darts from the board!</span>';
+      turnInfo.innerHTML = _isX01AccuracyContext()
+        ? '<span style="color:var(--yellow);font-size:18px;">🎯 Remove darts from the board to unlock turn review.</span>'
+        : '<span style="color:var(--yellow);font-size:18px;">🎯 Remove darts from the board!</span>';
     }
+    _syncAccuracyReviewActionButtons();
     setStatus('takeout', 'Remove Darts');
   });
 
   // Undo during takeout: cancel the Remove Darts prompt and resume the same player
   socket.on('cancel_takeout', () => {
     window._awaitingTakeoutGame = false;
+    _gameTurnReviewReady = false;
+    _syncAccuracyReviewActionButtons();
+    if (currentPage === 'game') closePracticeReviewModal();
     // Restore normal turn-info display — game_state event will update dart count
     const turnInfo = document.getElementById('game-turn-info');
     if (turnInfo) turnInfo.innerHTML = '';
@@ -1558,25 +1940,99 @@ function connectSocket() {
   });
 
   // Practice 3-throw takeout events
-  socket.on('practice_awaiting_takeout', (data) => {
-    const banner = document.getElementById('practice-takeout-banner');
-    if (banner) banner.style.display = 'flex';
-    setStatus('takeout', 'Remove Darts — 3 Thrown');
-    addLog('[PRACTICE] 3 darts thrown — remove from board');
+  // ── Oche distance sensor ───────────────────────────────────────────
+  socket.on('distance_update', (data) => {
+    const group = document.getElementById('oche-status');
+    const label = document.getElementById('oche-label');
+    const dot = document.getElementById('oche-dot');
+    const banner = document.getElementById('oche-trespass-banner');
+    const bannerDist = document.getElementById('oche-trespass-dist');
+
+    // Update live distance display on settings page
+    _updateTFLunaLive(data);
+
+    if (!data.connected) {
+      if (group) group.style.display = 'none';
+      if (banner) banner.style.display = 'none';
+      return;
+    }
+    if (group) group.style.display = '';
+    if (label) label.textContent = data.distance_cm + ' cm';
+
+    if (data.is_trespassing) {
+      if (dot) { dot.className = 'bar-dot dot-foul'; }
+      if (banner && (currentPage === 'game' || currentPage === 'practice')) {
+        banner.style.display = '';
+        if (bannerDist) bannerDist.textContent = data.distance_cm + ' cm / ' + data.foul_threshold_cm + ' cm';
+      }
+    } else {
+      if (dot) { dot.className = 'bar-dot dot-on'; }
+      if (banner) banner.style.display = 'none';
+    }
   });
 
-  socket.on('practice_reset', () => {
-    const banner = document.getElementById('practice-takeout-banner');
-    if (banner) banner.style.display = 'none';
-    resetTurn();
-    setStatus('ready', 'Board Reset — Throw Again');
-    addLog('[PRACTICE] Board auto-reset after takeout');
-    const side = document.querySelector('.prac-score-side');
-    if (side) {
-      side.classList.remove('reset-flash');
-      void side.offsetWidth;
-      side.classList.add('reset-flash');
-      setTimeout(() => side.classList.remove('reset-flash'), 700);
+  socket.on('foul_warning', (data) => {
+    const msg = 'FOUL — dart voided (' + data.distance_cm + ' cm from board, min ' + data.threshold_cm + ' cm)';
+    addPracticeLog('[FOUL] ' + msg);
+    // Show as a fixed notification at the bottom-right, not overlapping the board
+    _showFoulNotification(msg);
+  });
+
+  // ── TF-Luna hotplug auto-detection ─────────────────────────────────
+  socket.on('tfluna_status', (data) => {
+    // Auto-update settings UI when sensor is plugged or unplugged
+    const enabledEl = document.getElementById('set-tfluna-enabled');
+    const portEl = document.getElementById('set-tfluna-port');
+    if (enabledEl) enabledEl.checked = !!data.enabled;
+    if (portEl && data.port != null) portEl.textContent = data.port;
+
+    if (data.detected && data.connected) {
+      _setTFLunaStatus('tfluna-ok', `Auto-detected on ${data.port}`);
+      showToast(`TF-Luna sensor detected on ${data.port}`, 'ok');
+    } else if (!data.detected) {
+      _setTFLunaStatus('tfluna-fail', 'Sensor removed');
+      _updateTFLunaLive({ connected: false });
+    }
+  });
+
+  socket.on('practice_awaiting_takeout', (data) => {
+    if (!practiceActive) {
+      _clearPracticeTransientUi();
+      return;
+    }
+    _practiceResetMode = 'auto';
+    _setPracticeTakeoutBannerVisible(true);
+    setStatus('takeout', 'Remove Darts — 3 Thrown');
+    addPracticeLog('[PRACTICE] 3 darts thrown — remove from board');
+  });
+
+  socket.on('practice_reset', (data) => {
+    const wasManualReset = _practiceResetMode === 'manual';
+    _clearPracticeTransientUi();
+    if (!practiceActive) return;
+    if (data && data.session_id) {
+      _practiceAccuracySession.sessionId = data.session_id;
+      _practiceAccuracySession.turnId = data.turn_id || _practiceAccuracySession.turnId;
+      _practiceAccuracySession.predictions = [];
+      _practiceAccuracySession.actualDarts = [];
+      _practiceAccuracySession.lastSavedSignature = '';
+    }
+    resetTurn({ clearAccuracy: false, clearLog: true, logMessage: null });
+    closePracticeReviewModal();
+    renderPracticeAccuracyReview();
+    if (wasManualReset) {
+      setStatus('ready', 'Waiting for Throw');
+      addPracticeLog('[PRACTICE] Continue pressed — ready for next throw');
+    } else {
+      setStatus('ready', 'Board Reset — Throw Again');
+      addPracticeLog('[PRACTICE] Board auto-reset after takeout');
+      const side = document.querySelector('.prac-score-side');
+      if (side) {
+        side.classList.remove('reset-flash');
+        void side.offsetWidth;
+        side.classList.add('reset-flash');
+        setTimeout(() => side.classList.remove('reset-flash'), 700);
+      }
     }
   });
 }
@@ -1586,30 +2042,60 @@ function connectSocket() {
 // ══════════════════════════════════════════════════════════════════════
 
 function onDartScored(data) {
-  const { label, score, x_mm, y_mm } = data;
-  throwCount++; totalScore += score;
-  updateDartCount();
+  // Normalize OFF → MISS: dart outside the board is a miss for scoring purposes
+  const label = data.label === 'OFF' ? 'MISS' : data.label;
+  const score = data.label === 'OFF' ? 0 : data.score;
+  const { x_mm, y_mm } = data;
+  const shouldTrackAccuracyPrediction = currentPage === 'practice'
+    || (currentPage === 'game' && _isX01AccuracyContext());
 
-  document.getElementById('score-current').textContent = label;
-  document.getElementById('score-ring').textContent = getRingName(label);
-  document.getElementById('stat-throws').textContent = throwCount;
-  document.getElementById('stat-total').textContent = totalScore;
-  document.getElementById('stat-avg').textContent = throwCount > 0 ? (totalScore / throwCount).toFixed(1) : '–';
+  if (shouldTrackAccuracyPrediction) {
+    _upsertPracticePrediction({
+      ...data,
+      label,
+      score,
+    });
+  }
 
-  addHistoryRow(label, score);
-  placeDot(x_mm, y_mm);
-  setStatus('scored', label + ' = ' + score);
-  setTimeout(() => {
-    // Don't override status if in game takeout wait OR practice banner visible
-    if (window._awaitingTakeoutGame) return;
-    const banner = document.getElementById('practice-takeout-banner');
-    if (!banner || banner.style.display === 'none' || banner.style.display === '') {
+  if (currentPage === 'practice') {
+    throwCount++; totalScore += score;
+    updateDartCount();
+    const scoreEl = document.getElementById('score-current');
+    scoreEl.textContent = _formatAccuracyLabel(label);
+    scoreEl.classList.toggle('label-bounce', label === 'BOUNCE');
+    scoreEl.classList.toggle('label-miss', label === 'MISS');
+    scoreEl.classList.toggle('label-foul', label === 'FOUL');
+    const ringEl = document.getElementById('score-ring');
+    if (ringEl) ringEl.textContent = label === 'FOUL' ? '\u00a0' : getRingName(label);
+    document.getElementById('stat-throws').textContent = throwCount;
+    document.getElementById('stat-total').textContent = totalScore;
+    document.getElementById('stat-avg').textContent =
+      throwCount > 0 ? (totalScore / throwCount).toFixed(1) : '–';
+    addHistoryRow(label, score);
+    setStatus('scored', label + ' = ' + score);
+    setTimeout(() => {
+      if (window._awaitingTakeoutGame) return;
+      const banner = document.getElementById('practice-takeout-banner');
+      if (!banner || banner.style.display === 'none' || banner.style.display === '') {
+        setStatus('ready', 'Waiting for Throw');
+      }
+    }, 2000);
+  }
+
+  // Game page: update status indicator (otherwise "Detecting..." stays stuck)
+  if (currentPage === 'game') {
+    setStatus('scored', label + ' = ' + score);
+    setTimeout(() => {
+      if (window._awaitingTakeoutGame) return;
       setStatus('ready', 'Waiting for Throw');
-    }
-  }, 2000);
-  addLog(`[SCORE] ${label} = ${score} pts (${x_mm.toFixed(1)}, ${y_mm.toFixed(1)})mm`);
+    }, 2000);
+  }
 
-  // Update debug panel per-camera info
+  // Always: dot + log + debug (page-aware dot placement handled inside placeDot)
+  placeDot(x_mm, y_mm, label);
+  if (currentPage === 'practice') {
+    addPracticeLog(`[SCORE] ${label} = ${score} pts (${x_mm.toFixed(1)}, ${y_mm.toFixed(1)})mm`);
+  }
   if (data.cam_details) updateDebugCamInfo(data.cam_details);
 }
 
@@ -1627,33 +2113,67 @@ function onState(data) {
   else if (s === 'TAKEOUT') setStatus('takeout', 'Takeout');
 }
 function onTakeout() {
+  if (!practiceActive && currentPage !== 'game') return;
   setStatus('takeout', 'Takeout — Darts Removed');
-  addLog('[DET] Takeout detected');
+  if (currentPage === 'practice') addPracticeLog('[DET] Takeout detected');
   // Clear board dots on all SVGs
-  ['practice-board-dots', 'bullseye-board-dots', 'game-board-dots'].forEach(id => {
-    const g = document.getElementById(id);
-    if (g) g.innerHTML = '';
-  });
+  clearBoardDots();
   setTimeout(() => { setStatus('ready', 'Waiting for Throw'); }, 2000);
 }
 
 // ══════════════════════════════════════════════════════════════════════
 
 function leavePractice() {
-  // Stop detection and close cameras when leaving practice
-  if (practiceActive) {
-    practiceActive = false;
-    const btn = document.getElementById('btn-practice-toggle');
-    if (btn) { btn.textContent = 'Start'; btn.classList.remove('btn-reset'); btn.classList.add('btn-primary'); }
+  practiceActive = false;
+  _camerasKnownOpen = false;
+  _setPracticeCameraSelectorVisible(false);
+  _clearPracticeTransientUi();
+  _setPracticeBoardStatic({ clearStream: true });
+  _setPracticeFinishTurnVisible(false);
+  const btn = document.getElementById('btn-practice-toggle');
+  if (btn) {
+    btn.textContent = 'Start';
+    btn.classList.remove('btn-reset');
+    btn.classList.add('btn-primary');
   }
   if (socket) socket.emit('stop_detection');
   if (socket) socket.emit('close_cameras');
-  // Clear board state so next session starts fresh
-  resetTurn();
-  // Disable debug toggle
+  resetTurn({ clearAccuracy: true, clearLog: true, logMessage: null });
   const dbg = document.getElementById('toggle-debug');
   if (dbg) { dbg.checked = false; dbg.disabled = true; toggleDebugCams(); }
   showPage('home');
+}
+
+/** Reset practice runtime counters without touching DOM (safe pre-game). */
+function _resetPracticeRuntimeState() {
+  throwData = []; throwCount = 0; totalScore = 0;
+  practiceActive = false;
+  _setPracticeCameraSelectorVisible(false);
+  _clearPracticeTransientUi();
+  _setPracticeBoardStatic({ clearStream: true });
+  _setPracticeFinishTurnVisible(false);
+  window._awaitingTakeoutGame = false;
+  _resetPracticeAccuracyState();
+}
+
+/** Reset all practice-mode state for clean mode transitions. */
+function _resetPracticeState() {
+  throwData = []; throwCount = 0; totalScore = 0;
+  window._awaitingTakeoutGame = false;
+  _setPracticeCameraSelectorVisible(practiceActive);
+  _clearPracticeTransientUi();
+  _setPracticeBoardStatic({ clearStream: true });
+  _setPracticeFinishTurnVisible(practiceActive);
+  _resetPracticeAccuracyState({ closeModal: true });
+  // Reset practice DOM elements (safe to call even when not on practice page)
+  const sc = document.getElementById('score-current'); if (sc) sc.textContent = '–';
+  const sr = document.getElementById('score-ring'); if (sr) sr.innerHTML = '&nbsp;';
+  const st = document.getElementById('stat-throws'); if (st) st.textContent = '0';
+  const sa = document.getElementById('stat-avg'); if (sa) sa.textContent = '–';
+  const sl = document.getElementById('stat-total'); if (sl) sl.textContent = '0';
+  const hl = document.getElementById('history-list'); if (hl) hl.innerHTML = '';
+  const dn = document.getElementById('p-dart-n'); if (dn) dn.textContent = '0';
+  clearPracticeBoardDots();
 }
 
 // ══════════════════════════════════════════════════════════════════════
@@ -1664,15 +2184,31 @@ function togglePractice() {
   practiceActive = !practiceActive;
   const btn = document.getElementById('btn-practice-toggle');
   if (practiceActive) {
+    _setPracticeCameraSelectorVisible(true);
+    _clearPracticeTransientUi();
+    _setPracticeFinishTurnVisible(true);
     btn.textContent = 'Stop'; btn.classList.remove('btn-primary'); btn.classList.add('btn-reset');
-    setStatus('loading', 'Opening cameras…'); addLog('Practice started');
+    if (_camerasKnownOpen) {
+      _armPracticeWarpFeed();
+      setStatus('ready', 'Waiting for Throw');
+    } else {
+      _setPracticeBoardStatic({ clearStream: true });
+      setStatus('loading', 'Opening cameras…');
+    }
+    addPracticeLog('Practice started');
     // Enable debug toggle
     const dbg = document.getElementById('toggle-debug');
     if (dbg) dbg.disabled = false;
     if (socket) socket.emit('start_detection');
   } else {
+    _setPracticeCameraSelectorVisible(false);
+    _clearPracticeTransientUi();
+    _setPracticeFinishTurnVisible(false);
     btn.textContent = 'Start'; btn.classList.remove('btn-reset'); btn.classList.add('btn-primary');
-    setStatus('stopped', 'Stopped'); addLog('Practice stopped');
+    _camerasKnownOpen = false;
+    _setPracticeBoardStatic({ clearStream: true });
+    closePracticeReviewModal();
+    setStatus('stopped', 'Stopped'); addPracticeLog('Practice stopped');
     // Disable debug toggle
     const dbg = document.getElementById('toggle-debug');
     if (dbg) { dbg.checked = false; dbg.disabled = true; toggleDebugCams(); }
@@ -1687,13 +2223,14 @@ function togglePractice() {
     document.getElementById('history-list').innerHTML = '';
     document.getElementById('practice-log').innerHTML = '';
     document.getElementById('p-dart-n').textContent = '0';
-    const dotsG = document.getElementById('practice-board-dots');
-    if (dotsG) dotsG.innerHTML = '';
+    clearPracticeBoardDots();
     throwData = []; throwCount = 0; totalScore = 0;
+    _resetPracticeAccuracyState();
   }
 }
 
-function resetTurn() {
+function resetTurn(options = {}) {
+  const { clearAccuracy = false, clearLog = true, logMessage = 'Session reset' } = options;
   throwData = []; throwCount = 0; totalScore = 0;
   document.getElementById('score-current').textContent = '–';
   document.getElementById('score-ring').innerHTML = '&nbsp;';
@@ -1701,23 +2238,991 @@ function resetTurn() {
   document.getElementById('stat-avg').textContent = '–';
   document.getElementById('stat-total').textContent = '0';
   document.getElementById('history-list').innerHTML = '';
-  document.getElementById('practice-log').innerHTML = '';
+  if (clearLog) document.getElementById('practice-log').innerHTML = '';
   updateDartCount();
-  const dotsG = document.getElementById('practice-board-dots');
-  if (dotsG) dotsG.innerHTML = '';
-  // Tell backend to clear scored tips (green dots on warped stream)
-  if (socket && socket.connected) socket.emit('clear_tips');
-  addLog('Session reset');
+  clearPracticeBoardDots();
+  if (clearAccuracy) {
+    _resetPracticeAccuracyState({ keepSession: false, keepTurn: false, closeModal: true });
+  }
+  if (logMessage) addPracticeLog(logMessage);
 }
 
 function selectCam(n) {
   activeCam = n;
-  document.querySelectorAll('.p-cam-btn').forEach((b, i) => b.classList.toggle('active', i === n));
+  _syncPracticeCamButtons();
+  if (typeof _debugActiveCam !== 'undefined') _debugActiveCam = n;
+  if (practiceActive && _camerasKnownOpen) _armPracticeWarpFeed();
+}
+
+async function skipPracticeTakeout() {
+  if (!_practiceTakeoutPending) return;
+  _practiceResetMode = 'manual';
+  _setPracticeTakeoutBannerVisible(false);
+  if (practiceActive) setStatus('waiting', 'Resetting Board…');
+  await savePracticeAccuracyReview(true);
+  if (socket) socket.emit('skip_takeout');
 }
 
 function updateDartCount() {
   const el = document.getElementById('p-dart-n');
   if (el) el.textContent = Math.min(throwCount, 3);
+}
+
+function _isPracticeAccuracyContext() {
+  return _practiceAccuracySession.context === 'practice';
+}
+
+function _isX01AccuracyContext() {
+  return _practiceAccuracySession.context === 'game'
+    && _practiceAccuracySession.sessionMode === 'x01';
+}
+
+function _setVisible(el, visible, displayValue = '') {
+  if (!el) return;
+  el.hidden = !visible;
+  el.style.display = visible ? displayValue : 'none';
+}
+
+function _setGameReviewButtonVisible(visible) {
+  const reviewBtn = document.getElementById('btn-game-review');
+  _setVisible(reviewBtn, visible, '');
+}
+
+function _syncAccuracyReviewActionButtons() {
+  const addMissedBtn = document.getElementById('btn-add-missed-dart');
+  const finishPracticeBtn = document.getElementById('btn-finish-practice-turn-alt');
+  const finishGameBtn = document.getElementById('btn-finish-game-review');
+  const showPracticeActions = _isPracticeAccuracyContext();
+  const showGameActions = _isX01AccuracyContext() && currentPage === 'game';
+
+  _setVisible(addMissedBtn, _practiceAccuracySession.sessionId != null, '');
+  _setVisible(finishPracticeBtn, showPracticeActions && !!practiceActive, '');
+  _setVisible(finishGameBtn, showGameActions, '');
+  if (finishGameBtn) {
+    finishGameBtn.disabled = !_gameTurnReviewReady;
+    finishGameBtn.textContent = _gameTurnReviewReady ? 'Continue Turn' : 'Remove Darts First';
+  }
+  _setGameReviewButtonVisible(showGameActions && _practiceAccuracySession.predictions.length > 0);
+}
+
+function _newReviewId(prefix = 'actual') {
+  return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+}
+
+function _resetPracticeAccuracyState(options = {}) {
+  const { keepSession = false, keepTurn = false, closeModal = true } = options;
+  if (_practiceAccuracySession.saveTimer) {
+    clearTimeout(_practiceAccuracySession.saveTimer);
+    _practiceAccuracySession.saveTimer = null;
+  }
+  if (!keepSession) {
+    _practiceAccuracySession.sessionId = null;
+    _practiceAccuracySession.context = 'practice';
+    _practiceAccuracySession.sessionMode = 'practice';
+    _practiceAccuracySession.modelName = '';
+    _practiceAccuracySession.executionDevice = '';
+    _practiceAccuracySession.detectionProfile = '';
+    _practiceAccuracySession.boardProfile = '';
+  }
+  if (!keepTurn) {
+    _practiceAccuracySession.turnId = null;
+  }
+  _practiceAccuracySession.predictions = [];
+  _practiceAccuracySession.actualDarts = [];
+  _practiceAccuracySession.notes = '';
+  _practiceAccuracySession.lastSavedSignature = '';
+  _practiceReviewFocusPredictionId = null;
+  _gameTurnReviewReady = false;
+  _hidePracticeReviewFeedback();
+  if (closeModal) {
+    closeMissedDartModal();
+    closePracticeReviewModal();
+  }
+  renderPracticeAccuracyReview();
+}
+
+function _setPracticeFinishTurnVisible(visible) {
+  const manualBtn = document.getElementById('btn-manual-event');
+  if (manualBtn) {
+    manualBtn.hidden = !visible;
+    manualBtn.style.display = visible ? '' : 'none';
+  }
+  const finishBtn = document.getElementById('btn-reset');
+  if (finishBtn) {
+    finishBtn.hidden = !visible;
+    finishBtn.style.display = visible ? '' : 'none';
+  }
+  const modalFinishBtn = document.getElementById('btn-finish-practice-turn-alt');
+  if (modalFinishBtn) {
+    modalFinishBtn.hidden = !visible;
+    modalFinishBtn.style.display = visible ? '' : 'none';
+  }
+  _syncAccuracyReviewActionButtons();
+}
+
+function _hidePracticeReviewFeedback() {
+  if (_practiceReviewFeedbackTimer) {
+    clearTimeout(_practiceReviewFeedbackTimer);
+    _practiceReviewFeedbackTimer = null;
+  }
+  const feedback = document.getElementById('practice-review-feedback');
+  if (!feedback) return;
+  feedback.style.display = 'none';
+  feedback.className = 'practice-review-feedback';
+  feedback.textContent = '';
+}
+
+function _showPracticeReviewFeedback(message, tone = 'ok') {
+  const feedback = document.getElementById('practice-review-feedback');
+  if (!feedback) return;
+  if (_practiceReviewFeedbackTimer) {
+    clearTimeout(_practiceReviewFeedbackTimer);
+    _practiceReviewFeedbackTimer = null;
+  }
+  feedback.textContent = message;
+  feedback.className = `practice-review-feedback is-${tone}`;
+  feedback.style.display = 'block';
+  _practiceReviewFeedbackTimer = setTimeout(() => {
+    _hidePracticeReviewFeedback();
+  }, 2200);
+}
+
+function openPracticeReviewModal(predictionId = null) {
+  if (currentPage !== 'practice' && currentPage !== 'game') return;
+  if (currentPage === 'game' && !_isX01AccuracyContext()) return;
+  const overlay = document.getElementById('practice-review-overlay');
+  if (!overlay) return;
+  _practiceReviewFocusPredictionId = predictionId || null;
+  _syncAccuracyReviewActionButtons();
+  renderPracticeAccuracyReview();
+  _hidePracticeReviewFeedback();
+  overlay.style.display = 'flex';
+  _practiceReviewModalOpen = true;
+}
+
+function closePracticeReviewModal(event) {
+  if (event && event.target !== event.currentTarget) return;
+  const overlay = document.getElementById('practice-review-overlay');
+  if (overlay) overlay.style.display = 'none';
+  _practiceReviewModalOpen = false;
+  _practiceReviewFocusPredictionId = null;
+  _hidePracticeReviewFeedback();
+}
+
+function _decodeAccuracyLabel(label) {
+  const normalized = String(label || '').toUpperCase();
+  if (!normalized) return { multiplier: 'single', number: 20, singleRing: 'inner' };
+  if (normalized === 'BOUNCE') return { multiplier: 'bounce', number: 20, singleRing: 'inner' };
+  if (normalized === 'MISS' || normalized === 'OFF' || normalized === 'FOUL') {
+    return { multiplier: 'miss', number: 20, singleRing: 'inner' };
+  }
+  if (normalized === 'DB' || normalized === 'D25' || normalized === 'BULL') {
+    return { multiplier: 'double', number: 25, singleRing: 'inner' };
+  }
+  if (normalized === 'SB' || normalized === 'S25') {
+    return { multiplier: 'single', number: 25, singleRing: 'outer' };
+  }
+  if (/^D\d+$/.test(normalized)) {
+    return { multiplier: 'double', number: parseInt(normalized.slice(1), 10), singleRing: 'inner' };
+  }
+  if (/^T\d+$/.test(normalized)) {
+    return { multiplier: 'triple', number: parseInt(normalized.slice(1), 10), singleRing: 'inner' };
+  }
+  if (/^S\d+$/.test(normalized)) {
+    return { multiplier: 'single', number: parseInt(normalized.slice(1), 10), singleRing: 'inner' };
+  }
+  return { multiplier: 'single', number: 20, singleRing: 'inner' };
+}
+
+function _buildActualFromDraft(draft) {
+  const multiplier = draft.multiplier || 'single';
+  const number = Number(draft.number || 20);
+  const singleRing = draft.singleRing || 'inner';
+
+  if (multiplier === 'bounce') {
+    return { label: 'BOUNCE', score: 0, multiplier: 'bounce', number: null, singleRing: null };
+  }
+  if (multiplier === 'miss') {
+    return { label: 'MISS', score: 0, multiplier: 'miss', number: null, singleRing: null };
+  }
+  if (multiplier === 'triple' && number === 25) {
+    showToast('Bull can only be recorded as single or double.', 'warn', 2500);
+    return null;
+  }
+  if (multiplier === 'single' && number === 25) {
+    return { label: 'SB', score: 25, multiplier: 'single', number: 25, singleRing: null };
+  }
+  if (multiplier === 'double' && number === 25) {
+    return { label: 'DB', score: 50, multiplier: 'double', number: 25, singleRing: null };
+  }
+  if (multiplier === 'single') {
+    return { label: `S${number}`, score: number, multiplier, number, singleRing };
+  }
+  if (multiplier === 'double') {
+    return { label: `D${number}`, score: number * 2, multiplier, number, singleRing: null };
+  }
+  return { label: `T${number}`, score: number * 3, multiplier, number, singleRing: null };
+}
+
+function _formatAccuracyLabel(label) {
+  const normalized = String(label || '').toUpperCase();
+  if (normalized === 'SB') return 'S25';
+  if (normalized === 'DB') return 'D25';
+  return normalized || '—';
+}
+
+function _formatAgreementBucket(bucket) {
+  const map = {
+    '3cam_all_match': '3-Cam Match',
+    '3cam_two_match': '3-Cam 2/3',
+    '3cam_all_diff': '3-Cam Split',
+    '2cam_match': '2-Cam Match',
+    '2cam_disagree': '2-Cam Split',
+    '1cam_only': '1-Cam Only',
+    'no_detection': 'No Detection',
+  };
+  return map[bucket] || 'Pending';
+}
+
+function _practiceActualForPrediction(predictionId) {
+  return _practiceAccuracySession.actualDarts.find((item) => item.predictionId === predictionId) || null;
+}
+
+function _practicePredictionById(predictionId) {
+  return _practiceAccuracySession.predictions.find((item) => item.predictionId === predictionId) || null;
+}
+
+function _practiceManualActuals() {
+  return _practiceAccuracySession.actualDarts.filter((item) => !item.predictionId);
+}
+
+function _practiceReviewMetrics(predictions = _practiceAccuracySession.predictions, actualDarts = _practiceAccuracySession.actualDarts) {
+  const predictionMap = new Map(predictions.map((item) => [item.predictionId, item]));
+  let exactMatches = 0;
+  let corrections = 0;
+
+  actualDarts.forEach((actual) => {
+    if (!actual.predictionId) {
+      corrections += 1;
+      return;
+    }
+    const prediction = predictionMap.get(actual.predictionId);
+    if (!prediction) {
+      corrections += 1;
+      return;
+    }
+    if (prediction.label === actual.label && Number(prediction.score) === Number(actual.score)) {
+      exactMatches += 1;
+    } else {
+      corrections += 1;
+    }
+  });
+
+  const falsePositives = predictions.filter((prediction) => {
+    const actual = actualDarts.find((item) => item.predictionId === prediction.predictionId);
+    return !actual;
+  }).length;
+  corrections += falsePositives;
+
+  return {
+    predicted: predictions.length,
+    actual: actualDarts.length,
+    corrections,
+    exactMatches,
+    accuracyPct: actualDarts.length
+      ? (exactMatches / actualDarts.length) * 100
+      : null,
+  };
+}
+
+function _practiceReviewScope() {
+  const focusPredictionId = _practiceReviewFocusPredictionId;
+  if (!focusPredictionId) {
+    return {
+      predictions: _practiceAccuracySession.predictions.slice(),
+      actualDarts: _practiceAccuracySession.actualDarts.slice(),
+      manualActuals: _practiceManualActuals(),
+      focusedPrediction: null,
+      focusedIndex: -1,
+    };
+  }
+
+  const focusedIndex = _practiceAccuracySession.predictions.findIndex((item) => item.predictionId === focusPredictionId);
+  const focusedPrediction = focusedIndex >= 0 ? _practiceAccuracySession.predictions[focusedIndex] : null;
+  if (!focusedPrediction) {
+    _practiceReviewFocusPredictionId = null;
+    return {
+      predictions: _practiceAccuracySession.predictions.slice(),
+      actualDarts: _practiceAccuracySession.actualDarts.slice(),
+      manualActuals: _practiceManualActuals(),
+      focusedPrediction: null,
+      focusedIndex: -1,
+    };
+  }
+
+  return {
+    predictions: [focusedPrediction],
+    actualDarts: _practiceAccuracySession.actualDarts.filter((item) => item.predictionId === focusPredictionId),
+    manualActuals: [],
+    focusedPrediction,
+    focusedIndex,
+  };
+}
+
+function _practiceReviewPayload() {
+  return {
+    session_id: _practiceAccuracySession.sessionId,
+    turn_id: _practiceAccuracySession.turnId,
+    actual_darts: _practiceAccuracySession.actualDarts.map((item) => ({
+      id: item.actualId,
+      prediction_id: item.predictionId || null,
+      source: item.source,
+      label: item.label,
+      score: item.score,
+      multiplier: item.multiplier || null,
+      number: item.number ?? null,
+      single_ring: item.singleRing || null,
+    })),
+    notes: _practiceAccuracySession.notes || '',
+  };
+}
+
+async function savePracticeAccuracyReview(force = false) {
+  if (!_practiceAccuracySession.sessionId || !_practiceAccuracySession.turnId) return;
+  const payload = _practiceReviewPayload();
+  const signature = JSON.stringify(payload);
+  if (!force && signature === _practiceAccuracySession.lastSavedSignature) return;
+  try {
+    const res = await fetch('/api/accuracy/review', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) return;
+    _practiceAccuracySession.lastSavedSignature = signature;
+  } catch (err) {
+    console.warn('Failed to save practice accuracy review', err);
+  }
+}
+
+function queuePracticeAccuracySave(immediate = false) {
+  if (_practiceAccuracySession.saveTimer) {
+    clearTimeout(_practiceAccuracySession.saveTimer);
+    _practiceAccuracySession.saveTimer = null;
+  }
+  if (immediate) {
+    void savePracticeAccuracyReview(true);
+    return;
+  }
+  _practiceAccuracySession.saveTimer = setTimeout(() => {
+    _practiceAccuracySession.saveTimer = null;
+    void savePracticeAccuracyReview(false);
+  }, 250);
+}
+
+async function _syncPracticeAccuracyTurnFromServer() {
+  if (!_practiceAccuracySession.sessionId) return;
+  try {
+    const res = await fetch(`/api/accuracy/session/${_practiceAccuracySession.sessionId}`);
+    if (!res.ok) return;
+    const session = await res.json();
+    const turns = session.turns || [];
+    const turn = turns.find((item) => item.id === _practiceAccuracySession.turnId)
+      || turns.slice().reverse().find((item) => item.status === 'open')
+      || turns[turns.length - 1];
+    if (!turn) return;
+    _practiceAccuracySession.turnId = turn.id;
+    _practiceAccuracySession.predictions = (turn.predictions || []).map((item) => ({
+      predictionId: item.id,
+      label: item.label,
+      score: item.score,
+      agreementBucket: item.agreement_bucket || '',
+      timings: item.timings || {},
+      modelName: item.model_name || _practiceAccuracySession.modelName,
+      executionDevice: item.execution_device || _practiceAccuracySession.executionDevice,
+      detectionProfile: item.detection_profile || _practiceAccuracySession.detectionProfile,
+    }));
+    _practiceAccuracySession.actualDarts = ((turn.review && turn.review.actual_darts) || []).map((item) => ({
+      actualId: item.id,
+      predictionId: item.prediction_id || null,
+      source: item.source || (item.prediction_id ? 'prediction' : 'manual'),
+      label: item.label,
+      score: item.score,
+      multiplier: item.multiplier || null,
+      number: item.number ?? null,
+      singleRing: item.single_ring || null,
+    }));
+    _practiceAccuracySession.lastSavedSignature = JSON.stringify(_practiceReviewPayload());
+    renderPracticeAccuracyReview();
+  } catch (err) {
+    console.warn('Failed to sync practice accuracy turn', err);
+  }
+}
+
+function applyPracticeAccuracySession(data) {
+  if (!data || !data.session_id) {
+    _resetPracticeAccuracyState();
+    return;
+  }
+
+  const prevTurnId = _practiceAccuracySession.turnId;
+  const nextTurnId = data.turn_id || _practiceAccuracySession.turnId;
+  const turnChanged = !!nextTurnId && nextTurnId !== prevTurnId;
+
+  _practiceAccuracySession.sessionId = data.session_id;
+  _practiceAccuracySession.turnId = nextTurnId;
+  _practiceAccuracySession.context = data.context || _practiceAccuracySession.context || 'practice';
+  _practiceAccuracySession.sessionMode = data.session_mode || _practiceAccuracySession.sessionMode || _practiceAccuracySession.context;
+  _practiceAccuracySession.modelName = data.model_name || _practiceAccuracySession.modelName;
+  _practiceAccuracySession.executionDevice = data.execution_device || _practiceAccuracySession.executionDevice;
+  _practiceAccuracySession.detectionProfile = data.detection_profile || _practiceAccuracySession.detectionProfile;
+  _practiceAccuracySession.boardProfile = data.board_profile || _practiceAccuracySession.boardProfile;
+
+  if (turnChanged) {
+    if (_practiceAccuracySession.saveTimer) {
+      clearTimeout(_practiceAccuracySession.saveTimer);
+      _practiceAccuracySession.saveTimer = null;
+    }
+    _practiceAccuracySession.predictions = [];
+    _practiceAccuracySession.actualDarts = [];
+    _practiceAccuracySession.lastSavedSignature = '';
+  }
+
+  renderPracticeAccuracyReview();
+  _syncAccuracyReviewActionButtons();
+  if (turnChanged) {
+    void _syncPracticeAccuracyTurnFromServer();
+  }
+}
+
+function _upsertPracticePrediction(data) {
+  if (data.turn_id && _practiceAccuracySession.turnId && data.turn_id !== _practiceAccuracySession.turnId) {
+    if (_practiceAccuracySession.saveTimer) {
+      clearTimeout(_practiceAccuracySession.saveTimer);
+      _practiceAccuracySession.saveTimer = null;
+    }
+    _practiceAccuracySession.predictions = [];
+    _practiceAccuracySession.actualDarts = [];
+    _practiceAccuracySession.lastSavedSignature = '';
+  }
+  if (data.session_id) {
+    _practiceAccuracySession.sessionId = data.session_id;
+  }
+  if (data.turn_id) {
+    _practiceAccuracySession.turnId = data.turn_id;
+  }
+  if (data.model_name) {
+    _practiceAccuracySession.modelName = data.model_name;
+  }
+  if (data.execution_device) {
+    _practiceAccuracySession.executionDevice = data.execution_device;
+  }
+  if (data.detection_profile) {
+    _practiceAccuracySession.detectionProfile = data.detection_profile;
+  }
+  if (data.context) {
+    _practiceAccuracySession.context = data.context;
+  }
+  if (data.session_mode) {
+    _practiceAccuracySession.sessionMode = data.session_mode;
+  }
+
+  const predictionId = data.prediction_id || _newReviewId('pred');
+  const prediction = {
+    predictionId,
+    label: data.label,
+    score: data.score,
+    agreementBucket: data.agreement_bucket || '',
+    timings: data.timings || {},
+    modelName: data.model_name || _practiceAccuracySession.modelName,
+    executionDevice: data.execution_device || _practiceAccuracySession.executionDevice,
+    detectionProfile: data.detection_profile || _practiceAccuracySession.detectionProfile,
+  };
+
+  const existingIndex = _practiceAccuracySession.predictions.findIndex((item) => item.predictionId === predictionId);
+  if (existingIndex >= 0) {
+    _practiceAccuracySession.predictions[existingIndex] = prediction;
+  } else {
+    _practiceAccuracySession.predictions.push(prediction);
+  }
+
+  const existingActual = _practiceActualForPrediction(predictionId);
+  if (!existingActual) {
+    const decoded = _decodeAccuracyLabel(prediction.label);
+    _practiceAccuracySession.actualDarts.push({
+      actualId: _newReviewId('actual'),
+      predictionId,
+      source: 'prediction',
+      label: prediction.label,
+      score: prediction.score,
+      multiplier: decoded.multiplier,
+      number: decoded.number,
+      singleRing: decoded.singleRing,
+    });
+  } else if (existingActual.source === 'prediction') {
+    const decoded = _decodeAccuracyLabel(prediction.label);
+    existingActual.label = prediction.label;
+    existingActual.score = prediction.score;
+    existingActual.multiplier = decoded.multiplier;
+    existingActual.number = decoded.number;
+    existingActual.singleRing = decoded.singleRing;
+  }
+
+  renderPracticeAccuracyReview();
+  _syncAccuracyReviewActionButtons();
+  queuePracticeAccuracySave();
+}
+
+function renderPracticeAccuracyReview() {
+  const list = document.getElementById('practice-review-list');
+  const sub = document.getElementById('practice-review-sub');
+  const meta = document.getElementById('practice-review-meta');
+  const predictedEl = document.getElementById('practice-review-predicted');
+  const actualEl = document.getElementById('practice-review-actual');
+  const correctionsEl = document.getElementById('practice-review-corrections');
+  if (!list || !sub || !meta || !predictedEl || !actualEl || !correctionsEl) return;
+
+  const scope = _practiceReviewScope();
+  const metrics = _practiceReviewMetrics(scope.predictions, scope.actualDarts);
+  predictedEl.textContent = String(metrics.predicted);
+  actualEl.textContent = String(metrics.actual);
+  correctionsEl.textContent = String(metrics.corrections);
+  _syncAccuracyReviewActionButtons();
+
+  if (!_practiceAccuracySession.sessionId) {
+    meta.textContent = 'No active session';
+    sub.textContent = 'Predictions will appear here for review.';
+    list.innerHTML = '<div class="practice-review-empty">Start practice or X01 to review detection accuracy turn by turn.</div>';
+    return;
+  }
+
+  const metaBits = [];
+  metaBits.push(_isX01AccuracyContext() ? 'X01 Review' : 'Practice Review');
+  if (_practiceAccuracySession.modelName) metaBits.push(_practiceAccuracySession.modelName);
+  if (_practiceAccuracySession.detectionProfile) metaBits.push(_practiceAccuracySession.detectionProfile);
+  if (_practiceAccuracySession.executionDevice) metaBits.push(_practiceAccuracySession.executionDevice);
+  meta.textContent = metaBits.join(' • ') || 'Active review';
+  if (scope.focusedPrediction && scope.focusedIndex >= 0) {
+    sub.textContent = metrics.actual > 0 && metrics.accuracyPct != null
+      ? `Reviewing Dart ${scope.focusedIndex + 1} • Accuracy: ${metrics.accuracyPct.toFixed(1)}%`
+      : `Reviewing Dart ${scope.focusedIndex + 1} of this ${_isX01AccuracyContext() ? 'X01' : 'practice'} turn.`;
+  } else if (_isX01AccuracyContext()) {
+    sub.textContent = _gameTurnReviewReady
+      ? `Turn review ready • Accuracy: ${metrics.accuracyPct != null ? metrics.accuracyPct.toFixed(1) + '%' : '—'}`
+      : 'Review the scored turn, then remove darts to unlock Continue.';
+  } else {
+    sub.textContent = metrics.actual > 0 && metrics.accuracyPct != null
+      ? `Current turn accuracy: ${metrics.accuracyPct.toFixed(1)}%`
+      : 'Review the detected darts before resetting the board.';
+  }
+
+  const predictionRows = scope.predictions.map((prediction) => {
+    const index = _practiceAccuracySession.predictions.findIndex((item) => item.predictionId === prediction.predictionId);
+    const actual = _practiceActualForPrediction(prediction.predictionId);
+    const isFalsePositive = !actual;
+    const isExact = !!actual
+      && actual.label === prediction.label
+      && Number(actual.score) === Number(prediction.score);
+    const isReviewed = isExact && actual && actual.source === 'confirmed';
+    const stateClass = isFalsePositive
+      ? 'is-false-positive'
+      : (isReviewed ? 'is-confirmed' : (isExact ? 'is-pending' : 'is-corrected'));
+    const stateLabel = isFalsePositive
+      ? 'False Positive'
+      : (isReviewed ? 'Confirmed' : (isExact ? 'Matches Prediction' : 'Corrected'));
+    const actualLabel = actual ? `${_formatAccuracyLabel(actual.label)} • ${actual.score}` : 'No actual dart linked';
+    const confirmDisabled = isReviewed ? 'disabled' : '';
+    const confirmText = isReviewed ? 'Confirmed' : 'Confirm';
+    return `
+      <div class="practice-review-row ${stateClass}">
+        <div class="practice-review-row-top">
+          <div class="practice-review-row-title">Dart ${index + 1}</div>
+          <div class="practice-review-state">${stateLabel}</div>
+        </div>
+        <div class="practice-review-row-body">
+          <div class="practice-review-col">
+            <span class="practice-review-col-label">Predicted</span>
+            <strong>${_formatAccuracyLabel(prediction.label)} • ${prediction.score}</strong>
+          </div>
+          <div class="practice-review-col">
+            <span class="practice-review-col-label">Actual</span>
+            <strong>${actualLabel}</strong>
+          </div>
+          <div class="practice-review-col">
+            <span class="practice-review-col-label">Agreement</span>
+            <span class="practice-review-badge">${_formatAgreementBucket(prediction.agreementBucket)}</span>
+          </div>
+        </div>
+        <div class="practice-review-row-actions">
+          <button class="btn btn-sm ${isReviewed ? 'btn-accent' : 'btn-secondary'}" ${confirmDisabled} onclick="confirmPracticePrediction('${prediction.predictionId}')">${confirmText}</button>
+          <button class="btn btn-sm btn-secondary" onclick="editPracticePrediction('${prediction.predictionId}')">Edit</button>
+          <button class="btn btn-sm btn-secondary" onclick="togglePracticeFalsePositive('${prediction.predictionId}')">${isFalsePositive ? 'Restore' : 'False Positive'}</button>
+        </div>
+      </div>
+    `;
+  });
+
+  const manualRows = scope.manualActuals.map((actual, index) => `
+    <div class="practice-review-row is-manual">
+      <div class="practice-review-row-top">
+        <div class="practice-review-row-title">Missed Dart ${index + 1}</div>
+        <div class="practice-review-state">No Detection</div>
+      </div>
+      <div class="practice-review-row-body">
+        <div class="practice-review-col">
+          <span class="practice-review-col-label">Actual</span>
+          <strong>${_formatAccuracyLabel(actual.label)} • ${actual.score}</strong>
+        </div>
+        <div class="practice-review-col">
+          <span class="practice-review-col-label">Ring</span>
+          <strong>${getRingName(actual.label)}</strong>
+        </div>
+      </div>
+      <div class="practice-review-row-actions">
+        <button class="btn btn-sm btn-secondary" onclick="editManualPracticeActual('${actual.actualId}')">Edit</button>
+        <button class="btn btn-sm btn-secondary" onclick="removeManualPracticeActual('${actual.actualId}')">Remove</button>
+      </div>
+    </div>
+  `);
+
+  if (predictionRows.length === 0 && manualRows.length === 0) {
+    list.innerHTML = '<div class="practice-review-empty">No darts recorded yet for this turn.</div>';
+    return;
+  }
+
+  let html = predictionRows.join('');
+  if (manualRows.length > 0) {
+    html += '<div class="practice-review-section-title">Missed Darts</div>' + manualRows.join('');
+  }
+  list.innerHTML = html;
+}
+
+function confirmPracticePrediction(predictionId) {
+  const prediction = _practicePredictionById(predictionId);
+  if (!prediction) return;
+  const decoded = _decodeAccuracyLabel(prediction.label);
+  const actual = _practiceActualForPrediction(predictionId);
+  const updated = {
+    actualId: actual ? actual.actualId : _newReviewId('actual'),
+    predictionId,
+    source: 'confirmed',
+    label: prediction.label,
+    score: prediction.score,
+    multiplier: decoded.multiplier,
+    number: decoded.number,
+    singleRing: decoded.singleRing,
+  };
+  if (actual) {
+    Object.assign(actual, updated);
+  } else {
+    _practiceAccuracySession.actualDarts.push(updated);
+  }
+  renderPracticeAccuracyReview();
+  queuePracticeAccuracySave(true);
+  _showPracticeReviewFeedback(`${_formatAccuracyLabel(prediction.label)} confirmed for this turn.`, 'ok');
+}
+
+function togglePracticeFalsePositive(predictionId) {
+  const index = _practiceAccuracySession.actualDarts.findIndex((item) => item.predictionId === predictionId);
+  if (index >= 0) {
+    _practiceAccuracySession.actualDarts.splice(index, 1);
+    renderPracticeAccuracyReview();
+    queuePracticeAccuracySave(true);
+    _showPracticeReviewFeedback('Marked as false positive.', 'warn');
+  } else {
+    confirmPracticePrediction(predictionId);
+  }
+}
+
+function editPracticePrediction(predictionId) {
+  const prediction = _practicePredictionById(predictionId);
+  if (!prediction) return;
+  const actual = _practiceActualForPrediction(predictionId);
+  const decoded = _decodeAccuracyLabel(actual ? actual.label : prediction.label);
+  _missedDartDraft = {
+    mode: 'edit_prediction',
+    predictionId,
+    actualId: actual ? actual.actualId : null,
+    multiplier: decoded.multiplier,
+    singleRing: decoded.singleRing,
+    number: decoded.number,
+  };
+  const title = document.getElementById('missed-dart-modal-title');
+  const subtitle = document.getElementById('missed-dart-modal-subtitle');
+  const submit = document.getElementById('missed-dart-submit-btn');
+  if (title) title.textContent = 'Edit Detected Dart';
+  if (subtitle) subtitle.textContent = `Prediction: ${_formatAccuracyLabel(prediction.label)} • ${prediction.score}`;
+  if (submit) submit.textContent = 'Save Dart';
+  document.getElementById('missed-dart-modal').style.display = 'flex';
+  _renderMissedDartModal();
+}
+
+function editManualPracticeActual(actualId) {
+  const actual = _practiceAccuracySession.actualDarts.find((item) => item.actualId === actualId && !item.predictionId);
+  if (!actual) return;
+  const decoded = _decodeAccuracyLabel(actual.label);
+  _missedDartDraft = {
+    mode: 'edit_manual',
+    predictionId: null,
+    actualId,
+    multiplier: decoded.multiplier,
+    singleRing: decoded.singleRing,
+    number: decoded.number,
+  };
+  const title = document.getElementById('missed-dart-modal-title');
+  const subtitle = document.getElementById('missed-dart-modal-subtitle');
+  const submit = document.getElementById('missed-dart-submit-btn');
+  if (title) title.textContent = 'Edit Missed Dart';
+  if (subtitle) subtitle.textContent = 'Update the manually-added dart result.';
+  if (submit) submit.textContent = 'Save Dart';
+  document.getElementById('missed-dart-modal').style.display = 'flex';
+  _renderMissedDartModal();
+}
+
+function removeManualPracticeActual(actualId) {
+  _practiceAccuracySession.actualDarts = _practiceAccuracySession.actualDarts.filter((item) => item.actualId !== actualId);
+  renderPracticeAccuracyReview();
+  queuePracticeAccuracySave(true);
+  _showPracticeReviewFeedback('Removed missed dart from this turn.', 'warn');
+}
+
+function openMissedDartModal() {
+  _missedDartDraft = {
+    mode: 'add',
+    predictionId: null,
+    actualId: null,
+    multiplier: 'single',
+    singleRing: 'inner',
+    number: 20,
+  };
+  const title = document.getElementById('missed-dart-modal-title');
+  const subtitle = document.getElementById('missed-dart-modal-subtitle');
+  const submit = document.getElementById('missed-dart-submit-btn');
+  if (title) title.textContent = 'Add Missed Dart';
+  if (subtitle) subtitle.textContent = 'Record the actual dart result for this turn.';
+  if (submit) submit.textContent = 'Add Dart';
+  document.getElementById('missed-dart-modal').style.display = 'flex';
+  _renderMissedDartModal();
+}
+
+function openPracticeManualEventModal() {
+  if (!practiceActive || currentPage !== 'practice') return;
+  if (throwCount >= 3) {
+    showToast('This turn already has 3 darts. Finish the turn before adding another event.', 'warn', 2500);
+    return;
+  }
+  _missedDartDraft = {
+    mode: 'practice_manual_event',
+    predictionId: null,
+    actualId: null,
+    multiplier: 'miss',
+    singleRing: 'inner',
+    number: 20,
+  };
+  const title = document.getElementById('missed-dart-modal-title');
+  const subtitle = document.getElementById('missed-dart-modal-subtitle');
+  const submit = document.getElementById('missed-dart-submit-btn');
+  if (title) title.textContent = 'Add Practice Event';
+  if (subtitle) subtitle.textContent = 'Record an undetected throw such as a bounce, fall, or missed hit.';
+  if (submit) submit.textContent = 'Add Event';
+  document.getElementById('missed-dart-modal').style.display = 'flex';
+  _renderMissedDartModal();
+}
+
+function closeMissedDartModal() {
+  const modal = document.getElementById('missed-dart-modal');
+  if (modal) modal.style.display = 'none';
+}
+
+function setMissedDartMultiplier(multiplier) {
+  _missedDartDraft.multiplier = multiplier;
+  if (multiplier === 'triple' && Number(_missedDartDraft.number) === 25) {
+    _missedDartDraft.number = 20;
+  }
+  _renderMissedDartModal();
+}
+
+function setMissedDartSingleRing(singleRing) {
+  _missedDartDraft.singleRing = singleRing;
+  _renderMissedDartModal();
+}
+
+function setMissedDartNumber(number) {
+  _missedDartDraft.number = number;
+  _renderMissedDartModal();
+}
+
+function _renderMissedDartModal() {
+  const multiplier = _missedDartDraft.multiplier || 'single';
+  document.querySelectorAll('.accuracy-choice-btn[data-multiplier]').forEach((btn) => {
+    btn.classList.toggle('active', btn.dataset.multiplier === multiplier);
+  });
+  document.querySelectorAll('.accuracy-choice-btn[data-single-ring]').forEach((btn) => {
+    btn.classList.toggle('active', btn.dataset.singleRing === (_missedDartDraft.singleRing || 'inner'));
+  });
+  document.querySelectorAll('.accuracy-choice-btn[data-number]').forEach((btn) => {
+    const value = Number(btn.dataset.number);
+    const invalidBull = multiplier === 'triple' && value === 25;
+    btn.classList.toggle('active', value === Number(_missedDartDraft.number));
+    btn.disabled = invalidBull;
+  });
+  const singleRingGroup = document.getElementById('missed-dart-single-ring-group');
+  const numberGroup = document.getElementById('missed-dart-number-group');
+  if (singleRingGroup) {
+    const show = multiplier === 'single' && Number(_missedDartDraft.number) !== 25;
+    singleRingGroup.style.display = show ? '' : 'none';
+  }
+  if (numberGroup) {
+    numberGroup.style.display = (multiplier === 'bounce' || multiplier === 'miss') ? 'none' : '';
+  }
+  const built = _buildActualFromDraft(_missedDartDraft);
+  const finalScore = document.getElementById('missed-dart-final-score');
+  if (finalScore) finalScore.textContent = built ? String(built.score) : '—';
+}
+
+function _applyPracticeManualEvent(built) {
+  if (throwCount >= 3) {
+    showToast('This turn already has 3 darts. Finish the turn before adding another event.', 'warn', 2500);
+    return;
+  }
+
+  const actualId = _newReviewId('actual');
+  _practiceAccuracySession.actualDarts.push({
+    actualId,
+    predictionId: null,
+    source: 'manual',
+    label: built.label,
+    score: built.score,
+    multiplier: built.multiplier,
+    number: built.number,
+    singleRing: built.singleRing,
+  });
+
+  throwCount += 1;
+  totalScore += built.score;
+  updateDartCount();
+
+  const scoreEl = document.getElementById('score-current');
+  if (scoreEl) {
+    scoreEl.textContent = _formatAccuracyLabel(built.label);
+    scoreEl.classList.toggle('label-bounce', built.label === 'BOUNCE');
+    scoreEl.classList.toggle('label-miss', built.label === 'MISS');
+    scoreEl.classList.toggle('label-foul', built.label === 'FOUL');
+  }
+
+  const ringEl = document.getElementById('score-ring');
+  if (ringEl) ringEl.textContent = built.label === 'FOUL' ? '\u00a0' : getRingName(built.label);
+
+  const throwsEl = document.getElementById('stat-throws');
+  if (throwsEl) throwsEl.textContent = String(throwCount);
+  const totalEl = document.getElementById('stat-total');
+  if (totalEl) totalEl.textContent = String(totalScore);
+  const avgEl = document.getElementById('stat-avg');
+  if (avgEl) avgEl.textContent = throwCount > 0 ? (totalScore / throwCount).toFixed(1) : '–';
+
+  addHistoryRow(built.label, built.score, { predictionId: null });
+  renderPracticeAccuracyReview();
+  queuePracticeAccuracySave(true);
+
+  const logLabel = _formatAccuracyLabel(built.label);
+  addPracticeLog(`[MANUAL] ${logLabel} = ${built.score} pts`);
+  showToast(`Manual event added: ${logLabel} (${built.score})`, 'ok', 2200);
+
+  if (throwCount >= 3) {
+    setStatus('takeout', '3 Darts Recorded - Finish Turn');
+    showToast('3 darts recorded. Use Finish Turn when ready.', 'warn', 2600);
+    return;
+  }
+
+  setStatus('scored', `Manual ${logLabel} = ${built.score}`);
+  setTimeout(() => {
+    if (window._awaitingTakeoutGame) return;
+    const banner = document.getElementById('practice-takeout-banner');
+    if (!banner || banner.style.display === 'none' || banner.style.display === '') {
+      setStatus('ready', 'Waiting for Throw');
+    }
+  }, 1800);
+}
+
+function submitMissedDartModal() {
+  const built = _buildActualFromDraft(_missedDartDraft);
+  if (!built) return;
+
+  if (_missedDartDraft.mode === 'practice_manual_event') {
+    closeMissedDartModal();
+    _applyPracticeManualEvent(built);
+    _showPracticeReviewFeedback('Manual event added to this turn.', 'ok');
+    return;
+  }
+
+  if (_missedDartDraft.mode === 'edit_prediction' && _missedDartDraft.predictionId) {
+    const existing = _practiceActualForPrediction(_missedDartDraft.predictionId);
+    const nextValue = {
+      actualId: existing ? existing.actualId : (_missedDartDraft.actualId || _newReviewId('actual')),
+      predictionId: _missedDartDraft.predictionId,
+      source: 'manual',
+      label: built.label,
+      score: built.score,
+      multiplier: built.multiplier,
+      number: built.number,
+      singleRing: built.singleRing,
+    };
+    if (existing) {
+      Object.assign(existing, nextValue);
+    } else {
+      _practiceAccuracySession.actualDarts.push(nextValue);
+    }
+  } else if (_missedDartDraft.mode === 'edit_manual' && _missedDartDraft.actualId) {
+    const existing = _practiceAccuracySession.actualDarts.find((item) => item.actualId === _missedDartDraft.actualId);
+    if (existing) {
+      Object.assign(existing, {
+        label: built.label,
+        score: built.score,
+        multiplier: built.multiplier,
+        number: built.number,
+        singleRing: built.singleRing,
+      });
+    }
+  } else {
+    _practiceAccuracySession.actualDarts.push({
+      actualId: _newReviewId('actual'),
+      predictionId: null,
+      source: 'manual',
+      label: built.label,
+      score: built.score,
+      multiplier: built.multiplier,
+      number: built.number,
+      singleRing: built.singleRing,
+    });
+  }
+
+  closeMissedDartModal();
+  renderPracticeAccuracyReview();
+  queuePracticeAccuracySave(true);
+  _showPracticeReviewFeedback(
+    (_missedDartDraft.mode === 'add' || _missedDartDraft.mode === 'practice_manual_event')
+      ? 'Missed dart added to this turn.'
+      : 'Review updated.',
+    'ok'
+  );
+}
+
+async function finishPracticeTurn() {
+  if (!socket || !socket.connected) return;
+  _practiceResetMode = 'manual';
+  _setPracticeTakeoutBannerVisible(false);
+  closePracticeReviewModal();
+  if (practiceActive) setStatus('waiting', 'Resetting Board…');
+  await savePracticeAccuracyReview(true);
+  if (socket && socket.connected) socket.emit('practice_reset_turn');
+}
+
+async function continueGameTurnReview() {
+  if (!socket || !socket.connected || !_isX01AccuracyContext() || !_gameTurnReviewReady) return;
+  closePracticeReviewModal();
+  await savePracticeAccuracyReview(true);
+  setStatus('ready', 'Continuing Match…');
+  socket.emit('skip_takeout');
 }
 
 // ══════════════════════════════════════════════════════════════════════
@@ -1766,55 +3271,130 @@ function updateCamDots(data) {
 }
 
 function getRingName(label) {
-  if (!label || label === 'OFF') return 'Miss';
+  if (!label || label === 'OFF') return 'Off Board';
+  if (label === 'MISS') return 'Off Board';
+  if (label === 'BOUNCE') return 'Bounce Out';
+  if (label === 'FOUL') return 'Foul';
   if (label === 'BULL') return 'Bullseye';
+  if (label === 'DB' || label === 'D25') return 'Double Bull';
+  if (label === 'SB' || label === 'S25') return 'Outer Bull';
   if (label.startsWith('D')) return 'Double ' + label.substring(1);
   if (label.startsWith('T')) return 'Triple ' + label.substring(1);
   if (label.startsWith('S')) return 'Single ' + label.substring(1);
   return label;
 }
 
-function addHistoryRow(label, score) {
+function addHistoryRow(label, score, options = {}) {
   const list = document.getElementById('history-list');
   const row = document.createElement('div');
   row.className = 'history-item';
-  const scoreClass = score === 0 ? 'miss' : (label === 'BULL' || label === 'D25') ? 'bull' : '';
+  const prediction = _practiceAccuracySession.predictions[_practiceAccuracySession.predictions.length - 1] || null;
+  const predictionId = Object.prototype.hasOwnProperty.call(options, 'predictionId')
+    ? options.predictionId
+    : (prediction ? prediction.predictionId : null);
+  const scoreClass = score === 0
+    ? (label === 'BOUNCE' ? 'miss-bounce' : label === 'MISS' ? 'miss-board' : label === 'FOUL' ? 'miss-foul' : 'miss')
+    : (label === 'BULL' || label === 'D25' || label === 'DB' || label === 'SB' || label === 'S25') ? 'bull' : '';
+  const onClick = predictionId
+    ? `openPracticeReviewModal('${predictionId}')`
+    : 'openPracticeReviewModal()';
   row.innerHTML = `
     <span class="h-num">#${throwCount}</span>
     <span class="h-ring">${getRingName(label)}</span>
-    <span class="h-score ${scoreClass}">${score}</span>
+    <button type="button" class="h-score h-score-btn ${scoreClass}" onclick="${onClick}" title="Open accuracy review for this dart">${score}</button>
   `;
   list.insertBefore(row, list.firstChild);
 }
 
-function placeDot(x_mm, y_mm) {
-  const scale = TOTAL_R / 170;
-  const sx = BOARD_CX + x_mm * scale, sy = BOARD_CY - y_mm * scale;
+function appendPrecisionDot(group, sx, sy, fill, opts = {}) {
+  if (!group) return;
+  const outerR = opts.outerR ?? 3.5;
+  const innerR = opts.innerR ?? 1.2;
+  const strokeWidth = opts.strokeWidth ?? 1.0;
 
-  function _addDot(groupId) {
-    const g = document.getElementById(groupId);
-    if (!g) return;
-    const dot = document.createElementNS(SVG_NS, 'circle');
-    dot.setAttribute('cx', sx); dot.setAttribute('cy', sy); dot.setAttribute('r', '4');
-    dot.setAttribute('fill', '#ff4444'); dot.setAttribute('stroke', '#fff');
-    dot.setAttribute('stroke-width', '1.2'); dot.setAttribute('opacity', '0.9');
-    dot.classList.add('dart-dot');
-    g.appendChild(dot);
-  }
+  const dot = document.createElementNS(SVG_NS, 'circle');
+  dot.setAttribute('cx', sx);
+  dot.setAttribute('cy', sy);
+  dot.setAttribute('r', String(outerR));
+  dot.setAttribute('fill', fill);
+  dot.setAttribute('stroke', '#fff');
+  dot.setAttribute('stroke-width', String(strokeWidth));
+  dot.setAttribute('opacity', '0.92');
+  dot.classList.add('dart-dot');
+  group.appendChild(dot);
 
-  // Place on practice board
-  _addDot('practice-board-dots');
-  // Place on active game board (whichever is visible)
-  _addDot('bullseye-board-dots');
-  _addDot('game-board-dots');
+  const core = document.createElementNS(SVG_NS, 'circle');
+  core.setAttribute('cx', sx);
+  core.setAttribute('cy', sy);
+  core.setAttribute('r', String(innerR));
+  core.setAttribute('fill', '#fff');
+  core.setAttribute('opacity', '0.95');
+  core.classList.add('dart-dot-core');
+  group.appendChild(core);
 }
 
-function addLog(msg) {
+function placeDot(x_mm, y_mm, label) {
+  if (label === 'BOUNCE' || label === 'MISS' || label === 'FOUL') return;  // off-board / foul — no dot
+  // Practice currently uses the warped live board, and the projected
+  // marker alignment is intentionally hidden there for now.
+  if (currentPage === 'practice') return;
+  const fill = (label === 'MISS') ? '#f59e0b' : '#ff4444';
+
+  const scale = TOTAL_R / 170;
+  const sx = BOARD_CX + x_mm * scale;
+  const sy = BOARD_CY - y_mm * scale;
+
+  // Resolve which SVG group is currently visible
+  let groupId;
+  if (currentPage === 'practice') {
+    groupId = 'practice-board-dots';
+  } else if (currentPage === 'game') {
+    // During bullseye throw-off, onBullseyeState() manages its own dots
+    const bullPhase = document.getElementById('bullseye-phase');
+    const inBullseye = bullPhase && bullPhase.style.display !== 'none';
+    if (inBullseye) return;   // onBullseyeState handles these dots
+    groupId = 'game-board-dots';
+  } else {
+    return;   // Settings, Calibration, Stats — no board visible
+  }
+
+  const g = document.getElementById(groupId);
+  if (!g) return;
+  appendPrecisionDot(g, sx, sy, fill, { outerR: 3.4, innerR: 1.15, strokeWidth: 1.0 });
+}
+
+function _appendPracticeLog(msg) {
   const log = document.getElementById('practice-log');
   if (!log) return;
   const ts = new Date().toLocaleTimeString();
-  log.innerHTML += ts + ' ' + msg + '\n';
+  const entry = document.createElement('div');
+  entry.className = 'log-entry';
+
+  // Determine message color class
+  let msgClass = 'log-msg';
+  if (msg.includes('[FOUL]') || msg.includes('FOUL')) msgClass += ' log-foul';
+  else if (msg.includes('[SCORE]')) msgClass += ' log-score';
+  else if (msg.includes('[PRACTICE]') || msg.includes('Practice')) msgClass += ' log-practice';
+
+  entry.innerHTML = `<span class="log-ts">${ts}</span><span class="${msgClass}">${msg.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</span>`;
+  log.appendChild(entry);
+
+  // Keep at most 40 entries
+  while (log.children.length > 40) log.removeChild(log.firstChild);
   log.scrollTop = log.scrollHeight;
+}
+
+function addPracticeLog(msg) {
+  if (currentPage !== 'practice') {
+    console.info(msg);
+    return;
+  }
+  _appendPracticeLog(msg);
+  console.info(msg);
+}
+
+function addLog(msg) {
+  console.info(msg);
 }
 
 // ══════════════════════════════════════════════════════════════════════
@@ -2003,35 +3583,60 @@ function _lcmUpdateProgress(count, coverage) {
   if (covTxt) covTxt.textContent = `${coverage}%/95%`;
 }
 
-function saveSettings() {
+async function saveSettings(btnEl) {
   const settings = {
     detection_speed: document.getElementById('set-speed').value,
     tip_offset_px: parseFloat(document.getElementById('set-tip-offset').value),
-    dart_size_min: parseInt(document.getElementById('set-dart-min').value),
-    dart_size_max: parseInt(document.getElementById('set-dart-max').value),
+    min_dart_area: parseInt(document.getElementById('set-dart-min').value),
+    max_dart_area: parseInt(document.getElementById('set-dart-max').value),
     stable_frames: parseInt(document.getElementById('set-stable').value),
     resolution: document.getElementById('set-resolution').value,
     fps: parseInt(document.getElementById('set-fps').value),
-    num_cameras: parseInt(document.getElementById('set-num-cams').value),
     standby_time: document.getElementById('set-standby').value,
     triangle_k_factor: parseFloat(document.getElementById('set-triangle-k').value),
     approximate_distortion: document.getElementById('set-approx-dist').checked,
     blur_kernel: parseInt(document.getElementById('set-blur').value),
     binary_thresh: parseInt(document.getElementById('set-bin-thresh').value),
+    tfluna_enabled: document.getElementById('set-tfluna-enabled').checked,
+    tfluna_port: (document.getElementById('set-tfluna-port').textContent || '').trim(),
+    tfluna_foul_distance_cm: parseInt(document.getElementById('set-tfluna-foul').value) || 237,
+    tfluna_tolerance_cm: parseInt(document.getElementById('set-tfluna-tolerance').value) || 5,
   };
-  if (socket && socket.connected) { socket.emit('update_settings', settings); addLog('Settings saved'); }
-  // Sync calibration resolution dropdown
-  const calRes = document.getElementById('cal-resolution');
-  if (calRes && settings.resolution) {
-    if ([...calRes.options].some(o => o.value === settings.resolution)) {
-      calRes.value = settings.resolution;
+
+  const btn = btnEl || document.querySelector('#page-settings .page-header .btn-primary');
+
+  try {
+    const res = await fetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(settings),
+    });
+    const data = await res.json();
+    if (data.ok) {
+      addLog('Settings saved to disk');
+      // Sync calibration resolution dropdown
+      const calRes = document.getElementById('cal-resolution');
+      if (calRes && settings.resolution) {
+        if ([...calRes.options].some(o => o.value === settings.resolution)) {
+          calRes.value = settings.resolution;
+        }
+      }
+      if (btn) {
+        const orig = btn.textContent;
+        btn.textContent = '\u2713 Saved'; btn.style.background = 'var(--green)';
+        setTimeout(() => { btn.textContent = orig; btn.style.background = ''; }, 1500);
+      }
+    } else {
+      addLog('Settings save failed: ' + (data.error || 'unknown'));
+      if (btn) {
+        const orig = btn.textContent;
+        btn.textContent = '\u2717 Failed'; btn.style.background = 'var(--red, #ff4444)';
+        setTimeout(() => { btn.textContent = orig; btn.style.background = ''; }, 2000);
+      }
     }
+  } catch (e) {
+    addLog('Settings save error: ' + e.message);
   }
-  const btn = event ? event.target : document.querySelector('#page-settings .page-header .btn-primary');
-  if (!btn) return;
-  const orig = btn.textContent;
-  btn.textContent = '✓ Saved'; btn.style.background = 'var(--green)';
-  setTimeout(() => { btn.textContent = orig; btn.style.background = ''; }, 1500);
 }
 
 // ══════════════════════════════════════════════════════════════════════
@@ -2166,39 +3771,55 @@ async function checkBoardProfile() {
       if (statusEl) { statusEl.textContent = 'No profiles saved'; statusEl.style.color = '#888'; }
       listEl.innerHTML = '<div style="color:#666;font-size:12px;padding:4px 0">No board profiles yet. Calibrate cameras first, then save a profile.</div>';
     }
-    // Update warped-mode overlays in case user is currently on warped view
-    updateNoProfileOverlays();
+    // Stop the stream first, THEN apply overlay state — order matters:
+    // stopCamPreview() un-hides the offline placeholder, so updateNoProfileOverlays()
+    // must run last to re-hide it and show only the "No Board Profile" overlay.
     if (_camViewMode === 'warped' && !_hasActiveProfile) stopCamPreview();
+    updateNoProfileOverlays();
+    // If cameras are open and a profile just became active (e.g. first profile saved),
+    // restart the preview stream — the img elements were cleared when there was no profile.
+    if (_camsManuallyOpen && _hasActiveProfile) startCamPreview();
   } catch (e) { /* ignore */ }
 }
 
-async function registerBoard() {
-  const nameInput = document.getElementById('profile-name-input');
-  const name = (nameInput && nameInput.value.trim()) || 'default';
-  const btn = document.getElementById('btn-register-board');
-  const orig = btn.textContent;
-  btn.textContent = '⏳ Saving…'; btn.disabled = true;
+async function registerBoard(opts = {}) {
+  const modalInput = document.getElementById('profile-modal-name');
+  const legacyInput = document.getElementById('profile-name-input');
+  const name = (opts.name || (modalInput && modalInput.value.trim()) || (legacyInput && legacyInput.value.trim()) || 'default');
+  const camId = Number.isFinite(opts.camId) ? opts.camId : calCamId;
+  const btn = opts.btnEl || document.getElementById('btn-register-board');
+  const orig = btn ? btn.textContent : '';
+  if (btn) {
+    btn.textContent = '⏳ Saving…';
+    btn.disabled = true;
+  }
   try {
     const res = await fetch('/api/board/register', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ cam_id: 0, name }),
+      body: JSON.stringify({ cam_id: camId, name }),
     });
     const data = await res.json();
     if (data.ok) {
-      btn.textContent = `✓ Saved "${data.name}"`;
+      if (btn) btn.textContent = `✓ Saved "${data.name}"`;
+      showToast(`Board profile "${data.name}" saved`, 'ok', 3200);
       addLog(`Board profile "${data.name}" saved with ${data.features} features`);
-      if (nameInput) nameInput.value = '';
-      checkBoardProfile();
+      if (modalInput) modalInput.value = '';
+      if (legacyInput) legacyInput.value = '';
+      await checkBoardProfile();
+      return true;
     } else {
-      alert(data.error || 'Save failed');
-      btn.textContent = '✗ Failed';
+      showCalibrationNotice(data.error || 'Save failed', 'error', 5200);
+      if (btn) btn.textContent = '✗ Failed';
     }
   } catch (err) {
-    alert('Save error: ' + err.message);
-    btn.textContent = '✗ Failed';
+    showCalibrationNotice('Save error: ' + err.message, 'error', 5200);
+    if (btn) btn.textContent = '✗ Failed';
   }
-  btn.disabled = false;
-  setTimeout(() => { btn.textContent = orig; }, 2500);
+  if (btn) {
+    btn.disabled = false;
+    setTimeout(() => { btn.textContent = orig; }, 2500);
+  }
+  return false;
 }
 
 async function selectProfile(name) {
@@ -2277,12 +3898,8 @@ async function changeCalResolution(val) {
       const sy = h / oldH;
       calPoints = calPoints.map(p => ({ x: p.x * sx, y: p.y * sy }));
     }
-    // Sync settings resolution dropdown
-    const setRes = document.getElementById('set-resolution');
-    if (setRes) {
-      const key = w + 'x' + h;
-      if ([...setRes.options].some(o => o.value === key)) setRes.value = key;
-    }
+    // Sync settings resolution dropdown — rebuild from camera-supported list
+    populateResolutionDropdown(w + 'x' + h);
     calCaptureFrame(5, true); // keepPoints=true to preserve scaled points
   } catch (e) { console.error('Resolution change failed', e); }
 }
@@ -2301,7 +3918,8 @@ let _debugActiveCam = 0;
 function toggleDebugCams() {
   const panel = document.getElementById('debug-cam-panel');
   const scoreSide = document.querySelector('.prac-score-side');
-  _debugCamsActive = document.getElementById('toggle-debug').checked;
+  const toggle = document.getElementById('toggle-debug');
+  _debugCamsActive = !!(toggle && toggle.checked);
   panel.style.display = _debugCamsActive ? '' : 'none';
   if (scoreSide) scoreSide.classList.toggle('debug-cam-open', _debugCamsActive);
   if (_debugCamsActive) {
@@ -2333,33 +3951,175 @@ function updateDebugCamInfo(details) {
     if (!el) return;
     el.className = 'debug-cam-info';
     if (d.label === null) {
-      el.textContent = 'No detection';
+      el.innerHTML = '<div class="dci-row"><span class="dci-label" style="color:#555">—</span><span style="color:#444;font-style:italic;font-size:10px">No detection</span></div>';
       el.classList.add('no-detect');
     } else if (d.used) {
-      el.innerHTML = `<b>${d.label}</b> (${d.score}pts) · ${d.method}<br>(${d.x_mm}, ${d.y_mm})mm · r=${d.r_mm} · area=${d.area}`;
+      el.innerHTML = [
+        '<div class="dci-row">',
+          `<span class="dci-label">${d.label}</span>`,
+          `<span class="dci-tag">${d.score} pts</span>`,
+          `<span class="dci-tag">${d.method}</span>`,
+        '</div>',
+        '<div class="dci-row dci-coords">',
+          `<span>(${d.x_mm}, ${d.y_mm})mm</span>`,
+          `<span class="dci-tag">r=${d.r_mm}</span>`,
+          `<span class="dci-tag">area=${d.area}</span>`,
+        '</div>',
+      ].join('');
       el.classList.add('used');
     } else {
-      el.innerHTML = `<b>${d.label}</b> (${d.score}pts) · ${d.method}<br>(${d.x_mm}, ${d.y_mm})mm · r=${d.r_mm} · area=${d.area} · <i>rejected</i>`;
+      el.innerHTML = [
+        '<div class="dci-row">',
+          `<span class="dci-label">${d.label}</span>`,
+          `<span class="dci-tag">${d.score} pts</span>`,
+          `<span class="dci-tag">${d.method}</span>`,
+          '<span class="dci-tag" style="color:#f87171;background:rgba(248,113,113,0.12)">rejected</span>',
+        '</div>',
+        '<div class="dci-row dci-coords">',
+          `<span>(${d.x_mm}, ${d.y_mm})mm</span>`,
+          `<span class="dci-tag">r=${d.r_mm}</span>`,
+          `<span class="dci-tag">area=${d.area}</span>`,
+        '</div>',
+      ].join('');
       el.classList.add('rejected');
     }
   });
 }
 
 
+// Maps resolution key → human label
+const _RES_LABELS = {
+  '1920x1080': '1920 \u00d7 1080 (Full HD)',
+  '1280x720':  '1280 \u00d7 720 (HD)',
+  '848x480':   '848 \u00d7 480 \u2605 Recommended',
+  '640x480':   '640 \u00d7 480',
+  '640x360':   '640 \u00d7 360',
+  '424x240':   '424 \u00d7 240',
+  '320x240':   '320 \u00d7 240',
+};
+
+/**
+ * Fetch the list of camera-supported resolutions from the server and rebuild
+ * the #set-resolution dropdown.  Selects `preferValue` if provided, otherwise
+ * keeps whatever value was previously selected (or the first entry).
+ */
+async function populateResolutionDropdown(preferValue) {
+  const sel = document.getElementById('set-resolution');
+  if (!sel) return;
+
+  // Remember the currently selected value so we can restore it
+  const prevValue = preferValue || sel.value || '';
+
+  // Show a transient loading state
+  sel.innerHTML = '<option value="">Detecting resolutions\u2026</option>';
+  sel.disabled = true;
+
+  try {
+    const res = await fetch('/api/cameras/resolutions');
+    if (!res.ok) throw new Error('probe failed');
+    const data = await res.json();
+    const list = data.resolutions || [];
+
+    if (list.length === 0) throw new Error('empty list');
+
+    sel.innerHTML = '';
+    for (const { width, height } of list) {
+      const key = `${width}x${height}`;
+      const label = _RES_LABELS[key] || `${width} \u00d7 ${height}`;
+      const opt = document.createElement('option');
+      opt.value = key;
+      opt.textContent = label;
+      sel.appendChild(opt);
+    }
+
+    // Restore previous selection if it exists; otherwise pick the first
+    if (prevValue && [...sel.options].some(o => o.value === prevValue)) {
+      sel.value = prevValue;
+    } else {
+      sel.selectedIndex = 0;
+    }
+  } catch (e) {
+    // Fallback: show a minimal static list so the UI isn't broken
+    console.warn('[RES] Resolution probe failed, using fallback list:', e);
+    sel.innerHTML = [
+      '1920x1080', '1280x720', '848x480', '640x480', '640x360', '424x240'
+    ].map(k => `<option value="${k}">${_RES_LABELS[k] || k}</option>`).join('');
+    if (prevValue && [...sel.options].some(o => o.value === prevValue)) {
+      sel.value = prevValue;
+    }
+  } finally {
+    sel.disabled = false;
+  }
+}
+
 // Load settings from server and sync UI inputs
 async function loadServerSettings() {
   try {
     const res = await fetch('/api/settings');
     if (!res.ok) return;
-    const s = res.json ? await res.json() : {};
-    // Resolution
+    const s = await res.json();
+
+    // Populate resolution dropdown first (probe camera), then select saved value
+    await populateResolutionDropdown(s.resolution || '');
+
+    // Sync cal-resolution dropdown too
     if (s.resolution) {
-      const setRes = document.getElementById('set-resolution');
-      if (setRes && [...setRes.options].some(o => o.value === s.resolution)) setRes.value = s.resolution;
       const calRes = document.getElementById('cal-resolution');
       if (calRes && [...calRes.options].some(o => o.value === s.resolution)) calRes.value = s.resolution;
     }
-    // Detection inputs
+
+    // FPS
+    if (s.fps != null) {
+      const el = document.getElementById('set-fps');
+      if (el && [...el.options].some(o => parseInt(o.value) === s.fps)) el.value = s.fps;
+    }
+
+    // Number of cameras
+    if (s.num_cameras != null) {
+      const el = document.getElementById('set-num-cams');
+      if (el && [...el.options].some(o => parseInt(o.value) === s.num_cameras)) el.value = s.num_cameras;
+    }
+
+    // Standby timeout
+    if (s.standby_time) {
+      const el = document.getElementById('set-standby');
+      // Map server format ("15m") to option values ("15min")
+      const standbyMap = { '5m': '5min', '10m': '10min', '15m': '15min', '30m': '30min', '1h': 'never' };
+      const mapped = standbyMap[s.standby_time] || s.standby_time;
+      if (el && [...el.options].some(o => o.value === mapped)) el.value = mapped;
+    }
+
+    // Detection speed
+    if (s.detection_speed) {
+      const el = document.getElementById('set-speed');
+      const speedMap = { 'high': 'fast', 'very_high': 'fast', 'default': 'default', 'low': 'careful', 'very_low': 'careful' };
+      const mapped = speedMap[s.detection_speed] || s.detection_speed;
+      if (el && [...el.options].some(o => o.value === mapped)) el.value = mapped;
+    }
+
+    // Triangle K factor
+    if (s.triangle_k_factor != null) {
+      const el = document.getElementById('set-triangle-k');
+      if (el) {
+        el.value = s.triangle_k_factor;
+        const disp = el.closest('.setting-row')?.querySelector('.range-val');
+        if (disp) disp.textContent = s.triangle_k_factor;
+      }
+    }
+
+    // Approximate distortion toggle
+    if (s.approximate_distortion != null) {
+      const el = document.getElementById('set-approx-dist');
+      if (el) el.checked = !!s.approximate_distortion;
+    }
+
+    // Blur kernel
+    if (s.blur_kernel != null) {
+      const el = document.getElementById('set-blur');
+      if (el && [...el.options].some(o => parseInt(o.value) === s.blur_kernel)) el.value = s.blur_kernel;
+    }
+
+    // Detection inputs (sliders / numbers)
     const map = {
       'set-tip-offset': s.tip_offset_px,
       'set-dart-min': s.min_dart_area,
@@ -2376,7 +4136,169 @@ async function loadServerSettings() {
         if (disp) disp.textContent = val;
       }
     }
+    // TF-Luna oche sensor
+    if (s.tfluna_enabled != null) {
+      const el = document.getElementById('set-tfluna-enabled');
+      if (el) el.checked = !!s.tfluna_enabled;
+    }
+    if (s.tfluna_port != null) {
+      const el = document.getElementById('set-tfluna-port');
+      if (el) el.textContent = s.tfluna_port;
+    }
+    if (s.tfluna_foul_distance_cm != null) {
+      const el = document.getElementById('set-tfluna-foul');
+      if (el) el.value = s.tfluna_foul_distance_cm;
+    }
+    if (s.tfluna_tolerance_cm != null) {
+      const el = document.getElementById('set-tfluna-tolerance');
+      if (el) el.value = s.tfluna_tolerance_cm;
+    }
+    // Auto-scan for TF-Luna port and fill the field
+    _autoScanTFLuna();
   } catch (e) { console.warn('Failed to load server settings', e); }
+}
+
+// ── TF-Luna probe ──────────────────────────────────────────────────
+
+function _setTFLunaStatus(dotClass, text) {
+  const dot = document.getElementById('tfluna-dot');
+  const label = document.getElementById('tfluna-status-text');
+  if (dot) dot.className = 'tfluna-dot ' + dotClass;
+  if (label) label.textContent = text;
+}
+
+// Auto-save just the TF-Luna settings to the server (no Save button needed)
+async function _saveTFLunaSettings() {
+  const portEl = document.getElementById('set-tfluna-port');
+  const enabledEl = document.getElementById('set-tfluna-enabled');
+  const foulEl = document.getElementById('set-tfluna-foul');
+  const tolEl = document.getElementById('set-tfluna-tolerance');
+  const settings = {
+    tfluna_enabled: enabledEl ? enabledEl.checked : true,
+    tfluna_port: portEl ? (portEl.textContent || '').trim() : '',
+    tfluna_foul_distance_cm: foulEl ? parseInt(foulEl.value) || 237 : 237,
+    tfluna_tolerance_cm: tolEl ? parseInt(tolEl.value) || 5 : 5,
+  };
+  try {
+    await fetch('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(settings),
+    });
+  } catch { /* silent */ }
+}
+
+// Auto-scan for TF-Luna port, fill the UI, and auto-save
+async function _autoScanTFLuna() {
+  try {
+    const res = await fetch('/api/tfluna/scan');
+    const d = await res.json();
+    if (d.found && d.port) {
+      const portEl = document.getElementById('set-tfluna-port');
+      const enabledEl = document.getElementById('set-tfluna-enabled');
+      // Auto-fill the port and enable it
+      if (portEl) portEl.textContent = d.port;
+      if (enabledEl) enabledEl.checked = true;
+      // Auto-save these settings
+      await _saveTFLunaSettings();
+      // Now probe the connection
+      probeTFLuna();
+    } else {
+      // No port found by auto-scan, but try probing with whatever is in the field
+      const portEl = document.getElementById('set-tfluna-port');
+      if (portEl && (portEl.textContent || '').trim()) {
+        probeTFLuna();
+      }
+    }
+  } catch { /* silent */ }
+}
+
+async function probeTFLuna() {
+  const btn = document.getElementById('btn-tfluna-probe');
+  if (btn) { btn.disabled = true; btn.textContent = 'Testing…'; }
+  _setTFLunaStatus('tfluna-checking', 'Checking…');
+
+  // Send the port from the UI so it works even before saving settings
+  const portEl = document.getElementById('set-tfluna-port');
+  const port = portEl ? (portEl.textContent || '').trim() : '';
+
+  try {
+    const res = await fetch('/api/tfluna/probe', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ port }),
+    });
+    const d = await res.json();
+    if (d.ok) {
+      _setTFLunaStatus('tfluna-ok', `${d.port} Connected`);
+      // Auto-fill port from probe result and auto-save
+      if (d.port && portEl) portEl.value = d.port;
+      const enabledEl = document.getElementById('set-tfluna-enabled');
+      if (enabledEl) enabledEl.checked = true;
+      _saveTFLunaSettings();
+    } else {
+      const msgs = {
+        no_port: 'No COM port configured',
+        no_config: 'Config not loaded',
+        failed: d.msg || 'Cannot open port',
+        no_data: d.msg || 'Port open but no data',
+      };
+      _setTFLunaStatus('tfluna-fail', msgs[d.status] || d.msg || 'Not detected');
+    }
+  } catch (e) {
+    _setTFLunaStatus('tfluna-fail', 'Probe error: ' + e.message);
+  }
+
+  if (btn) {
+    btn.disabled = false;
+    btn.textContent = 'Test Connection';
+    const badge = document.getElementById('tfluna-badge');
+    if (badge) { badge.classList.add('tfluna-flash'); setTimeout(() => badge.classList.remove('tfluna-flash'), 800); }
+  }
+}
+
+// ── TF-Luna live distance display (settings page) ──────────────────
+function _updateTFLunaLive(data) {
+  const valueEl = document.getElementById('tfluna-live-value');
+  const statusEl = document.getElementById('tfluna-live-status');
+  const marker = document.getElementById('tfluna-live-marker');
+  const arrow = document.getElementById('tfluna-marker-arrow');
+  const foulZone = document.getElementById('tfluna-sim-foul-zone');
+  const okZone = document.getElementById('tfluna-sim-ok-zone');
+
+  if (!data.connected) {
+    if (valueEl) valueEl.textContent = '—';
+    if (statusEl) { statusEl.textContent = 'Disconnected'; statusEl.className = 'tfluna-live-status tfluna-live-off'; }
+    if (marker) marker.style.display = 'none';
+    return;
+  }
+
+  const dist = data.distance_cm;
+  const threshold = data.foul_threshold_cm || 237;
+  const isFoul = data.is_trespassing;
+
+  if (valueEl) {
+    valueEl.textContent = dist;
+    valueEl.className = 'tfluna-live-value' + (isFoul ? ' tfluna-live-foul' : ' tfluna-live-safe');
+  }
+  if (statusEl) {
+    statusEl.textContent = isFoul ? 'FOUL' : 'OK';
+    statusEl.className = 'tfluna-live-status' + (isFoul ? ' tfluna-live-foul' : ' tfluna-live-safe');
+  }
+
+  // Update foul/ok bar proportions
+  const barMin = 100, barMax = 350;
+  const foulPct = Math.max(0, Math.min(100, ((threshold - barMin) / (barMax - barMin)) * 100));
+  if (foulZone) foulZone.style.flex = `0 0 ${foulPct}%`;
+  if (okZone) okZone.style.flex = `0 0 ${100 - foulPct}%`;
+
+  // Position marker arrow
+  if (marker && arrow) {
+    marker.style.display = '';
+    const pct = Math.max(0, Math.min(100, ((dist - barMin) / (barMax - barMin)) * 100));
+    arrow.style.left = pct + '%';
+    arrow.className = 'tfluna-marker-arrow' + (isFoul ? ' tfluna-marker-foul' : ' tfluna-marker-ok');
+  }
 }
 
 // ══════════════════════════════════════════════════════════════════════
@@ -2404,6 +4326,10 @@ function startGame() {
     return;
   }
 
+  _resetPracticeState();   // clear any lingering practice state
+  _gameTurnReviewReady = false;
+  _setGameReviewButtonVisible(false);
+  closePracticeReviewModal();
   _gameMode = _selectedGameMode;
   _gameOpts = {};
   _prevGamePlayer = null;  // Reset turn tracking for new game
@@ -2415,10 +4341,7 @@ function startGame() {
   }
 
   // Clear any residual dots from previous sessions
-  ['practice-board-dots', 'bullseye-board-dots', 'game-board-dots'].forEach(id => {
-    const g = document.getElementById(id);
-    if (g) g.innerHTML = '';
-  });
+  clearBoardDots();
 
   // Show game page with bullseye phase
   showPage('game');
@@ -2434,11 +4357,12 @@ function startGame() {
 }
 
 function restartGame() {
+  _resetPracticeState();
+  _gameTurnReviewReady = false;
+  _setGameReviewButtonVisible(false);
+  closePracticeReviewModal();
   // Clear any residual dots
-  ['practice-board-dots', 'bullseye-board-dots', 'game-board-dots'].forEach(id => {
-    const g = document.getElementById(id);
-    if (g) g.innerHTML = '';
-  });
+  clearBoardDots();
   document.getElementById('game-result-overlay').style.display = 'none';
   showPage('game');
   document.getElementById('bullseye-phase').style.display = '';
@@ -2450,12 +4374,13 @@ function endGame() {
   if (socket) socket.emit('end_game');
   if (socket) socket.emit('stop_detection');
   if (socket) socket.emit('close_cameras');
+  _gameTurnReviewReady = false;
+  _setGameReviewButtonVisible(false);
+  closePracticeReviewModal();
+  _resetPracticeAccuracyState({ closeModal: true });
   _gameMode = null;
   // Clear all dart dots
-  ['practice-board-dots', 'bullseye-board-dots', 'game-board-dots'].forEach(id => {
-    const g = document.getElementById(id);
-    if (g) g.innerHTML = '';
-  });
+  clearBoardDots();
   // ── Reset bullseye pre-game UI so next session starts clean ──────────
   const prompt   = document.getElementById('bullseye-prompt');
   const p1dist   = document.getElementById('bp1-distance');
@@ -2517,6 +4442,8 @@ function onBullseyeState(state) {
   p2dist.textContent = state.p2_distance !== null ? state.p2_distance.toFixed(1) + ' mm' : '—';
   p1label.textContent = state.p1_label || '';
   p2label.textContent = state.p2_label || '';
+  p1label.classList.toggle('label-bounce', state.p1_label === 'BOUNCE');
+  p2label.classList.toggle('label-bounce', state.p2_label === 'BOUNCE');
 
   // Place dart dots on the bullseye board
   const dotsG = document.getElementById('bullseye-board-dots');
@@ -2531,15 +4458,11 @@ function onBullseyeState(state) {
       if (coord) {
         const sx = BOARD_CX + coord[0] * scale;
         const sy = BOARD_CY - coord[1] * scale;
-        const dot = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
-        dot.setAttribute('cx', sx);
-        dot.setAttribute('cy', sy);
-        dot.setAttribute('r', '6');
-        dot.setAttribute('fill', color);
-        dot.setAttribute('stroke', '#fff');
-        dot.setAttribute('stroke-width', '1.5');
-        dot.setAttribute('opacity', '0.9');
-        dotsG.appendChild(dot);
+        appendPrecisionDot(dotsG, sx, sy, color, {
+          outerR: 4.1,
+          innerR: 1.35,
+          strokeWidth: 1.05,
+        });
       }
     });
   }
@@ -2600,6 +4523,9 @@ let _prevGamePlayer = null;
 function onGameState(state) {
   if (state.error) { console.error('Game error:', state.error); return; }
   if (state.type === 'idle') return;
+  if (state.type !== 'x01') {
+    _gameTurnReviewReady = false;
+  }
   // Only clear the takeout guard when this is a REAL game state (not a held-back
   // awaiting_takeout state). Held-back states keep the guard so onState can't
   // overwrite the Remove Darts status.
@@ -2627,12 +4553,11 @@ function onGameState(state) {
         const scale = TOTAL_R / 170;
         const sx = BOARD_CX + dart.coord[0] * scale;
         const sy = BOARD_CY - dart.coord[1] * scale;
-        const dot = document.createElementNS(SVG_NS, 'circle');
-        dot.setAttribute('cx', sx); dot.setAttribute('cy', sy); dot.setAttribute('r', '4');
-        dot.setAttribute('fill', '#ff4444'); dot.setAttribute('stroke', '#fff');
-        dot.setAttribute('stroke-width', '1.2'); dot.setAttribute('opacity', '0.9');
-        dot.classList.add('dart-dot');
-        dotsG.appendChild(dot);
+        appendPrecisionDot(dotsG, sx, sy, '#ff4444', {
+          outerR: 3.4,
+          innerR: 1.15,
+          strokeWidth: 1.0,
+        });
       }
     }
   }
@@ -2643,6 +4568,7 @@ function onGameState(state) {
     case 'cricket': renderCricketState(state); break;
     case 'countup': renderCountUpState(state); break;
   }
+  _syncAccuracyReviewActionButtons();
 }
 
 function onGameOver(state) {
@@ -2896,26 +4822,77 @@ function renderTurnHistory(history) {
 // ══════════════════════════════════════════════════════════════════════
 
 function loadStats(mode) {
+  _statsMode = mode || null;
   // Update tabs
   document.querySelectorAll('.stats-tab').forEach(t => {
-    t.classList.toggle('active', (t.dataset.mode || '') === (mode || ''));
+    t.classList.toggle('active', (t.dataset.mode || '') === (_statsMode || ''));
   });
+  const dash = document.getElementById('stats-dashboard');
+  if (dash) {
+    dash.innerHTML = '<div class="stats-loading">Loading statistics...</div>';
+  }
   // Fetch from server
-  const url = mode ? '/api/stats?mode=' + mode : '/api/stats';
+  const url = _statsMode ? '/api/stats?mode=' + _statsMode : '/api/stats';
   fetch(url)
     .then(r => r.json())
-    .then(data => renderStats(data, mode))
-    .catch(e => {
-      document.getElementById('stats-dashboard').innerHTML =
-        '<div class="stats-loading">Failed to load statistics.</div>';
+    .then(data => renderStats(data, _statsMode))
+    .catch(() => {
+      if (dash) {
+        dash.innerHTML = '<div class="stats-loading">Failed to load statistics.</div>';
+      }
+    });
+}
+
+function setStatsSection(section) {
+  _statsSection = section === 'accuracy' ? 'accuracy' : 'games';
+  document.querySelectorAll('.stats-section-tab').forEach((tab) => {
+    tab.classList.toggle('active', tab.dataset.section === _statsSection);
+  });
+
+  const gameSection = document.getElementById('stats-games-section');
+  const accuracySection = document.getElementById('stats-accuracy-section');
+  if (gameSection) {
+    const active = _statsSection === 'games';
+    gameSection.hidden = !active;
+    gameSection.classList.toggle('active', active);
+  }
+  if (accuracySection) {
+    const active = _statsSection === 'accuracy';
+    accuracySection.hidden = !active;
+    accuracySection.classList.toggle('active', active);
+  }
+
+  if (_statsSection === 'accuracy') {
+    loadAccuracyStats();
+  } else {
+    loadStats(_statsMode);
+  }
+}
+
+function loadAccuracyStats() {
+  const dash = document.getElementById('accuracy-dashboard');
+  if (dash) {
+    dash.innerHTML = '<div class="stats-loading">Loading accuracy statistics...</div>';
+  }
+
+  fetch('/api/accuracy/summary')
+    .then(r => r.json())
+    .then(data => renderAccuracyStats(data))
+    .catch(() => {
+      if (dash) {
+        dash.innerHTML = '<div class="stats-loading">Failed to load accuracy statistics.</div>';
+      }
     });
 }
 
 function renderStats(data, mode) {
   const dash = document.getElementById('stats-dashboard');
+  const recentList = document.getElementById('stats-recent-list');
+  if (!dash || !recentList) return;
+
   if (!data || data.games_played === 0) {
     dash.innerHTML = '<div class="stats-empty">No games played yet. Start a game to see your stats!</div>';
-    document.getElementById('stats-recent-list').innerHTML = '';
+    recentList.innerHTML = '<div class="stats-empty">No saved matches yet.</div>';
     return;
   }
 
@@ -2953,31 +4930,214 @@ function renderStats(data, mode) {
   dash.innerHTML = '<div class="stats-cards">' + cards + '</div>';
 
   // Recent games
-  const recentList = document.getElementById('stats-recent-list');
   const recent = data.recent || [];
   if (recent.length === 0) {
-    recentList.innerHTML = '<div class="stats-empty">No recent games.</div>';
+    recentList.innerHTML = '<div class="stats-empty">No saved matches yet.</div>';
   } else {
     recentList.innerHTML = recent.map(g => {
-      const date = g.started_at ? new Date(g.started_at * 1000).toLocaleDateString() : '';
+      const date = formatStatsDate(g.started_at);
       const modeLabel = (g.mode || '').toUpperCase();
-      const winner = g.winner ? 'P' + g.winner + ' won' : 'Tie';
+      const winner = g.winner ? 'Player ' + g.winner + ' won' : 'Tie';
+      const summary = gameSummaryText(g);
+      const deleteBtn = g.id
+        ? `<button class="btn btn-sm btn-secondary sr-delete" onclick="deleteGameStat(${Number(g.id)})">Delete</button>`
+        : '';
       return `<div class="sr-row">
-        <span class="sr-mode">${modeLabel}</span>
-        <span class="sr-winner">${winner}</span>
-        <span class="sr-date">${date}</span>
+        <div class="sr-main">
+          <div class="sr-topline">
+            <span class="sr-mode">${modeLabel}</span>
+            <span class="sr-summary">${summary}</span>
+          </div>
+          <div class="sr-meta">
+            <span>${winner}</span>
+            <span>${date}</span>
+          </div>
+        </div>
+        ${deleteBtn}
       </div>`;
     }).join('');
   }
 }
 
-function statCard(label, value) {
-  return `<div class="stat-card">
+function statCard(label, value, className = '') {
+  return `<div class="stat-card${className ? ' ' + className : ''}">
     <div class="sc-value">${value}</div>
     <div class="sc-label">${label}</div>
   </div>`;
 }
 
+function formatStatsDate(value) {
+  return value ? new Date(value * 1000).toLocaleString() : '—';
+}
+
+function formatStatsPercent(value, digits = 2) {
+  return value == null ? '—' : Number(value).toFixed(digits) + '%';
+}
+
+function formatStatsMs(value, digits = 2) {
+  return value == null ? '—' : Number(value).toFixed(digits) + ' ms';
+}
+
+function gameSummaryText(game) {
+  const mode = String(game.mode || '').toLowerCase();
+  const players = game.players || [];
+  if (mode === 'x01' || mode === 'countup') {
+    const left = players[0]?.score ?? '—';
+    const right = players[1]?.score ?? '—';
+    return `${left} • ${right}`;
+  }
+  if (mode === 'cricket') {
+    const left = players[0]?.points ?? '—';
+    const right = players[1]?.points ?? '—';
+    return `${left} pts • ${right} pts`;
+  }
+  return 'Saved match';
+}
+
+function renderAccuracyStats(data) {
+  const dash = document.getElementById('accuracy-dashboard');
+  if (!dash) return;
+  const sessions = (data && data.sessions) || [];
+  const hasData = data && (data.sessions_count > 0 || data.actual_darts > 0 || data.predicted_darts > 0);
+
+  if (!hasData) {
+    dash.innerHTML = '<div class="stats-empty">No reviewed accuracy sessions yet. Start practice or X01 to build review data.</div>';
+    return;
+  }
+
+  const agreement = (data && data.agreement_counts) || {};
+  let cards = '';
+  cards += statCard('Active Model', data.active_model || '—', 'stat-card-wide');
+  cards += statCard('Actual Darts', data.actual_darts || 0);
+  cards += statCard('Predicted Darts', data.predicted_darts || 0);
+  cards += statCard('Corrections', data.corrected_darts || 0);
+  cards += statCard('Missed Darts', data.missed_darts || 0);
+  cards += statCard('False Positives', data.false_positives || 0);
+  cards += statCard('System Accuracy', formatStatsPercent(data.accuracy_pct));
+  cards += statCard('Avg Detect→Score', formatStatsMs(data.avg_detect_to_score_ms));
+  cards += statCard('Avg Pose Infer', formatStatsMs(data.avg_pose_infer_ms));
+
+  const agreementCards = `
+    <div class="accuracy-agreement-grid">
+      <div class="accuracy-agreement-card">
+        <div class="accuracy-agreement-title">3-Cam Agreement</div>
+        <div class="accuracy-agreement-line">all match: <strong>${agreement['3cam_all_match'] || 0}</strong></div>
+        <div class="accuracy-agreement-line">two match: <strong>${agreement['3cam_two_match'] || 0}</strong></div>
+        <div class="accuracy-agreement-line">all diff: <strong>${agreement['3cam_all_diff'] || 0}</strong></div>
+      </div>
+      <div class="accuracy-agreement-card">
+        <div class="accuracy-agreement-title">2-Cam Agreement</div>
+        <div class="accuracy-agreement-line">match: <strong>${agreement['2cam_match'] || 0}</strong></div>
+        <div class="accuracy-agreement-line">disagree: <strong>${agreement['2cam_disagree'] || 0}</strong></div>
+      </div>
+      <div class="accuracy-agreement-card">
+        <div class="accuracy-agreement-title">Low Visibility</div>
+        <div class="accuracy-agreement-line">single cam: <strong>${agreement['1cam_only'] || 0}</strong></div>
+        <div class="accuracy-agreement-line">no detection: <strong>${agreement['no_detection'] || 0}</strong></div>
+      </div>
+    </div>
+  `;
+
+  const tableRows = sessions.map((session) => {
+    const sessionAgreement = session.agreement_counts || {};
+    const sessionLabel = session.context === 'game'
+      ? `${String(session.session_mode || 'game').toUpperCase()} Review`
+      : 'Practice Review';
+    return `
+      <tr>
+        <td>${formatStatsDate(session.started_at)}</td>
+        <td><span class="accuracy-session-badge">${sessionLabel}</span></td>
+        <td>${session.model_name || '—'}</td>
+        <td>${session.actual_darts || 0}</td>
+        <td>${session.predicted_darts || 0}</td>
+        <td>${session.corrected_darts || 0}</td>
+        <td>${session.missed_darts || 0}</td>
+        <td>${session.false_positives || 0}</td>
+        <td>${sessionAgreement['3cam_all_match'] || 0}/${sessionAgreement['3cam_two_match'] || 0}/${sessionAgreement['3cam_all_diff'] || 0}</td>
+        <td>${sessionAgreement['2cam_match'] || 0}/${sessionAgreement['2cam_disagree'] || 0}</td>
+        <td>${sessionAgreement['1cam_only'] || 0}/${sessionAgreement['no_detection'] || 0}</td>
+        <td>${formatStatsPercent(session.accuracy_pct)}</td>
+        <td>${formatStatsMs(session.avg_detect_to_score_ms)}</td>
+        <td>${formatStatsMs(session.avg_pose_infer_ms)}</td>
+      </tr>
+    `;
+  }).join('');
+
+  dash.innerHTML = `
+    <div class="stats-cards accuracy-cards">${cards}</div>
+    ${agreementCards}
+    <div class="accuracy-table-wrap">
+      <div class="accuracy-table-title">Accuracy Sessions</div>
+      <div class="accuracy-table-scroll">
+        <table class="accuracy-table">
+          <thead>
+            <tr>
+              <th>Session</th>
+              <th>Type</th>
+              <th>Model</th>
+              <th>Actual</th>
+              <th>Detected</th>
+              <th>Corrections</th>
+              <th>Missed</th>
+              <th>False+</th>
+              <th>3C A/T/D</th>
+              <th>2C M/D</th>
+              <th>1C / ND</th>
+              <th>Accuracy</th>
+              <th>Avg D→S</th>
+              <th>Avg Infer</th>
+            </tr>
+          </thead>
+          <tbody>${tableRows || '<tr><td colspan="14">No accuracy sessions yet.</td></tr>'}</tbody>
+        </table>
+      </div>
+    </div>
+  `;
+}
+
+async function resetGameStats() {
+  if (!window.confirm('Delete all saved game statistics and match history?')) return;
+  try {
+    const res = await fetch('/api/stats/reset', { method: 'POST' });
+    if (!res.ok) throw new Error('reset failed');
+    showToast('Game statistics reset.', 'ok', 2600);
+    loadStats(_statsMode);
+  } catch {
+    showToast('Failed to reset game statistics.', 'warn', 2600);
+  }
+}
+
+async function deleteGameStat(gameId) {
+  if (!gameId) return;
+  if (!window.confirm('Delete this saved match from history?')) return;
+  try {
+    const res = await fetch(`/api/stats/game/${gameId}`, { method: 'DELETE' });
+    if (!res.ok) throw new Error('delete failed');
+    showToast('Match removed from history.', 'ok', 2400);
+    loadStats(_statsMode);
+  } catch {
+    showToast('Failed to delete saved match.', 'warn', 2600);
+  }
+}
+
+async function resetAccuracyStats() {
+  if (!window.confirm('Delete all saved accuracy review sessions?')) return;
+  try {
+    const res = await fetch('/api/accuracy/reset', { method: 'POST' });
+    if (!res.ok) throw new Error('reset failed');
+    showToast('Accuracy statistics reset.', 'ok', 2600);
+    loadAccuracyStats();
+  } catch {
+    showToast('Failed to reset accuracy statistics.', 'warn', 2600);
+  }
+}
+
 function onStatsData(data) {
-  renderStats(data, data.mode);
+  if ((data && data.mode) === 'accuracy') {
+    if (_statsSection === 'accuracy') renderAccuracyStats(data);
+    return;
+  }
+  if (_statsSection === 'games' || currentPage !== 'stats') {
+    renderStats(data, data.mode || _statsMode);
+  }
 }

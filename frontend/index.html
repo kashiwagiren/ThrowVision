@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap"
     rel="stylesheet">
-  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="style.css?v=6">
 </head>
 
 <body>
@@ -159,6 +159,8 @@
           <span class="status-text" id="game-active-status-text">Idle</span>
         </div>
         <div class="game-header-actions">
+          <button class="btn btn-sm btn-secondary" id="btn-game-review" onclick="openPracticeReviewModal()" hidden
+            style="display:none;">Review Turn</button>
           <button class="btn btn-sm btn-secondary" onclick="undoGameDart()">↩ Undo</button>
         </div>
       </div>
@@ -177,6 +179,9 @@
         <div class="game-center">
           <div class="game-board-area">
             <svg id="game-board" viewBox="0 0 442 440" class="dartboard game-dartboard"></svg>
+            <div id="oche-trespass-banner" class="oche-trespass" style="display:none">
+              BEHIND THE LINE! <span id="oche-trespass-dist"></span>
+            </div>
           </div>
           <div class="game-turn-info" id="game-turn-info"></div>
           <!-- Cricket Grid (shown only in cricket mode) -->
@@ -225,18 +230,49 @@
       <h2>Statistics</h2>
       <div></div>
     </div>
-    <div class="stats-mode-tabs">
-      <button class="stats-tab active" data-mode="" onclick="loadStats(null)">Overall</button>
-      <button class="stats-tab" data-mode="x01" onclick="loadStats('x01')">X01</button>
-      <button class="stats-tab" data-mode="cricket" onclick="loadStats('cricket')">Cricket</button>
-      <button class="stats-tab" data-mode="countup" onclick="loadStats('countup')">Count Up</button>
-    </div>
-    <div class="stats-dashboard" id="stats-dashboard">
-      <div class="stats-loading">Loading statistics...</div>
-    </div>
-    <div class="stats-recent" id="stats-recent">
-      <h3>Recent Games</h3>
-      <div class="stats-recent-list" id="stats-recent-list"></div>
+    <div class="stats-shell">
+      <div class="stats-section-tabs">
+        <button class="stats-section-tab active" data-section="games" onclick="setStatsSection('games')">Game Stats</button>
+        <button class="stats-section-tab" data-section="accuracy" onclick="setStatsSection('accuracy')">Accuracy</button>
+      </div>
+
+      <section class="stats-section active" id="stats-games-section">
+        <div class="stats-toolbar">
+          <div class="stats-mode-tabs">
+            <button class="stats-tab active" data-mode="" onclick="loadStats(null)">Overall</button>
+            <button class="stats-tab" data-mode="x01" onclick="loadStats('x01')">X01</button>
+            <button class="stats-tab" data-mode="cricket" onclick="loadStats('cricket')">Cricket</button>
+            <button class="stats-tab" data-mode="countup" onclick="loadStats('countup')">Count Up</button>
+          </div>
+          <button class="btn btn-sm btn-secondary" onclick="resetGameStats()">Reset Game Stats</button>
+        </div>
+        <div class="stats-dashboard" id="stats-dashboard">
+          <div class="stats-loading">Loading statistics...</div>
+        </div>
+        <div class="stats-recent" id="stats-recent">
+          <div class="stats-block-head">
+            <div>
+              <h3>Match History</h3>
+              <p>Saved matches with per-row delete controls.</p>
+            </div>
+          </div>
+          <div class="stats-recent-list" id="stats-recent-list"></div>
+        </div>
+      </section>
+
+      <section class="stats-section" id="stats-accuracy-section" hidden>
+        <div class="stats-toolbar stats-toolbar-standalone">
+          <div class="stats-toolbar-copy">
+            <span class="stats-toolbar-kicker">Review Data</span>
+            <h3>Accuracy Sessions</h3>
+            <p>Practice turns and X01 review turns gathered from manual verification.</p>
+          </div>
+          <button class="btn btn-sm btn-secondary" onclick="resetAccuracyStats()">Reset Accuracy Stats</button>
+        </div>
+        <div class="stats-dashboard accuracy-dashboard" id="accuracy-dashboard">
+          <div class="stats-loading">Loading accuracy statistics...</div>
+        </div>
+      </section>
     </div>
   </main>
   <div class="loading-overlay" id="practice-loading" style="display:none">
@@ -309,17 +345,31 @@
           </div>
         </div>
         <div class="prac-board-area">
-          <svg id="practice-board" viewBox="0 0 442 440" class="dartboard prac-dartboard"></svg>
+          <div class="prac-board-stage" id="practice-board-stage">
+            <div class="prac-board-warp-mask" aria-hidden="true">
+              <img id="practice-board-stream" class="prac-board-warp-feed" alt="Warped dartboard camera view">
+            </div>
+            <svg id="practice-board" viewBox="0 0 442 440" class="dartboard prac-dartboard"></svg>
+            <svg id="practice-board-overlay" viewBox="0 0 451 451" class="prac-board-overlay" aria-hidden="true">
+              <g id="practice-board-warp-dots"></g>
+            </svg>
+          </div>
         </div>
         <div class="prac-board-footer">
           <span class="prac-dart-count">Darts: <strong id="p-dart-n">0</strong>/3</span>
           <div class="prac-footer-right">
-            <div class="prac-footer-toggle">
-              <label style="font-size:12px;color:#888">Debug</label>
-              <label class="toggle toggle-sm"><input type="checkbox" id="toggle-debug" disabled
-                  onchange="toggleDebugCams()"><span class="toggle-slider"></span></label>
+            <div class="prac-cam-selector" aria-label="Practice camera selection" hidden>
+              <span class="prac-cam-label">Camera</span>
+              <div class="prac-cam-btns">
+                <button class="p-cam-btn active" data-cam="0" onclick="selectCam(0)">Cam 1</button>
+                <button class="p-cam-btn" data-cam="1" onclick="selectCam(1)">Cam 2</button>
+                <button class="p-cam-btn" data-cam="2" onclick="selectCam(2)">Cam 3</button>
+              </div>
             </div>
-            <button class="p-tool-btn" id="btn-reset" onclick="resetTurn()">↻ Clear Board</button>
+            <button class="p-tool-btn" id="btn-manual-event" onclick="openPracticeManualEventModal()" hidden
+              style="display:none;">+ Add Event</button>
+            <button class="p-tool-btn" id="btn-reset" onclick="finishPracticeTurn()" hidden style="display:none;">↻
+              Finish Turn</button>
           </div>
         </div>
       </div>
@@ -338,7 +388,7 @@
             <strong>Remove darts from the board</strong>
             <small id="practice-takeout-sub">Board will reset automatically when darts are removed</small>
           </div>
-          <button class="btn btn-sm btn-accent" onclick="socket.emit('skip_takeout')" title="Manual reset if hand detection doesn't trigger">↺ Continue</button>
+          <button class="btn btn-sm btn-accent" onclick="skipPracticeTakeout()" title="Manual reset if hand detection doesn't trigger">↺ Continue</button>
         </div>
 
         <div class="prac-score-hero">
@@ -404,7 +454,7 @@
     <div class="page-header">
       <button class="btn btn-sm btn-back" onclick="showPage('home')">← Back</button>
       <h2>Settings</h2>
-      <button class="btn btn-sm btn-primary" onclick="saveSettings()">Save Settings</button>
+      <button class="btn btn-sm btn-primary" onclick="saveSettings(this)">Save Settings</button>
     </div>
     <div class="settings-layout">
       <!-- Detection -->
@@ -443,16 +493,14 @@
 
       <!-- Camera -->
       <section class="settings-card">
-        <h3><span class="card-icon">📷</span> Camera</h3>
+        <div class="settings-card-header">
+          <h3><span class="card-icon">📷</span> Camera</h3>
+          <button class="btn btn-sm btn-primary" id="btn-toggle-cams" onclick="toggleCamerasManually()">Open Cameras</button>
+        </div>
         <div class="setting-row">
           <label>Resolution</label>
           <select id="set-resolution">
-            <option value="848x480" selected>848 × 480</option>
-            <option value="1280x720">1280 × 720</option>
-            <option value="1920x1080">1920 × 1080</option>
-            <option value="640x480">640 × 480</option>
-            <option value="640x360">640 × 360</option>
-            <option value="424x240">424 × 240</option>
+            <option value="">Loading resolutions…</option>
           </select>
         </div>
         <div class="setting-row">
@@ -464,14 +512,6 @@
           </select>
         </div>
         <div class="setting-row">
-          <label>Number of Cameras</label>
-          <select id="set-num-cams">
-            <option value="1">1</option>
-            <option value="2">2</option>
-            <option value="3" selected>3</option>
-          </select>
-        </div>
-        <div class="setting-row">
           <label>Standby Timeout</label>
           <select id="set-standby">
             <option value="5min">5 min</option>
@@ -480,7 +520,89 @@
             <option value="never">Never</option>
           </select>
         </div>
-        <button class="btn btn-primary" id="btn-toggle-cams" onclick="toggleCamerasManually()" style="margin-top:12px;">Open Cameras</button>
+
+        <!-- Camera Preview (inline, shown when cameras are open) -->
+        <div id="cam-preview-section" class="cam-preview-inline" style="display:none;">
+          <div class="cam-preview-toolbar">
+            <div class="cam-view-toggle">
+              <button class="btn btn-sm btn-secondary cam-toggle-btn active" onclick="setCamView('raw')">Raw Feed</button>
+              <button class="btn btn-sm btn-secondary cam-toggle-btn" onclick="setCamView('warped')">Warped</button>
+            </div>
+            <div class="cam-select-tabs">
+              <button class="cam-select-btn active" data-cam="0" onclick="selectPreviewCam(0)">Cam 1</button>
+              <button class="cam-select-btn" data-cam="1" onclick="selectPreviewCam(1)">Cam 2</button>
+              <button class="cam-select-btn" data-cam="2" onclick="selectPreviewCam(2)">Cam 3</button>
+            </div>
+          </div>
+          <div class="cam-preview-single" id="cam-preview-grid">
+            <div class="cam-preview-item active" data-cam-item="0">
+              <div class="cam-preview-label">Cam 0 <span class="cam-fps-badge" id="cam-fps-0"></span></div>
+              <div class="cam-preview-wrap">
+                <img id="cam-preview-0" src="" alt="Camera 0" class="cam-preview-img">
+                <div class="cam-offline-placeholder" id="cam-offline-0">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="32" height="32">
+                    <rect x="2" y="3" width="20" height="14" rx="2" />
+                    <path d="M8 21h8M12 17v4" />
+                    <line x1="4" y1="1" x2="20" y2="23" stroke-width="2" />
+                  </svg>
+                  <span>System Offline</span>
+                </div>
+                <div class="cam-no-profile" id="cam-no-profile-0" style="display:none">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="28" height="28">
+                    <circle cx="12" cy="12" r="10"/>
+                    <line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/>
+                  </svg>
+                  <span>No Board Profile</span>
+                  <small>Calibrate &amp; save a profile first</small>
+                </div>
+              </div>
+            </div>
+            <div class="cam-preview-item" data-cam-item="1" style="display:none">
+              <div class="cam-preview-label">Cam 1 <span class="cam-fps-badge" id="cam-fps-1"></span></div>
+              <div class="cam-preview-wrap">
+                <img id="cam-preview-1" src="" alt="Camera 1" class="cam-preview-img">
+                <div class="cam-offline-placeholder" id="cam-offline-1">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="32" height="32">
+                    <rect x="2" y="3" width="20" height="14" rx="2" />
+                    <path d="M8 21h8M12 17v4" />
+                    <line x1="4" y1="1" x2="20" y2="23" stroke-width="2" />
+                  </svg>
+                  <span>System Offline</span>
+                </div>
+                <div class="cam-no-profile" id="cam-no-profile-1" style="display:none">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="28" height="28">
+                    <circle cx="12" cy="12" r="10"/>
+                    <line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/>
+                  </svg>
+                  <span>No Board Profile</span>
+                  <small>Calibrate &amp; save a profile first</small>
+                </div>
+              </div>
+            </div>
+            <div class="cam-preview-item" data-cam-item="2" style="display:none">
+              <div class="cam-preview-label">Cam 2 <span class="cam-fps-badge" id="cam-fps-2"></span></div>
+              <div class="cam-preview-wrap">
+                <img id="cam-preview-2" src="" alt="Camera 2" class="cam-preview-img">
+                <div class="cam-offline-placeholder" id="cam-offline-2">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="32" height="32">
+                    <rect x="2" y="3" width="20" height="14" rx="2" />
+                    <path d="M8 21h8M12 17v4" />
+                    <line x1="4" y1="1" x2="20" y2="23" stroke-width="2" />
+                  </svg>
+                  <span>System Offline</span>
+                </div>
+                <div class="cam-no-profile" id="cam-no-profile-2" style="display:none">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="28" height="28">
+                    <circle cx="12" cy="12" r="10"/>
+                    <line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/>
+                  </svg>
+                  <span>No Board Profile</span>
+                  <small>Calibrate &amp; save a profile first</small>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
       </section>
 
       <!-- Calibration -->
@@ -504,15 +626,10 @@
           <span id="board-profile-status" style="color:#999;font-size:13px">Checking…</span>
         </div>
         <div id="board-profile-list" style="margin:8px 0"></div>
-        <div style="display:flex;gap:8px;align-items:center;margin-top:8px">
-          <input type="text" id="profile-name-input" placeholder="Profile name…"
-            style="flex:1;padding:6px 10px;border-radius:6px;border:1px solid #444;background:#1a1a2e;color:#eee;font-size:13px">
-          <button class="btn btn-secondary" id="btn-register-board" onclick="registerBoard()">📸 Save Profile</button>
-        </div>
       </section>
 
-      <!-- Lens Calibration -->
-      <section class="settings-card" id="settings-lens">
+      <!-- Lens Calibration (hidden from settings — modal + save/load still uses these inputs) -->
+      <section class="settings-card" id="settings-lens" style="display:none">
         <h3><span class="card-icon">🔬</span> Lens Calibration</h3>
         <p class="settings-note">
           Corrects camera barrel/pincushion distortion for tighter ring overlays.
@@ -546,86 +663,58 @@
 
 
 
-      <!-- Camera Preview -->
-      <section class="settings-card cam-preview-card" id="cam-preview-section" style="display:none;">
-        <h3><span class="card-icon">🖥️</span> Camera Preview</h3>
-        <div class="cam-view-toggle">
-          <button class="btn btn-sm btn-secondary cam-toggle-btn active" onclick="setCamView('raw')">Raw Feed</button>
-          <button class="btn btn-sm btn-secondary cam-toggle-btn" onclick="setCamView('warped')">Warped
-            (Homography)</button>
+      <!-- Oche Sensor -->
+      <section class="settings-card" id="settings-oche">
+        <h3><span class="card-icon">📏</span> Distance Sensor</h3>
+        <p class="settings-note">
+          TF-Luna LiDAR foul-line checker. Darts thrown from closer than the threshold are scored as FOUL (0 pts).
+        </p>
+        <div class="tfluna-status-row">
+          <span class="tfluna-badge" id="tfluna-badge">
+            <span class="tfluna-dot" id="tfluna-dot"></span>
+            <span id="tfluna-status-text">Not checked</span>
+          </span>
+          <button class="btn btn-sm btn-secondary" id="btn-tfluna-probe" onclick="probeTFLuna()">Test Connection</button>
         </div>
-        <div class="cam-preview-grid" id="cam-preview-grid">
-          <div class="cam-preview-item">
-            <div class="cam-preview-label">Cam 0 <span class="cam-fps-badge" id="cam-fps-0"></span></div>
-            <div class="cam-preview-wrap">
-              <img id="cam-preview-0" src="" alt="Camera 0" class="cam-preview-img">
-              <div class="cam-offline-placeholder" id="cam-offline-0">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="32" height="32">
-                  <rect x="2" y="3" width="20" height="14" rx="2" />
-                  <path d="M8 21h8M12 17v4" />
-                  <line x1="4" y1="1" x2="20" y2="23" stroke-width="2" />
-                </svg>
-                <span>System Offline</span>
-              </div>
-              <div class="cam-no-profile" id="cam-no-profile-0" style="display:none">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="28" height="28">
-                  <circle cx="12" cy="12" r="10"/>
-                  <line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/>
-                </svg>
-                <span>No Board Profile</span>
-                <small>Calibrate &amp; save a profile first</small>
-              </div>
-            </div>
+        <div class="setting-row toggle-row">
+          <label>Enable TF-Luna</label>
+          <label class="toggle"><input type="checkbox" id="set-tfluna-enabled">
+            <span class="toggle-slider"></span></label>
+        </div>
+        <div class="setting-row">
+          <label>COM Port</label>
+          <span id="set-tfluna-port" class="setting-value-label">—</span>
+        </div>
+        <div class="setting-row">
+          <label>Foul Distance (cm)</label>
+          <input type="number" id="set-tfluna-foul" min="100" max="400" value="237"
+            style="width:80px;background:var(--bg-input);border:1px solid var(--border);color:var(--fg);border-radius:6px;padding:4px 8px;font-size:13px">
+        </div>
+        <div class="setting-row">
+          <label>Tolerance (cm)</label>
+          <input type="number" id="set-tfluna-tolerance" min="0" max="20" value="5"
+            style="width:70px;background:var(--bg-input);border:1px solid var(--border);color:var(--fg);border-radius:6px;padding:4px 8px;font-size:13px">
+        </div>
+        <div class="tfluna-live-section" id="tfluna-live-section">
+          <h4>Live Distance</h4>
+          <div class="tfluna-live-row">
+            <span class="tfluna-live-value" id="tfluna-live-value">— </span>
+            <span class="tfluna-live-unit">cm</span>
+            <span class="tfluna-live-status" id="tfluna-live-status">No sensor</span>
           </div>
-          <div class="cam-preview-item">
-            <div class="cam-preview-label">Cam 1 <span class="cam-fps-badge" id="cam-fps-1"></span></div>
-            <div class="cam-preview-wrap">
-              <img id="cam-preview-1" src="" alt="Camera 1" class="cam-preview-img">
-              <div class="cam-offline-placeholder" id="cam-offline-1">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="32" height="32">
-                  <rect x="2" y="3" width="20" height="14" rx="2" />
-                  <path d="M8 21h8M12 17v4" />
-                  <line x1="4" y1="1" x2="20" y2="23" stroke-width="2" />
-                </svg>
-                <span>System Offline</span>
-              </div>
-              <div class="cam-no-profile" id="cam-no-profile-1" style="display:none">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="28" height="28">
-                  <circle cx="12" cy="12" r="10"/>
-                  <line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/>
-                </svg>
-                <span>No Board Profile</span>
-                <small>Calibrate &amp; save a profile first</small>
-              </div>
-            </div>
+          <div class="tfluna-sim-bar">
+            <div class="tfluna-sim-zone tfluna-sim-foul" id="tfluna-sim-foul-zone"></div>
+            <div class="tfluna-sim-zone tfluna-sim-ok" id="tfluna-sim-ok-zone"></div>
           </div>
-          <div class="cam-preview-item">
-            <div class="cam-preview-label">Cam 2 <span class="cam-fps-badge" id="cam-fps-2"></span></div>
-            <div class="cam-preview-wrap">
-              <img id="cam-preview-2" src="" alt="Camera 2" class="cam-preview-img">
-              <div class="cam-offline-placeholder" id="cam-offline-2">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="32" height="32">
-                  <rect x="2" y="3" width="20" height="14" rx="2" />
-                  <path d="M8 21h8M12 17v4" />
-                  <line x1="4" y1="1" x2="20" y2="23" stroke-width="2" />
-                </svg>
-                <span>System Offline</span>
-              </div>
-              <div class="cam-no-profile" id="cam-no-profile-2" style="display:none">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="28" height="28">
-                  <circle cx="12" cy="12" r="10"/>
-                  <line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/>
-                </svg>
-                <span>No Board Profile</span>
-                <small>Calibrate &amp; save a profile first</small>
-              </div>
-            </div>
+          <div class="tfluna-live-marker" id="tfluna-live-marker" style="display:none">
+            <div class="tfluna-marker-arrow" id="tfluna-marker-arrow"></div>
           </div>
         </div>
       </section>
 
 
     </div>
+
   </main>
 
   <!-- ─── CALIBRATION ───────────────────────────────────────── -->
@@ -641,9 +730,9 @@
         </span>
         <!-- Point mode toggle -->
         <span class="cal-mode-toggle" title="Calibration point mode">
-          <button class="btn btn-sm btn-secondary cal-mode-btn active" id="btn-cal-4pt"
+          <button class="btn btn-sm btn-secondary cal-mode-btn active" id="btn-cal-4pt" hidden aria-hidden="true" tabindex="-1"
             onclick="calSetMode(4)" title="Legacy: 4 outer double-ring points">4-pt</button>
-          <button class="btn btn-sm btn-secondary cal-mode-btn" id="btn-cal-8pt"
+          <button class="btn btn-sm btn-secondary cal-mode-btn" id="btn-cal-8pt" hidden aria-hidden="true" tabindex="-1"
             onclick="calSetMode(8)" title="Precise: 4 outer + 4 inner triple-ring points">8-pt</button>
         </span>
         <button class="btn btn-sm btn-accent" id="btn-auto-cal" onclick="autoCalibrate()"
@@ -740,6 +829,16 @@
           <span class="bar-dot" id="cam-dot-2"></span>
         </span>
       </div>
+      <div class="bar-status-group" id="oche-status" style="display:none">
+        <span class="bar-item" id="oche-pill" title="Oche Distance">
+          <svg class="bar-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+            stroke-linecap="round" stroke-linejoin="round">
+            <path d="M2 12h20M2 6l4 6-4 6M22 6l-4 6 4 6" />
+          </svg>
+          <span class="bar-label" id="oche-label">— cm</span>
+          <span class="bar-dot" id="oche-dot"></span>
+        </span>
+      </div>
       <div class="bar-status-group bar-sys-group" id="sys-status">
         <span class="bar-item bar-sys-item" title="GPU Utilization">
           <svg class="bar-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -766,7 +865,7 @@
       </div>
     </div>
     <div class="bar-right-group">
-      <span class="bar-copy">v1.0 — ThrowVision © 2026</span>
+      <span class="bar-copy">v1.3 — ThrowVision © 2026</span>
       <button class="bar-debug-btn" id="debug-toggle-btn" onclick="toggleDebugPanel()" title="Debug Console">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
           stroke-linejoin="round" width="16" height="16">
@@ -777,6 +876,114 @@
     </div>
   </footer>
 
+  <div class="practice-review-overlay" id="practice-review-overlay" style="display:none;"
+    onclick="closePracticeReviewModal(event)">
+    <div class="practice-review-card practice-review-card-modal" id="practice-review-card"
+      onclick="event.stopPropagation()">
+      <div class="practice-review-header">
+        <div>
+          <div class="practice-review-title">ACCURACY REVIEW</div>
+          <div class="practice-review-sub" id="practice-review-sub">Predictions will appear here for review.</div>
+        </div>
+        <div class="practice-review-header-right">
+          <div class="practice-review-meta" id="practice-review-meta">No active session</div>
+          <button class="practice-review-close" type="button" onclick="closePracticeReviewModal()"
+            aria-label="Close accuracy review">×</button>
+        </div>
+      </div>
+      <div class="practice-review-feedback" id="practice-review-feedback" style="display:none;"></div>
+      <div class="practice-review-summary" id="practice-review-summary">
+        <div class="practice-review-pill">Predicted <strong id="practice-review-predicted">0</strong></div>
+        <div class="practice-review-pill">Actual <strong id="practice-review-actual">0</strong></div>
+        <div class="practice-review-pill">Corrections <strong id="practice-review-corrections">0</strong></div>
+      </div>
+      <div class="practice-review-list" id="practice-review-list">
+        <div class="practice-review-empty">Start practice or X01 to review detection accuracy turn by turn.</div>
+      </div>
+      <div class="practice-review-actions">
+        <button class="btn btn-sm btn-secondary" id="btn-add-missed-dart" onclick="openMissedDartModal()">+ Add Missed
+          Dart</button>
+        <button class="btn btn-sm btn-accent" id="btn-finish-practice-turn-alt" onclick="finishPracticeTurn()" hidden
+          style="display:none;">Finish Turn</button>
+        <button class="btn btn-sm btn-accent" id="btn-finish-game-review" onclick="continueGameTurnReview()" hidden
+          style="display:none;">Continue Turn</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="accuracy-modal-overlay" id="missed-dart-modal" style="display:none">
+    <div class="accuracy-modal">
+      <div class="accuracy-modal-head">
+        <h3 id="missed-dart-modal-title">Add Missed Dart</h3>
+        <p id="missed-dart-modal-subtitle">Record the actual dart result for this turn.</p>
+      </div>
+
+      <div class="accuracy-modal-group">
+        <div class="accuracy-modal-label">Multiplier</div>
+        <div class="accuracy-choice-grid accuracy-choice-grid--multiplier">
+          <button class="accuracy-choice-btn" data-multiplier="bounce"
+            onclick="setMissedDartMultiplier('bounce')">Bouncer</button>
+          <button class="accuracy-choice-btn" data-multiplier="miss"
+            onclick="setMissedDartMultiplier('miss')">Miss</button>
+          <button class="accuracy-choice-btn" data-multiplier="single"
+            onclick="setMissedDartMultiplier('single')">Single</button>
+          <button class="accuracy-choice-btn" data-multiplier="double"
+            onclick="setMissedDartMultiplier('double')">Double</button>
+          <button class="accuracy-choice-btn" data-multiplier="triple"
+            onclick="setMissedDartMultiplier('triple')">Triple</button>
+        </div>
+      </div>
+
+      <div class="accuracy-modal-group" id="missed-dart-single-ring-group">
+        <div class="accuracy-modal-label">Single Ring</div>
+        <div class="accuracy-choice-grid accuracy-choice-grid--ring">
+          <button class="accuracy-choice-btn" data-single-ring="inner" onclick="setMissedDartSingleRing('inner')">Inner
+            Single</button>
+          <button class="accuracy-choice-btn" data-single-ring="outer" onclick="setMissedDartSingleRing('outer')">Outer
+            Single</button>
+        </div>
+      </div>
+
+      <div class="accuracy-modal-group" id="missed-dart-number-group">
+        <div class="accuracy-modal-label">Number</div>
+        <div class="accuracy-choice-grid accuracy-choice-grid--numbers">
+          <button class="accuracy-choice-btn" data-number="1" onclick="setMissedDartNumber(1)">1</button>
+          <button class="accuracy-choice-btn" data-number="2" onclick="setMissedDartNumber(2)">2</button>
+          <button class="accuracy-choice-btn" data-number="3" onclick="setMissedDartNumber(3)">3</button>
+          <button class="accuracy-choice-btn" data-number="4" onclick="setMissedDartNumber(4)">4</button>
+          <button class="accuracy-choice-btn" data-number="5" onclick="setMissedDartNumber(5)">5</button>
+          <button class="accuracy-choice-btn" data-number="6" onclick="setMissedDartNumber(6)">6</button>
+          <button class="accuracy-choice-btn" data-number="7" onclick="setMissedDartNumber(7)">7</button>
+          <button class="accuracy-choice-btn" data-number="8" onclick="setMissedDartNumber(8)">8</button>
+          <button class="accuracy-choice-btn" data-number="9" onclick="setMissedDartNumber(9)">9</button>
+          <button class="accuracy-choice-btn" data-number="10" onclick="setMissedDartNumber(10)">10</button>
+          <button class="accuracy-choice-btn" data-number="11" onclick="setMissedDartNumber(11)">11</button>
+          <button class="accuracy-choice-btn" data-number="12" onclick="setMissedDartNumber(12)">12</button>
+          <button class="accuracy-choice-btn" data-number="13" onclick="setMissedDartNumber(13)">13</button>
+          <button class="accuracy-choice-btn" data-number="14" onclick="setMissedDartNumber(14)">14</button>
+          <button class="accuracy-choice-btn" data-number="15" onclick="setMissedDartNumber(15)">15</button>
+          <button class="accuracy-choice-btn" data-number="16" onclick="setMissedDartNumber(16)">16</button>
+          <button class="accuracy-choice-btn" data-number="17" onclick="setMissedDartNumber(17)">17</button>
+          <button class="accuracy-choice-btn" data-number="18" onclick="setMissedDartNumber(18)">18</button>
+          <button class="accuracy-choice-btn" data-number="19" onclick="setMissedDartNumber(19)">19</button>
+          <button class="accuracy-choice-btn" data-number="20" onclick="setMissedDartNumber(20)">20</button>
+          <button class="accuracy-choice-btn" data-number="25" onclick="setMissedDartNumber(25)">25</button>
+        </div>
+      </div>
+
+      <div class="accuracy-modal-score">
+        <span>Final Score</span>
+        <strong id="missed-dart-final-score">20</strong>
+      </div>
+
+      <div class="accuracy-modal-actions">
+        <button class="btn btn-sm btn-secondary" onclick="closeMissedDartModal()">Cancel</button>
+        <button class="btn btn-sm btn-primary" id="missed-dart-submit-btn" onclick="submitMissedDartModal()">Add
+          Dart</button>
+      </div>
+    </div>
+  </div>
+
   <!-- ─── PROFILE SAVE MODAL ──────────────────────────────────── -->
   <div class="profile-modal-overlay" id="profile-modal" style="display:none">
     <div class="profile-modal">
@@ -785,8 +992,8 @@
       <p>Save this dartboard profile for faster auto-calibration next time.</p>
       <input type="text" id="profile-modal-name" placeholder="Enter profile name…" autocomplete="off">
       <div class="profile-modal-actions">
-        <button class="btn btn-secondary profile-modal-btn" onclick="closeProfileModal(false)">Skip</button>
-        <button class="btn btn-primary profile-modal-btn" onclick="closeProfileModal(true)">💾 Save Profile</button>
+        <button class="btn btn-secondary profile-modal-btn" id="profile-modal-skip-btn" onclick="closeProfileModal(false)">Skip</button>
+        <button class="btn btn-primary profile-modal-btn" id="profile-modal-save-btn" onclick="closeProfileModal(true)">💾 Save Profile</button>
       </div>
     </div>
   </div>
@@ -870,7 +1077,7 @@
   </div>
 
   <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
-  <script src="app.js"></script>
+  <script src="app.js?v=6"></script>
 </body>
 
 </html>

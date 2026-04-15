@@ -6,9 +6,37 @@
 ![License](https://img.shields.io/badge/License-MIT-yellow)
 ![Cameras](https://img.shields.io/badge/Cameras-3×_USB-orange)
 ![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux-lightgrey)
-![Version](https://img.shields.io/badge/Version-1.2.0-brightgreen)
+![Version](https://img.shields.io/badge/Version-1.3.0-brightgreen)
 
 **ThrowVision** is an open-source, camera-based automatic dart scoring system. Three USB webcams at 120° intervals detect dart tips with millimetre accuracy using frame differencing, perspective homography, and multi-camera consensus fusion.
+
+---
+
+## What's New in v1.3.0
+
+### Accuracy Review & Validation
+- Added a full accuracy-review workflow for Practice mode with per-dart confirm, edit, false-positive, and missed-dart correction flows.
+- Added manual `+ Add Event` support for undetected throws such as bounce-outs, falls, and no-detection cases.
+- Added X01 turn-review support so the same review pipeline can be used beyond Practice.
+- Added persistent `accuracy_sessions` storage and backend review APIs for post-session analysis.
+
+### Accuracy Stats & Session Management
+- Split game stats and accuracy stats into separate dashboard sections.
+- Added accuracy summary cards, camera-agreement breakdowns, and session history tables.
+- Added reset controls for game stats and accuracy stats, plus per-match/per-session delete flows.
+- Added reviewed practice/session data aggregation for real precision, recall, corrections, misses, and false positives.
+
+### Detection, Calibration & Hardware
+- Added OpenVINO model loading for both tip pose inference and calibration inference.
+- Added ML-assisted and anchor-refine calibration helpers on top of the existing manual calibration workflow.
+- Added TF-Luna foul-line distance sensor support for oche monitoring.
+- Widened the outside-board miss boundary so near-miss throws are captured more reliably as `MISS` instead of disappearing.
+
+### Frontend & Game Flow
+- Restored and stabilized the pre-game frontend after redesign regressions.
+- Improved Practice review UX with focused dart review, manual event entry, and clearer finish-turn state handling.
+- Added dedicated accuracy review modals and review-state syncing between frontend and backend.
+- Refined stats, calibration, and game-mode flows to support the newer review and model pipeline.
 
 ---
 
@@ -70,6 +98,11 @@
 - 🔬 **Lens distortion calibration** — per-camera undistortion with coverage heatmap
 - 📐 **8-point perspective calibration** — RANSAC homography with double + triple ring anchors
 - 🎯 **Auto-refine calibration** — HSV ring detector auto-snaps points to exact positions
+- 🤖 **OpenVINO inference support** — YOLO11 detection/pose runtime with CPU/GPU/AUTO device selection
+- 📊 **Accuracy review system** — practice and X01 turn review, manual corrections, and accuracy session storage
+- 📝 **Manual event capture** — add undetected bounce, miss, and fall events directly from practice mode
+- 📈 **Split stats dashboards** — dedicated game stats and accuracy stats views with reset/delete actions
+- 📏 **TF-Luna foul-line sensor support** — optional oche distance monitoring over serial
 - 🎮 **Game modes** — X01 (301/501/701/901), Cricket, Count Up, Bullseye throw-off
 - 🌐 **Live web dashboard** — real-time scoring at `http://localhost:5000`
 - ✋ **Turn takeout system** — waits for hand detection after 3rd dart before advancing
@@ -116,7 +149,7 @@ cd ThrowVision
 
 # Python backend
 python -m venv .venv && .venv\Scripts\activate
-pip install flask flask-socketio opencv-python numpy psutil pyinstaller
+pip install flask flask-socketio opencv-python numpy psutil pyinstaller openvino pyyaml pyserial ultralytics
 
 # Electron
 npm install
@@ -128,7 +161,7 @@ npm install
 git clone https://github.com/kashiwagiren/ThrowVision.git
 cd ThrowVision
 python -m venv .venv && .venv\Scripts\activate
-pip install flask flask-socketio opencv-python numpy psutil
+pip install flask flask-socketio opencv-python numpy psutil openvino pyyaml pyserial ultralytics
 ```
 
 ---
@@ -182,7 +215,13 @@ ThrowVision/
 ├── board_profile.py   # Save/load board position profiles
 ├── lens_calibrator.py # LensCalibrator — checkerboard undistortion + coverage
 ├── auto_ellipse.py    # HSV ring detector for auto-refine calibration
-├── stats.py           # Per-game statistics
+├── stats.py           # Game statistics + history management
+├── accuracy_stats.py  # Practice/X01 accuracy session storage + aggregation
+├── openvino_inference.py # OpenVINO YOLO runtime wrapper for detect/pose models
+├── ml_calibration.py  # ML-assisted calibration from detected ring landmarks
+├── anchor_refine.py   # Anchor-based calibration refinement helpers
+├── tfluna.py          # TF-Luna oche distance sensor reader
+├── yolo_verifier.py   # Optional YOLO-based dart-tip validation
 ├── throwvision.spec   # PyInstaller build spec
 ├── package.json       # Electron project + npm scripts
 ├── electron/
@@ -199,7 +238,7 @@ ThrowVision/
 
 ```bash
 npm run pyinstaller   # → dist/server/server.exe
-npm run build:win     # → dist-electron/ThrowVision Setup 1.1.0.exe
+npm run build:win     # → dist-electron/ThrowVision Setup 1.3.0.exe
 ```
 
 ---
@@ -321,6 +360,17 @@ flowchart TD
 ---
 
 ## Changelog
+
+### v1.3.0 — 2026-04-16
+- **NEW** Practice accuracy-review workflow with confirm, edit, false-positive, and missed-dart handling.
+- **NEW** Manual practice event capture for bounce-outs, falls, and other undetected throws.
+- **NEW** Accuracy session storage and analytics via `accuracy_stats.py`.
+- **NEW** Dedicated accuracy dashboard with separate reset/history actions from game stats.
+- **NEW** OpenVINO inference integration for tip pose and calibration models.
+- **NEW** ML-assisted calibration helpers via `ml_calibration.py` and `anchor_refine.py`.
+- **NEW** Optional TF-Luna oche distance sensor support.
+- **IMPROVE** Wider miss boundary handling for near-outside throws.
+- **IMPROVE** Restored/stabilized frontend review and pre-game flows after regression cleanup.
 
 ### v1.2.0 — 2026-03-29
 - **NEW** Extensive UI/UX modernizations, including game mode UI resizing, broadcast-quality Count-Up display, and fullscreen behaviors.

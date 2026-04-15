@@ -31,6 +31,20 @@ _SPEED_PARAMS: dict[DetectionSpeed, Tuple[int, float]] = {
     DetectionSpeed.VERY_HIGH: (10, 0.970),
 }
 
+# Per-speed latency profile:
+#   stable_frames   = consecutive stable frames required before evaluating
+#   collect_seconds = extra time to gather tips from all cameras
+#   confirm_seconds = bounce-out confirmation delay before emitting score
+#   cooldown_frames = frames to ignore after a scored dart
+#   openvino_device = preferred OpenVINO device for this speed profile
+_LATENCY_PARAMS: dict[DetectionSpeed, Tuple[int, float, float, int, str]] = {
+    DetectionSpeed.VERY_LOW:  (10, 1.4, 2.5, 15, "CPU"),
+    DetectionSpeed.LOW:       (10, 1.4, 2.5, 15, "CPU"),
+    DetectionSpeed.DEFAULT:   (10, 1.4, 2.5, 15, "CPU"),
+    DetectionSpeed.HIGH:      (6,  0.75, 1.0, 8,  "AUTO"),
+    DetectionSpeed.VERY_HIGH: (5,  0.60, 0.8, 6,  "AUTO"),
+}
+
 _STANDBY_MAP: dict[str, int] = {
     "5m": 300, "10m": 600, "15m": 900, "30m": 1800, "1h": 3600,
 }
@@ -65,6 +79,10 @@ class ConfigManager:
     calibrate_on_startup: bool = False
     calibrate_on_camera_change: bool = False
     detection_speed: DetectionSpeed = DetectionSpeed.DEFAULT
+    stable_frames: int = 10
+    collect_seconds: float = 1.4
+    confirm_seconds: float = 2.5
+    cooldown_frames: int = 15
 
     # --- Segmentation -------------------------------------------------------
     dart_size_min: int = 800       # min contour area (pixels) — scaled for 1080p
@@ -90,9 +108,35 @@ class ConfigManager:
     hough_min_line_len: int = 15
     hough_max_line_gap: int = 10
 
+    # --- YOLO tip verification (legacy bounding-box model) -------------------
+    yolo_enabled: bool = True
+    yolo_conf_threshold: float = 0.4
+    yolo_match_radius_mm: float = 20.0
+
+    # --- OpenVINO runtime ---------------------------------------------------
+    openvino_device: str = "CPU"                 # CPU, GPU, AUTO
+
+    # --- Pose tip model (YOLO11-pose via OpenVINO) --------------------------
+    pose_model_dir: str = ""                     # path to tip pose model dir
+    pose_conf_threshold: float = 0.3
+    pose_iou_threshold: float = 0.45
+    pose_enabled: bool = True                    # enable pose-based tip detection
+
+    # --- Calibration model (YOLO11-detect via OpenVINO) ---------------------
+    cal_model_dir: str = ""                      # path to calibration model dir
+    cal_conf_threshold: float = 0.4
+    cal_enabled: bool = True                     # enable ML-based calibration
+
     # --- Gaussian blur for segmentation ------------------------------------
     blur_kernel: Tuple[int, int] = (5, 5)
     binary_thresh: int = 30
+
+    # --- TF-Luna oche (foul-line) distance sensor --------------------------
+    tfluna_enabled: bool = False
+    tfluna_port: str = ""                   # COM port (e.g. "COM3"), empty = disabled
+    tfluna_baud: int = 115200
+    tfluna_foul_distance_cm: int = 237      # standard oche distance
+    tfluna_tolerance_cm: int = 5            # grace zone (±cm)
 
     def __post_init__(self) -> None:
         w, h = self.resolution
@@ -101,6 +145,30 @@ class ConfigManager:
         self.detection_resolution = (bs, bs)
         # 1/4 board size for motion detection
         self.motion_resolution = (bs // 4, bs // 4)
+
+    def apply_latency_profile(
+        self,
+        speed: DetectionSpeed | None = None,
+        *,
+        preserve_stable_frames: bool = False,
+        preserve_openvino_device: bool = False,
+    ) -> None:
+        """Apply a speed preset's latency controls.
+
+        We keep the score-mapping logic unchanged and only shorten the
+        motion/collection/confirmation waits for faster presets.
+        """
+        spd = speed or self.detection_speed
+        stable_frames, collect_seconds, confirm_seconds, cooldown_frames, device = (
+            _LATENCY_PARAMS[spd]
+        )
+        if not preserve_stable_frames:
+            self.stable_frames = stable_frames
+        self.collect_seconds = collect_seconds
+        self.confirm_seconds = confirm_seconds
+        self.cooldown_frames = cooldown_frames
+        if not preserve_openvino_device:
+            self.openvino_device = device
 
     # --- Derived helpers ----------------------------------------------------
     @property
@@ -128,6 +196,11 @@ class ConfigManager:
             f"  Detection speed  : {self.detection_speed.name}",
             f"  absdiff thresh   : {self.absdiff_threshold}",
             f"  Stability corr   : {self.stability_correlation}",
+            f"  Stable frames    : {self.stable_frames}",
+            f"  Collect window   : {self.collect_seconds:.2f}s",
+            f"  Confirm window   : {self.confirm_seconds:.2f}s",
+            f"  Cooldown frames  : {self.cooldown_frames}",
+            f"  OpenVINO device  : {self.openvino_device}",
             f"  Standby          : {self.standby_time} ({self.standby_seconds}s)",
             f"  Tip offset       : {self.tip_offset_px} px",
             f"  Triangle k       : {self.triangle_k_factor}",

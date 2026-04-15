@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import math
 import time
-from dataclasses import dataclass, field
 from enum import Enum
 from typing import Dict, List, Optional, Tuple
 
@@ -28,6 +27,26 @@ from typing import Dict, List, Optional, Tuple
 BULL_INNER_R = 6.35        # mm – double-bull radius
 BULL_OUTER_R = 15.9        # mm – single-bull radius
 TIEBREAK_TOLERANCE = 1.0   # mm – distances within this are "equal"
+
+
+def _collect_darts(turns, player: int | None = None):
+    """Collect all individual darts from a list of turn dicts."""
+    darts = []
+    for t in turns:
+        if player is None or t.get("player") == player:
+            darts.extend(t.get("darts", []))
+    return darts
+
+
+def _player_summary(player_num: int, darts: list, **extra) -> dict:
+    """Build a common player stats dict."""
+    d = {
+        "player": player_num,
+        "total_darts": len(darts),
+        "darts": [{"label": d["label"], "score": d["score"]} for d in darts],
+    }
+    d.update(extra)
+    return d
 
 CRICKET_NUMBERS = [15, 16, 17, 18, 19, 20, 25]  # 25 = bull
 
@@ -173,12 +192,6 @@ class BullseyeThrow:
 # GameX01
 # ======================================================================
 
-@dataclass
-class _X01Turn:
-    darts: List[dict] = field(default_factory=list)   # [{label, score, coord}]
-    score_before: int = 0
-
-
 class GameX01:
     """Standard X01 dart game (301 / 501 / 701 / 901)."""
 
@@ -202,6 +215,13 @@ class GameX01:
                     coord: Optional[Tuple[float, float]] = None) -> dict:
         """Record one dart.  Returns updated state."""
         if self.winner is not None:
+            return self.state()
+        # BOUNCE / MISS — counts as thrown dart, zero score, never bust
+        if label in ('BOUNCE', 'MISS', 'FOUL'):
+            dart = {"label": label, "score": 0, "coord": coord}
+            self.darts_this_turn.append(dart)
+            if len(self.darts_this_turn) >= 3:
+                self._end_turn(busted=False)
             return self.state()
 
         dart = {"label": label, "score": score, "coord": coord}
@@ -276,9 +296,11 @@ class GameX01:
 
     # ------------------------------------------------------------------
     def _end_turn(self, busted: bool) -> None:
+        turn_index = len(self.turn_history) + 1
         turn_total = sum(d["score"] for d in self.darts_this_turn
                          if not d.get("bust"))
         self.turn_history.append({
+            "turn_index": turn_index,
             "player": self.current_player + 1,
             "darts": list(self.darts_this_turn),
             "total": turn_total if not busted else 0,
@@ -318,22 +340,15 @@ class GameX01:
 
     def stats_summary(self) -> dict:
         """Summary for the stats module."""
-        all_turns = self.turn_history
-        p1_turns = [t for t in all_turns if t["player"] == 1]
-        p2_turns = [t for t in all_turns if t["player"] == 2]
-
-        def _avg(turns):
-            totals = [t["total"] for t in turns if not t["busted"]]
+        def _avg(player):
+            totals = [t["total"] for t in self.turn_history
+                      if t["player"] == player and not t["busted"]]
             return round(sum(totals) / len(totals), 1) if totals else 0
 
-        def _darts_list(turns):
-            darts = []
-            for t in turns:
-                darts.extend(t["darts"])
-            return darts
-
-        p1_darts = _darts_list(p1_turns)
-        p2_darts = _darts_list(p2_turns)
+        p1d = _collect_darts(self.turn_history, 1)
+        p2d = _collect_darts(self.turn_history, 2)
+        p1_rounds = sum(1 for t in self.turn_history if t["player"] == 1)
+        p2_rounds = sum(1 for t in self.turn_history if t["player"] == 2)
 
         return {
             "mode": "x01",
@@ -342,22 +357,8 @@ class GameX01:
             "started_at": self.started_at,
             "finished_at": time.time(),
             "players": [
-                {
-                    "player": 1,
-                    "avg_per_round": _avg(p1_turns),
-                    "total_darts": len(p1_darts),
-                    "rounds": len(p1_turns),
-                    "darts": [{"label": d["label"], "score": d["score"]}
-                              for d in p1_darts],
-                },
-                {
-                    "player": 2,
-                    "avg_per_round": _avg(p2_turns),
-                    "total_darts": len(p2_darts),
-                    "rounds": len(p2_turns),
-                    "darts": [{"label": d["label"], "score": d["score"]}
-                              for d in p2_darts],
-                },
+                _player_summary(1, p1d, avg_per_round=_avg(1), rounds=p1_rounds),
+                _player_summary(2, p2d, avg_per_round=_avg(2), rounds=p2_rounds),
             ],
         }
 
@@ -395,6 +396,14 @@ class GameCricket:
     def record_dart(self, label: str, score: int,
                     coord: Optional[Tuple[float, float]] = None) -> dict:
         if self.winner is not None:
+            return self.state()
+        # BOUNCE / MISS — counts as thrown dart, zero score, no marks
+        if label in ('BOUNCE', 'MISS', 'FOUL'):
+            dart = {"label": label, "score": 0, "coord": coord,
+                    "target": None, "marks_added": 0, "points_added": 0}
+            self.darts_this_turn.append(dart)
+            if len(self.darts_this_turn) >= 3:
+                self._end_turn()
             return self.state()
 
         target, raw_marks = _cricket_marks(label, score)
@@ -476,7 +485,9 @@ class GameCricket:
         return all_closed and self.points[player] >= self.points[opp]
 
     def _end_turn(self) -> None:
+        turn_index = len(self.turn_history) + 1
         self.turn_history.append({
+            "turn_index": turn_index,
             "player": self.current_player + 1,
             "darts": list(self.darts_this_turn),
             "marks_snapshot": [{k: v for k, v in m.items()} for m in self.marks],
@@ -506,16 +517,6 @@ class GameCricket:
         }
 
     def stats_summary(self) -> dict:
-        def _darts_list(player_num):
-            darts = []
-            for t in self.turn_history:
-                if t["player"] == player_num:
-                    darts.extend(t["darts"])
-            return darts
-
-        p1_darts = _darts_list(1)
-        p2_darts = _darts_list(2)
-
         def _marks_per_round(player_num):
             turns = [t for t in self.turn_history if t["player"] == player_num]
             if not turns:
@@ -530,22 +531,10 @@ class GameCricket:
             "started_at": self.started_at,
             "finished_at": time.time(),
             "players": [
-                {
-                    "player": 1,
-                    "points": self.points[0],
-                    "marks_per_round": _marks_per_round(1),
-                    "total_darts": len(p1_darts),
-                    "darts": [{"label": d["label"], "score": d["score"]}
-                              for d in p1_darts],
-                },
-                {
-                    "player": 2,
-                    "points": self.points[1],
-                    "marks_per_round": _marks_per_round(2),
-                    "total_darts": len(p2_darts),
-                    "darts": [{"label": d["label"], "score": d["score"]}
-                              for d in p2_darts],
-                },
+                _player_summary(1, _collect_darts(self.turn_history, 1),
+                                points=self.points[0], marks_per_round=_marks_per_round(1)),
+                _player_summary(2, _collect_darts(self.turn_history, 2),
+                                points=self.points[1], marks_per_round=_marks_per_round(2)),
             ],
         }
 
@@ -576,6 +565,13 @@ class GameCountUp:
     def record_dart(self, label: str, score: int,
                     coord: Optional[Tuple[float, float]] = None) -> dict:
         if self.winner is not None:
+            return self.state()
+        # BOUNCE / MISS — counts as thrown dart, zero score
+        if label in ('BOUNCE', 'MISS', 'FOUL'):
+            dart = {"label": label, "score": 0, "coord": coord}
+            self.darts_this_turn.append(dart)
+            if len(self.darts_this_turn) >= 3:
+                self._end_turn()
             return self.state()
 
         dart = {"label": label, "score": score, "coord": coord}
@@ -619,7 +615,9 @@ class GameCountUp:
             "darts": list(self.darts_this_turn),
             "total": turn_total,
         })
+        turn_index = len(self.turn_history) + 1
         self.turn_history.append({
+            "turn_index": turn_index,
             "player": self.current_player + 1,
             "round": len(self.round_scores[self.current_player]),
             "darts": list(self.darts_this_turn),
@@ -667,17 +665,17 @@ class GameCountUp:
         }
 
     def stats_summary(self) -> dict:
-        def _darts_list(player_idx):
-            darts = []
-            for r in self.round_scores[player_idx]:
-                darts.extend(r["darts"])
-            return darts
-
         def _avg(player_idx):
             rounds = self.round_scores[player_idx]
             if not rounds:
                 return 0
             return round(sum(r["total"] for r in rounds) / len(rounds), 1)
+
+        def _cu_darts(idx):
+            darts = []
+            for r in self.round_scores[idx]:
+                darts.extend(r["darts"])
+            return darts
 
         return {
             "mode": "countup",
@@ -686,21 +684,9 @@ class GameCountUp:
             "started_at": self.started_at,
             "finished_at": time.time(),
             "players": [
-                {
-                    "player": 1,
-                    "total_score": self.scores[0],
-                    "avg_per_round": _avg(0),
-                    "total_darts": len(_darts_list(0)),
-                    "darts": [{"label": d["label"], "score": d["score"]}
-                              for d in _darts_list(0)],
-                },
-                {
-                    "player": 2,
-                    "total_score": self.scores[1],
-                    "avg_per_round": _avg(1),
-                    "total_darts": len(_darts_list(1)),
-                    "darts": [{"label": d["label"], "score": d["score"]}
-                              for d in _darts_list(1)],
-                },
+                _player_summary(1, _cu_darts(0),
+                                total_score=self.scores[0], avg_per_round=_avg(0)),
+                _player_summary(2, _cu_darts(1),
+                                total_score=self.scores[1], avg_per_round=_avg(1)),
             ],
         }

@@ -17,20 +17,56 @@ STATS_DIR = Path("data")
 STATS_FILE = STATS_DIR / "stats.json"
 
 
+def _ensure_ids(records: List[dict]) -> bool:
+    changed = False
+    used_ids = set()
+    next_id = 1
+
+    for record in records:
+        raw_id = record.get("id", 0)
+        try:
+            record_id = int(raw_id or 0)
+        except (TypeError, ValueError):
+            record_id = 0
+
+        if record_id <= 0 or record_id in used_ids:
+            while next_id in used_ids:
+                next_id += 1
+            record["id"] = next_id
+            used_ids.add(next_id)
+            next_id += 1
+            changed = True
+        else:
+            used_ids.add(record_id)
+            next_id = max(next_id, record_id + 1)
+
+    return changed
+
+
 def _load_all() -> List[dict]:
     if not STATS_FILE.is_file():
         return []
     try:
         with open(STATS_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
+            records = json.load(f)
     except (json.JSONDecodeError, IOError):
         return []
+    if not isinstance(records, list):
+        return []
+    if _ensure_ids(records):
+        _save_all(records)
+    return records
 
 
 def _save_all(records: List[dict]) -> None:
     STATS_DIR.mkdir(parents=True, exist_ok=True)
     with open(STATS_FILE, "w", encoding="utf-8") as f:
         json.dump(records, f, indent=2)
+
+
+def _next_id(records: List[dict]) -> int:
+    ids = [int(r.get("id", 0) or 0) for r in records]
+    return (max(ids) if ids else 0) + 1
 
 
 # ======================================================================
@@ -40,10 +76,27 @@ def _save_all(records: List[dict]) -> None:
 def save_game(summary: dict) -> None:
     """Append a game summary (from ``game.stats_summary()``)."""
     records = _load_all()
-    summary["id"] = len(records) + 1
+    summary["id"] = _next_id(records)
     records.append(summary)
     _save_all(records)
     print(f"[STATS] Saved game #{summary['id']} ({summary.get('mode', '?')})")
+
+
+def delete_game(game_id: int) -> bool:
+    """Delete one saved game by id."""
+    records = _load_all()
+    remaining = [r for r in records if int(r.get("id", 0) or 0) != int(game_id)]
+    if len(remaining) == len(records):
+        return False
+    _save_all(remaining)
+    return True
+
+
+def reset_stats() -> int:
+    """Clear all saved game history and return the deleted count."""
+    records = _load_all()
+    _save_all([])
+    return len(records)
 
 
 def get_recent(mode: Optional[str] = None, limit: int = 20) -> List[dict]:
@@ -68,25 +121,21 @@ def get_stats(mode: Optional[str] = None) -> dict:
         "games_played": len(records),
     }
 
-    if mode == "x01":
-        result.update(_aggregate_x01(records))
-    elif mode == "cricket":
-        result.update(_aggregate_cricket(records))
-    elif mode == "countup":
-        result.update(_aggregate_countup(records))
-    else:
-        # Overall — combine everything
+    _AGGREGATORS = {
+        "x01": _aggregate_x01,
+        "cricket": _aggregate_cricket,
+        "countup": _aggregate_countup,
+    }
+
+    if mode and mode in _AGGREGATORS:
+        result.update(_AGGREGATORS[mode](records))
+    elif not mode:
         result["by_mode"] = {}
-        for m in ("x01", "cricket", "countup"):
+        for m, fn in _AGGREGATORS.items():
             mode_recs = [r for r in records if r.get("mode") == m]
             if mode_recs:
                 agg = {"games_played": len(mode_recs)}
-                if m == "x01":
-                    agg.update(_aggregate_x01(mode_recs))
-                elif m == "cricket":
-                    agg.update(_aggregate_cricket(mode_recs))
-                elif m == "countup":
-                    agg.update(_aggregate_countup(mode_recs))
+                agg.update(fn(mode_recs))
                 result["by_mode"][m] = agg
 
     # Win counts
@@ -152,13 +201,30 @@ def _score_counts(darts: List[dict]) -> dict:
     }
 
 
+def _combined_darts(records: List[dict]) -> List[dict]:
+    """Collect all darts from both players across all records."""
+    return _all_darts(records, 0) + _all_darts(records, 1)
+
+
+def _round_averages(darts: List[dict]):
+    """Compute per-round (3-dart) avg and highest from a flat darts list."""
+    totals = []
+    for i in range(0, len(darts), 3):
+        chunk = darts[i:i+3]
+        if len(chunk) == 3:
+            totals.append(sum(d.get("score", 0) for d in chunk))
+    avg = round(sum(totals) / len(totals), 1) if totals else 0
+    highest = max(totals) if totals else 0
+    return totals, avg, highest
+
+
 def _hit_rates(darts: List[dict]) -> dict:
     """Compute hit rate per segment type."""
     counts = {"single": 0, "double": 0, "triple": 0,
               "bull": 0, "miss": 0, "total": len(darts)}
     for d in darts:
         label = d.get("label", "")
-        if label == "OFF" or not label:
+        if label in ("OFF", "MISS") or not label:
             counts["miss"] += 1
         elif label == "BULL":
             counts["bull"] += 1
@@ -175,21 +241,12 @@ def _hit_rates(darts: List[dict]) -> dict:
 
 
 def _aggregate_x01(records: List[dict]) -> dict:
-    all_darts_p1 = _all_darts(records, 0)
-    all_darts_p2 = _all_darts(records, 1)
-    all_darts = all_darts_p1 + all_darts_p2
+    all_darts = _combined_darts(records)
 
-    # Per-dart average
     all_scores = [d.get("score", 0) for d in all_darts]
     avg_per_dart = round(sum(all_scores) / len(all_scores), 1) if all_scores else 0
 
-    # Per-round (3-dart) average
-    round_totals = []
-    for i in range(0, len(all_darts), 3):
-        chunk = all_darts[i:i+3]
-        if len(chunk) == 3:
-            round_totals.append(sum(d.get("score", 0) for d in chunk))
-    avg_per_round = round(sum(round_totals) / len(round_totals), 1) if round_totals else 0
+    round_totals, avg_per_round, highest_round = _round_averages(all_darts)
 
     # First 9 darts average
     first9_totals = []
@@ -220,9 +277,6 @@ def _aggregate_x01(records: List[dict]) -> dict:
                 if best_darts is None or total < best_darts:
                     best_darts = total
 
-    # Highest round
-    highest_round = max(round_totals) if round_totals else 0
-
     return {
         "avg_per_dart": avg_per_dart,
         "avg_per_round": avg_per_round,
@@ -237,9 +291,7 @@ def _aggregate_x01(records: List[dict]) -> dict:
 
 
 def _aggregate_cricket(records: List[dict]) -> dict:
-    all_darts_p1 = _all_darts(records, 0)
-    all_darts_p2 = _all_darts(records, 1)
-    all_darts = all_darts_p1 + all_darts_p2
+    all_darts = _combined_darts(records)
 
     # Average marks per round
     total_mpr = []
@@ -258,30 +310,15 @@ def _aggregate_cricket(records: List[dict]) -> dict:
 
 
 def _aggregate_countup(records: List[dict]) -> dict:
-    all_darts_p1 = _all_darts(records, 0)
-    all_darts_p2 = _all_darts(records, 1)
-    all_darts = all_darts_p1 + all_darts_p2
+    all_darts = _combined_darts(records)
 
     all_scores = [d.get("score", 0) for d in all_darts]
     avg_per_dart = round(sum(all_scores) / len(all_scores), 1) if all_scores else 0
 
-    # Per-round average
-    round_totals = []
-    for i in range(0, len(all_darts), 3):
-        chunk = all_darts[i:i+3]
-        if len(chunk) == 3:
-            round_totals.append(sum(d.get("score", 0) for d in chunk))
-    avg_per_round = round(sum(round_totals) / len(round_totals), 1) if round_totals else 0
+    _, avg_per_round, highest_round = _round_averages(all_darts)
 
-    # Best game score
-    best_score = 0
-    for r in records:
-        for p in r.get("players", []):
-            total = p.get("total_score", 0)
-            if total > best_score:
-                best_score = total
-
-    highest_round = max(round_totals) if round_totals else 0
+    best_score = max((p.get("total_score", 0) for r in records
+                      for p in r.get("players", [])), default=0)
 
     return {
         "avg_per_dart": avg_per_dart,
