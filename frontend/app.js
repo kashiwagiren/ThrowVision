@@ -5118,22 +5118,23 @@ function _renderPlayerTurn(targetId, darts, mode) {
     return;
   }
 
-  el.innerHTML = darts.map((dart, index) => {
-    const scoreText = mode === 'countup' && Number(dart.multiplier || 1) > 1
-      ? `${dart.score} pts`
-      : `${dart.score}`;
-    const meta = mode === 'countup' && Number(dart.multiplier || 1) > 1
-      ? `x${dart.multiplier} multiplier`
-      : (dart.points_added ? `+${dart.points_added} pts` : (dart.marks_added ? `${dart.marks_added} marks` : 'Live result'));
-    return `
-      <div class="pp-dart-pill ${dart.bust ? 'is-bust' : ''}">
-        <span class="pp-dart-index">Dart ${index + 1}</span>
-        <strong>${dart.label}</strong>
-        <small>${meta}</small>
-        <em>${dart.bust ? 'BUST' : scoreText}</em>
-      </div>
-    `;
-  }).join('');
+  const index = darts.length - 1;
+  const dart = darts[index];
+  const scoreText = mode === 'countup' && Number(dart.multiplier || 1) > 1
+    ? `${dart.score} pts`
+    : `${dart.score}`;
+  const meta = mode === 'countup' && Number(dart.multiplier || 1) > 1
+    ? `x${dart.multiplier} multiplier`
+    : (dart.points_added ? `+${dart.points_added} pts` : (dart.marks_added ? `${dart.marks_added} marks` : 'Live result'));
+
+  el.innerHTML = `
+    <div class="pp-dart-pill ${dart.bust ? 'is-bust' : ''}">
+      <span class="pp-dart-index">Dart ${index + 1}</span>
+      <strong>${dart.label}</strong>
+      <small>${meta}</small>
+      <em>${dart.bust ? 'BUST' : scoreText}</em>
+    </div>
+  `;
 }
 
 function _renderGameThrowStrip(darts, mode) {
