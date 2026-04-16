@@ -68,51 +68,175 @@
   <main class="page" id="page-game-select">
     <div class="page-header">
       <button class="btn btn-sm btn-back" onclick="showPage('home')">← Back</button>
-      <h2>Select Game Mode</h2>
+      <h2>Match Setup</h2>
       <div></div>
     </div>
-    <div class="game-select-grid">
-      <!-- X01 -->
-      <div class="game-card" id="gc-x01" onclick="selectGameMode('x01')">
-        <div class="game-card-icon">🎯</div>
-        <h3>X01</h3>
-        <p>Classic countdown. Start at 301/501/701/901 and race to zero. Double-out to win.</p>
-        <div class="game-card-options" id="gc-x01-opts">
-          <label>Starting Score</label>
-          <select id="x01-starting-score">
-            <option value="301">301</option>
-            <option value="501" selected>501</option>
-            <option value="701">701</option>
-            <option value="901">901</option>
-          </select>
+    <div class="game-select-shell">
+      <section class="game-select-rail">
+        <div class="game-select-intro">
+          <span class="game-select-kicker">Match Studio</span>
+          <h3>Build the next game your way</h3>
+          <p>Choose a mode, tune the rules, then launch with a bull-off or start directly from the selected player.</p>
         </div>
-      </div>
-      <!-- Cricket -->
-      <div class="game-card" id="gc-cricket" onclick="selectGameMode('cricket')">
-        <div class="game-card-icon">🪳</div>
-        <h3>Cricket</h3>
-        <p>Close 15–20 and Bull. Score points on numbers your opponent hasn't closed.</p>
-      </div>
-      <!-- Count Up -->
-      <div class="game-card" id="gc-countup" onclick="selectGameMode('countup')">
-        <div class="game-card-icon">📈</div>
-        <h3>Count Up</h3>
-        <p>Accumulate the highest score over a set number of rounds. Simple and fun.</p>
-        <div class="game-card-options" id="gc-countup-opts">
-          <label>Rounds</label>
-          <select id="countup-rounds">
-            <option value="6">6</option>
-            <option value="8" selected>8</option>
-            <option value="10">10</option>
-            <option value="12">12</option>
-          </select>
+        <div class="game-select-grid">
+          <button class="game-card" id="gc-x01" type="button" onclick="selectGameMode('x01')">
+            <div class="game-card-top">
+              <div class="game-card-icon">🎯</div>
+              <span class="game-card-badge">Tournament</span>
+            </div>
+            <h3>X01</h3>
+            <p>Race to zero from a chosen starting score. Great for classic 301, 501, 701, or 901 play.</p>
+            <div class="game-card-chips">
+              <span>Score Chase</span>
+              <span>Finish Rules</span>
+              <span>Match Starter</span>
+            </div>
+          </button>
+          <button class="game-card" id="gc-cricket" type="button" onclick="selectGameMode('cricket')">
+            <div class="game-card-top">
+              <div class="game-card-icon">🪳</div>
+              <span class="game-card-badge">Tactical</span>
+            </div>
+            <h3>Cricket</h3>
+            <p>Own the targets, deny scoring lanes, and pressure your opponent with mark-based play.</p>
+            <div class="game-card-chips">
+              <span>Marks</span>
+              <span>Point Pressure</span>
+              <span>Variant Ready</span>
+            </div>
+          </button>
+          <button class="game-card" id="gc-countup" type="button" onclick="selectGameMode('countup')">
+            <div class="game-card-top">
+              <div class="game-card-icon">📈</div>
+              <span class="game-card-badge">Practice</span>
+            </div>
+            <h3>Count Up</h3>
+            <p>Stack the biggest total over a set number of rounds with optional escalating round multipliers.</p>
+            <div class="game-card-chips">
+              <span>Rounds</span>
+              <span>Total Score</span>
+              <span>Fast Sessions</span>
+            </div>
+          </button>
         </div>
-      </div>
-    </div>
-    <div class="game-select-footer">
-      <button class="btn btn-lg btn-accent" id="btn-start-game" onclick="startGame()" disabled>
-        <span class="btn-icon-lg">▶</span> Start Game
-      </button>
+      </section>
+
+      <aside class="game-config-panel">
+        <div class="game-config-head">
+          <span class="game-config-kicker" id="game-config-kicker">Choose a mode</span>
+          <h3 id="game-config-title">Select a game from the left</h3>
+          <p id="game-config-description">Each mode exposes real match options supported by the current Throw Vision rules engine.</p>
+        </div>
+
+        <div class="game-config-body">
+          <section class="game-config-group">
+            <div class="game-config-group-head">
+              <span class="game-config-group-kicker">1. Match Start</span>
+              <strong>Who throws first?</strong>
+            </div>
+            <label class="game-switch-row" for="match-use-bulloff">
+              <span>
+                <strong>Bull-off to decide starter</strong>
+                <small>Use the bullseye throw phase before the match begins.</small>
+              </span>
+              <span class="game-switch">
+                <input id="match-use-bulloff" type="checkbox" checked onchange="updateGameConfigView()">
+                <span class="game-switch-slider"></span>
+              </span>
+            </label>
+            <div class="game-segment-group" id="game-first-player-controls">
+              <span class="game-segment-label">Starting player when bull-off is disabled</span>
+              <div class="game-segment">
+                <button type="button" class="game-segment-btn active" id="game-first-player-1"
+                  onclick="setGameFirstPlayer(1)">Player 1</button>
+                <button type="button" class="game-segment-btn" id="game-first-player-2"
+                  onclick="setGameFirstPlayer(2)">Player 2</button>
+              </div>
+            </div>
+          </section>
+
+          <section class="game-config-group" id="config-x01">
+            <div class="game-config-group-head">
+              <span class="game-config-group-kicker">2. X01 Rules</span>
+              <strong>Countdown format</strong>
+            </div>
+            <div class="game-form-grid">
+              <label class="game-field">
+                <span>Starting score</span>
+                <select id="x01-starting-score" onchange="updateGameConfigView()">
+                  <option value="301">301</option>
+                  <option value="501" selected>501</option>
+                  <option value="701">701</option>
+                  <option value="901">901</option>
+                </select>
+              </label>
+              <label class="game-field">
+                <span>Finish rule</span>
+                <select id="x01-finish-rule" onchange="updateGameConfigView()">
+                  <option value="straight_out" selected>Straight Out</option>
+                  <option value="double_out">Double Out</option>
+                </select>
+              </label>
+            </div>
+          </section>
+
+          <section class="game-config-group" id="config-cricket">
+            <div class="game-config-group-head">
+              <span class="game-config-group-kicker">2. Cricket Rules</span>
+              <strong>Target format</strong>
+            </div>
+            <div class="game-form-grid">
+              <label class="game-field">
+                <span>Variant</span>
+                <select id="cricket-variant" onchange="updateGameConfigView()">
+                  <option value="standard" selected>Standard Cricket</option>
+                  <option value="random">Random Cricket</option>
+                </select>
+              </label>
+            </div>
+          </section>
+
+          <section class="game-config-group" id="config-countup">
+            <div class="game-config-group-head">
+              <span class="game-config-group-kicker">2. Count Up Rules</span>
+              <strong>Round format</strong>
+            </div>
+            <div class="game-form-grid">
+              <label class="game-field">
+                <span>Rounds</span>
+                <select id="countup-rounds" onchange="updateGameConfigView()">
+                  <option value="6">6</option>
+                  <option value="8" selected>8</option>
+                  <option value="10">10</option>
+                  <option value="12">12</option>
+                </select>
+              </label>
+              <label class="game-field">
+                <span>Scoring mode</span>
+                <select id="countup-variant" onchange="updateGameConfigView()">
+                  <option value="standard" selected>Standard</option>
+                  <option value="multiple">Multiple Count-Up</option>
+                </select>
+              </label>
+            </div>
+          </section>
+
+          <section class="game-config-group">
+            <div class="game-config-group-head">
+              <span class="game-config-group-kicker">3. Quick Notes</span>
+              <strong>How this match will play</strong>
+            </div>
+            <div class="game-notes-list" id="game-notes-list"></div>
+          </section>
+        </div>
+
+        <div class="game-config-footer">
+          <div class="game-launch-summary" id="game-launch-summary">Choose a mode to see the launch summary.</div>
+          <button class="btn btn-lg btn-accent" id="btn-start-game" onclick="startGame()" disabled>
+            <span class="btn-icon-lg">▶</span> Start Match
+          </button>
+        </div>
+      </aside>
     </div>
   </main>
 
@@ -164,49 +288,72 @@
           <button class="btn btn-sm btn-secondary" onclick="undoGameDart()">↩ Undo</button>
         </div>
       </div>
-      <div class="game-body">
-        <!-- Player 1 Panel -->
-        <div class="player-panel p1-panel" id="player-panel-1">
-          <div class="pp-header p1-header">
-            <span class="pp-name">Player 1</span>
-            <span class="pp-indicator" id="pp1-indicator"></span>
-          </div>
-          <div class="pp-score" id="pp1-score">501</div>
-          <div class="pp-darts" id="pp1-darts"></div>
-        </div>
-
-        <!-- Game Center (board + info) -->
-        <div class="game-center">
-          <div class="game-board-area">
-            <svg id="game-board" viewBox="0 0 442 440" class="dartboard game-dartboard"></svg>
-            <div id="oche-trespass-banner" class="oche-trespass" style="display:none">
-              BEHIND THE LINE! <span id="oche-trespass-dist"></span>
+      <div class="game-stage">
+        <div class="game-body">
+          <div class="player-panel p1-panel" id="player-panel-1">
+            <div class="pp-header p1-header">
+              <div class="pp-head-copy">
+                <span class="pp-kicker">Player</span>
+                <span class="pp-name">Player 1</span>
+              </div>
+              <span class="pp-indicator" id="pp1-indicator"></span>
+            </div>
+            <div class="pp-hero">
+              <span class="pp-score-label" id="pp1-score-label">Remaining</span>
+              <div class="pp-score" id="pp1-score">501</div>
+              <div class="pp-subline" id="pp1-subline">Ready for match start</div>
+            </div>
+            <div class="pp-metrics" id="pp1-metrics"></div>
+            <div class="pp-darts-block">
+              <span class="pp-section-label">Live Turn</span>
+              <div class="pp-darts" id="pp1-darts"></div>
             </div>
           </div>
-          <div class="game-turn-info" id="game-turn-info"></div>
-          <!-- Cricket Grid (shown only in cricket mode) -->
-          <div class="cricket-grid" id="cricket-grid" style="display:none">
-            <div class="cg-header">
-              <span>P1</span><span>Target</span><span>P2</span>
-            </div>
-            <div class="cg-body" id="cg-body"></div>
-          </div>
-          <!-- Count Up Rounds (shown only in countup mode) -->
-          <div class="countup-rounds" id="game-countup-rounds" style="display:none"></div>
-        </div>
 
-        <!-- Player 2 Panel -->
-        <div class="player-panel p2-panel" id="player-panel-2">
-          <div class="pp-header p2-header">
-            <span class="pp-name">Player 2</span>
-            <span class="pp-indicator" id="pp2-indicator"></span>
+          <div class="game-center">
+            <div class="game-center-overview">
+              <div>
+                <span class="game-center-kicker" id="game-mode-tag">Mode</span>
+                <h3 class="game-center-title" id="game-mode-title">Live Match Overview</h3>
+                <p class="game-center-rules" id="game-mode-rules">Select a mode to begin.</p>
+              </div>
+              <div id="oche-trespass-banner" class="oche-trespass game-oche-alert" style="display:none">
+                BEHIND THE LINE! <span id="oche-trespass-dist"></span>
+              </div>
+            </div>
+            <div class="game-turn-info" id="game-turn-info"></div>
+            <div class="game-throw-strip" id="game-throw-strip"></div>
+            <div class="game-mode-panel" id="game-mode-panel"></div>
           </div>
-          <div class="pp-score" id="pp2-score">501</div>
-          <div class="pp-darts" id="pp2-darts"></div>
+
+          <div class="player-panel p2-panel" id="player-panel-2">
+            <div class="pp-header p2-header">
+              <div class="pp-head-copy">
+                <span class="pp-kicker">Player</span>
+                <span class="pp-name">Player 2</span>
+              </div>
+              <span class="pp-indicator" id="pp2-indicator"></span>
+            </div>
+            <div class="pp-hero">
+              <span class="pp-score-label" id="pp2-score-label">Remaining</span>
+              <div class="pp-score" id="pp2-score">501</div>
+              <div class="pp-subline" id="pp2-subline">Ready for match start</div>
+            </div>
+            <div class="pp-metrics" id="pp2-metrics"></div>
+            <div class="pp-darts-block">
+              <span class="pp-section-label">Live Turn</span>
+              <div class="pp-darts" id="pp2-darts"></div>
+            </div>
+          </div>
+        </div>
+        <div class="game-history-shell">
+          <div class="game-history-head">
+            <span>Turn Log</span>
+            <span id="game-history-caption">Latest turns</span>
+          </div>
+          <div class="game-history" id="game-history"></div>
         </div>
       </div>
-      <!-- Turn History -->
-      <div class="game-history" id="game-history"></div>
     </div>
 
     <!-- Game Over Overlay -->
@@ -865,7 +1012,7 @@
       </div>
     </div>
     <div class="bar-right-group">
-      <span class="bar-copy">v1.3 — ThrowVision © 2026</span>
+      <span class="bar-copy">v1.3.5 — ThrowVision © 2026</span>
       <button class="bar-debug-btn" id="debug-toggle-btn" onclick="toggleDebugPanel()" title="Debug Console">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
           stroke-linejoin="round" width="16" height="16">
@@ -916,6 +1063,15 @@
       <div class="accuracy-modal-head">
         <h3 id="missed-dart-modal-title">Add Missed Dart</h3>
         <p id="missed-dart-modal-subtitle">Record the actual dart result for this turn.</p>
+      </div>
+
+      <div class="accuracy-modal-group" id="missed-dart-slot-group">
+        <div class="accuracy-modal-label">Turn Position</div>
+        <div class="accuracy-choice-grid accuracy-choice-grid--slot">
+          <button class="accuracy-choice-btn" data-turn-slot="1" onclick="setMissedDartSlot(1)">Dart 1</button>
+          <button class="accuracy-choice-btn" data-turn-slot="2" onclick="setMissedDartSlot(2)">Dart 2</button>
+          <button class="accuracy-choice-btn" data-turn-slot="3" onclick="setMissedDartSlot(3)">Dart 3</button>
+        </div>
       </div>
 
       <div class="accuracy-modal-group">
@@ -999,14 +1155,26 @@
   </div>
 
   <!-- ─── CONFIRM DELETE MODAL ─────────────────────────────────── -->
-  <div class="profile-modal-overlay" id="confirm-modal" style="display:none">
-    <div class="profile-modal confirm-delete">
-      <div class="profile-modal-icon">🗑️</div>
-      <h3>Delete Profile</h3>
-      <p>Are you sure you want to delete <strong id="confirm-delete-name"></strong>?<br>This cannot be undone.</p>
-      <div class="profile-modal-actions">
-        <button class="btn btn-secondary profile-modal-btn" onclick="closeConfirmModal(false)">Cancel</button>
-        <button class="btn profile-modal-btn confirm-delete-btn" onclick="closeConfirmModal(true)">🗑️ Delete</button>
+  <div class="profile-modal-overlay action-confirm-overlay" id="confirm-modal" style="display:none"
+    onclick="closeConfirmModal(false)">
+    <div class="profile-modal action-confirm-modal confirm-delete" role="dialog" aria-modal="true"
+      aria-labelledby="confirm-modal-title" onclick="event.stopPropagation()">
+      <div class="action-confirm-body">
+        <div class="action-confirm-kicker" id="confirm-modal-kicker">Confirm Action</div>
+        <div class="action-confirm-head">
+          <div class="profile-modal-icon action-confirm-icon" id="confirm-modal-icon">🗑️</div>
+          <div class="action-confirm-copy">
+            <h3 id="confirm-modal-title">Delete Profile</h3>
+            <p id="confirm-modal-message">This action cannot be undone.</p>
+          </div>
+        </div>
+        <div class="action-confirm-target" id="confirm-modal-target" style="display:none"></div>
+      </div>
+      <div class="profile-modal-actions action-confirm-actions">
+        <button type="button" class="btn btn-secondary profile-modal-btn" id="confirm-modal-cancel"
+          onclick="closeConfirmModal(false)">Cancel</button>
+        <button type="button" class="btn profile-modal-btn confirm-delete-btn" id="confirm-modal-confirm"
+          onclick="closeConfirmModal(true)">Delete</button>
       </div>
     </div>
   </div>

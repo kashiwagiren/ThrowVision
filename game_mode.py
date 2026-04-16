@@ -51,12 +51,17 @@ def _player_summary(player_num: int, darts: list, **extra) -> dict:
 CRICKET_NUMBERS = [15, 16, 17, 18, 19, 20, 25]  # 25 = bull
 
 # Mapping label → marks for cricket (S=1, D=2, T=3)
-def _cricket_marks(label: str, score: int) -> Tuple[Optional[int], int]:
+def _cricket_marks(
+    label: str,
+    score: int,
+    targets: Optional[List[int]] = None,
+) -> Tuple[Optional[int], int]:
     """Return (target_number, marks) or (None, 0) if not a cricket target."""
+    active_targets = set(targets or CRICKET_NUMBERS)
     if label == "BULL":
-        return 25, 2   # double bull = 2 marks
+        return (25, 2) if 25 in active_targets else (None, 0)
     if label == "S25":
-        return 25, 1   # single bull = 1 mark
+        return (25, 1) if 25 in active_targets else (None, 0)
     if not label or label == "OFF":
         return None, 0
 
@@ -66,7 +71,7 @@ def _cricket_marks(label: str, score: int) -> Tuple[Optional[int], int]:
     except (ValueError, IndexError):
         return None, 0
 
-    if num not in (15, 16, 17, 18, 19, 20):
+    if num not in active_targets:
         return None, 0
 
     marks = {"S": 1, "D": 2, "T": 3}.get(prefix, 0)
@@ -195,8 +200,13 @@ class BullseyeThrow:
 class GameX01:
     """Standard X01 dart game (301 / 501 / 701 / 901)."""
 
-    def __init__(self, starting_score: int = 501) -> None:
+    def __init__(
+        self,
+        starting_score: int = 501,
+        finish_rule: str = "straight_out",
+    ) -> None:
         self.starting_score = starting_score
+        self.finish_rule = str(finish_rule or "straight_out")
         self.scores = [starting_score, starting_score]   # [p1, p2]
         self.current_player = 0                          # 0-indexed
         self.darts_this_turn: List[dict] = []
@@ -209,6 +219,155 @@ class GameX01:
     def set_first_player(self, player: int) -> None:
         """Set who goes first (1 or 2 → stored as 0-indexed)."""
         self.current_player = player - 1
+
+    def _is_double_finish(self, label: str) -> bool:
+        normalized = str(label or "").upper()
+        return normalized == "BULL" or normalized.startswith("D")
+
+    def _normalize_review_dart(self, dart: dict) -> dict:
+        """Normalize reviewed dart payloads into game-state dart objects."""
+        label = str(dart.get("label") or "MISS").upper()
+        score = int(dart.get("score") or 0)
+        coord = dart.get("coord")
+        if isinstance(coord, (list, tuple)) and len(coord) >= 2:
+            coord = (coord[0], coord[1])
+        else:
+            coord = None
+        if label in ("MISS", "BOUNCE", "FOUL", "OFF"):
+            score = 0
+        return {"label": label, "score": score, "coord": coord}
+
+    def _simulate_review_turn(
+        self,
+        player_index: int,
+        score_before: int,
+        review_darts: List[dict],
+        *,
+        force_end: bool = False,
+    ) -> dict:
+        """Rebuild a turn from reviewed darts, optionally forcing turn end."""
+        remaining_score = score_before
+        built_darts: List[dict] = []
+        busted = False
+        winner = None
+
+        review_darts = review_darts or []
+        ordered_review_darts: List[Optional[dict]] = [None, None, None]
+        used_indexes = set()
+
+        for index, source in enumerate(review_darts):
+            try:
+                slot = int(source.get("turn_slot"))
+            except (TypeError, ValueError):
+                slot = 0
+            if 1 <= slot <= 3 and ordered_review_darts[slot - 1] is None:
+                ordered_review_darts[slot - 1] = source
+                used_indexes.add(index)
+
+        for index, source in enumerate(review_darts):
+            if index in used_indexes:
+                continue
+            for slot_index in range(3):
+                if ordered_review_darts[slot_index] is None:
+                    ordered_review_darts[slot_index] = source
+                    used_indexes.add(index)
+                    break
+
+        for source in [dart for dart in ordered_review_darts if dart is not None][:3]:
+            dart = self._normalize_review_dart(source)
+            label = dart["label"]
+            score = dart["score"]
+
+            if label in ("MISS", "BOUNCE", "FOUL", "OFF"):
+                built_darts.append(dart)
+            else:
+                remaining = remaining_score - score
+                bust = remaining < 0
+                if self.finish_rule == "double_out":
+                    if remaining == 1:
+                        bust = True
+                    elif remaining == 0 and not self._is_double_finish(label):
+                        bust = True
+                if bust:
+                    dart["bust"] = True
+                    built_darts.append(dart)
+                    remaining_score = score_before
+                    busted = True
+                    break
+
+                remaining_score = remaining
+                built_darts.append(dart)
+                if remaining == 0:
+                    winner = player_index + 1
+                    break
+
+            if len(built_darts) >= 3:
+                break
+
+        completed = busted or winner is not None or len(built_darts) >= 3
+        if force_end and built_darts:
+            completed = True
+
+        return {
+            "darts": built_darts,
+            "score_after": remaining_score,
+            "busted": busted,
+            "winner": winner,
+            "completed": completed,
+        }
+
+    def apply_reviewed_current_turn(
+        self,
+        review_darts: List[dict],
+        *,
+        force_end: bool = False,
+    ) -> dict:
+        """Replace the live turn with reviewed darts, optionally ending it."""
+        if self.winner is not None:
+            return self.state()
+
+        player_index = self.current_player
+        simulated = self._simulate_review_turn(
+            player_index,
+            self._turn_score_before,
+            review_darts,
+            force_end=force_end,
+        )
+
+        self.scores[player_index] = simulated["score_after"]
+        self.darts_this_turn = simulated["darts"]
+        self.winner = simulated["winner"]
+
+        if simulated["completed"]:
+            self._end_turn(busted=simulated["busted"])
+
+        return self.state()
+
+    def apply_reviewed_last_turn(self, review_darts: List[dict]) -> dict:
+        """Rewrite the most recently completed turn from reviewed darts."""
+        if not self.turn_history:
+            return self.state()
+
+        last_turn = self.turn_history.pop()
+        player_index = max(0, min(1, int(last_turn.get("player", 1)) - 1))
+        score_before = int(last_turn.get("score_before", self.starting_score))
+        simulated = self._simulate_review_turn(
+            player_index,
+            score_before,
+            review_darts,
+            force_end=True,
+        )
+
+        self.current_player = player_index
+        self._turn_score_before = score_before
+        self.scores[player_index] = simulated["score_after"]
+        self.darts_this_turn = simulated["darts"]
+        self.winner = simulated["winner"]
+
+        if simulated["completed"]:
+            self._end_turn(busted=simulated["busted"])
+
+        return self.state()
 
     # ------------------------------------------------------------------
     def record_dart(self, label: str, score: int,
@@ -227,14 +386,16 @@ class GameX01:
         dart = {"label": label, "score": score, "coord": coord}
         remaining = self.scores[self.current_player] - score
 
-        # --- Bust check ---
-        is_double = (label.startswith("D") or label == "BULL")
+        is_double = self._is_double_finish(label)
         bust = False
 
         if remaining < 0:
             bust = True
-        elif remaining == 1:
-            bust = True          # can't finish on 1 (no valid double exists for 0.5)
+        elif self.finish_rule == "double_out":
+            if remaining == 1:
+                bust = True
+            elif remaining == 0 and not is_double:
+                bust = True
 
         if bust:
             dart["bust"] = True
@@ -330,6 +491,7 @@ class GameX01:
         return {
             "type": "x01",
             "starting_score": self.starting_score,
+            "finish_rule": self.finish_rule,
             "scores": list(self.scores),
             "current_player": self.current_player + 1,  # 1-indexed
             "darts_this_turn": list(self.darts_this_turn),
@@ -375,11 +537,17 @@ class GameCricket:
     score ≥ opponent.
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        variant: str = "standard",
+        target_numbers: Optional[List[int]] = None,
+    ) -> None:
+        self.variant = str(variant or "standard")
+        self.numbers = list(target_numbers or CRICKET_NUMBERS)
         # marks[player][number] = count of marks (0..3+)
         self.marks: List[Dict[int, int]] = [
-            {n: 0 for n in CRICKET_NUMBERS},
-            {n: 0 for n in CRICKET_NUMBERS},
+            {n: 0 for n in self.numbers},
+            {n: 0 for n in self.numbers},
         ]
         self.points = [0, 0]
         self.current_player = 0
@@ -406,7 +574,7 @@ class GameCricket:
                 self._end_turn()
             return self.state()
 
-        target, raw_marks = _cricket_marks(label, score)
+        target, raw_marks = _cricket_marks(label, score, self.numbers)
         dart = {
             "label": label, "score": score, "coord": coord,
             "target": target, "marks_added": 0, "points_added": 0,
@@ -481,7 +649,7 @@ class GameCricket:
     # ------------------------------------------------------------------
     def _check_win(self, player: int) -> bool:
         opp = 1 - player
-        all_closed = all(self.marks[player][n] >= 3 for n in CRICKET_NUMBERS)
+        all_closed = all(self.marks[player][n] >= 3 for n in self.numbers)
         return all_closed and self.points[player] >= self.points[opp]
 
     def _end_turn(self) -> None:
@@ -504,6 +672,7 @@ class GameCricket:
     def state(self) -> dict:
         return {
             "type": "cricket",
+            "variant": self.variant,
             "marks": [
                 {str(k): v for k, v in self.marks[0].items()},
                 {str(k): v for k, v in self.marks[1].items()},
@@ -513,7 +682,7 @@ class GameCricket:
             "darts_this_turn": list(self.darts_this_turn),
             "turn_history": self.turn_history[-10:],
             "winner": self.winner,
-            "numbers": CRICKET_NUMBERS,
+            "numbers": list(self.numbers),
         }
 
     def stats_summary(self) -> dict:
@@ -546,8 +715,9 @@ class GameCricket:
 class GameCountUp:
     """Count Up – accumulate points over N rounds.  Highest total wins."""
 
-    def __init__(self, total_rounds: int = 8) -> None:
+    def __init__(self, total_rounds: int = 8, variant: str = "standard") -> None:
         self.total_rounds = total_rounds
+        self.variant = str(variant or "standard")
         self.scores = [0, 0]
         self.current_player = 0
         self.current_round = 1                           # 1-indexed
@@ -568,14 +738,29 @@ class GameCountUp:
             return self.state()
         # BOUNCE / MISS — counts as thrown dart, zero score
         if label in ('BOUNCE', 'MISS', 'FOUL'):
-            dart = {"label": label, "score": 0, "coord": coord}
+            multiplier = len(self.darts_this_turn) + 1 if self.variant == "multiple" else 1
+            dart = {
+                "label": label,
+                "score": 0,
+                "base_score": 0,
+                "multiplier": multiplier,
+                "coord": coord,
+            }
             self.darts_this_turn.append(dart)
             if len(self.darts_this_turn) >= 3:
                 self._end_turn()
             return self.state()
 
-        dart = {"label": label, "score": score, "coord": coord}
-        self.scores[self.current_player] += score
+        multiplier = len(self.darts_this_turn) + 1 if self.variant == "multiple" else 1
+        applied_score = score * multiplier
+        dart = {
+            "label": label,
+            "score": applied_score,
+            "base_score": score,
+            "multiplier": multiplier,
+            "coord": coord,
+        }
+        self.scores[self.current_player] += applied_score
         self.darts_this_turn.append(dart)
 
         if len(self.darts_this_turn) >= 3:
@@ -653,6 +838,7 @@ class GameCountUp:
         return {
             "type": "countup",
             "total_rounds": self.total_rounds,
+            "variant": self.variant,
             "scores": list(self.scores),
             "current_player": self.current_player + 1,
             "current_round": max(len(self.round_scores[0]),

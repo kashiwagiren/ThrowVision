@@ -142,6 +142,7 @@ let _practiceResetMode = null;
 let _statsMode = null;
 let _statsSection = 'games';
 let _gameTurnReviewReady = false;
+let _lastGameState = null;
 let _practiceAccuracySession = {
   sessionId: null,
   turnId: null,
@@ -161,6 +162,7 @@ let _missedDartDraft = {
   mode: 'add',
   predictionId: null,
   actualId: null,
+  turnSlot: 1,
   multiplier: 'single',
   singleRing: 'inner',
   number: 20,
@@ -294,6 +296,12 @@ function showPage(name) {
     _setPracticeCameraSelectorVisible(false);
     _setPracticeBoardStatic({ clearStream: true });
     _setPracticeFinishTurnVisible(false);
+  }
+  if (name === 'game-select') {
+    if (!_selectedGameMode) {
+      _selectedGameMode = 'x01';
+    }
+    updateGameConfigView();
   }
   if (!['practice', 'game'].includes(name)) {
     closePracticeReviewModal();
@@ -1659,6 +1667,14 @@ function _highlightGameCard(idx) {
 }
 
 document.addEventListener('keydown', (e) => {
+  if (isConfirmModalOpen()) {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      closeConfirmModal(false);
+    }
+    return;
+  }
+
   // Ignore if user is typing in an input/select
   if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT') return;
 
@@ -2288,21 +2304,90 @@ function _setGameReviewButtonVisible(visible) {
   _setVisible(reviewBtn, visible, '');
 }
 
+function _x01ReviewTurnStartScore() {
+  if (!_lastGameState || _lastGameState.type !== 'x01') return null;
+  const currentPlayer = Math.max(1, Number(_lastGameState.current_player || 1));
+  const scores = Array.isArray(_lastGameState.scores) ? _lastGameState.scores : [];
+  const currentScore = Number(scores[currentPlayer - 1] || 0);
+  const liveDarts = Array.isArray(_lastGameState.darts_this_turn) ? _lastGameState.darts_this_turn : [];
+  const liveTurnScore = liveDarts.reduce((sum, dart) => sum + (dart && dart.bust ? 0 : Number(dart?.score || 0)), 0);
+  return currentScore + liveTurnScore;
+}
+
+function _isDoubleCheckoutLabel(label) {
+  const normalized = String(label || '').toUpperCase();
+  return normalized === 'BULL' || normalized === 'DB' || normalized === 'D25' || normalized.startsWith('D');
+}
+
+function _x01ReviewWouldFinishTurn(actualDarts = _practiceAccuracySession.actualDarts) {
+  if (_gameTurnReviewReady || window._awaitingTakeoutGame) return false;
+  const turnStartScore = _x01ReviewTurnStartScore();
+  if (turnStartScore == null) return false;
+
+  const finishRule = String(_lastGameState?.finish_rule || 'straight_out');
+  let remaining = turnStartScore;
+  let dartsThrown = 0;
+  for (const actual of actualDarts.slice(0, 3)) {
+    const label = String(actual?.label || '').toUpperCase();
+    const score = Number(actual?.score || 0);
+    dartsThrown += 1;
+
+    if (label === 'MISS' || label === 'BOUNCE' || label === 'FOUL' || label === 'OFF') {
+      if (dartsThrown >= 3) return true;
+      continue;
+    }
+
+    const nextRemaining = remaining - score;
+    let bust = nextRemaining < 0;
+    if (finishRule === 'double_out') {
+      if (nextRemaining === 1) {
+        bust = true;
+      } else if (nextRemaining === 0 && !_isDoubleCheckoutLabel(label)) {
+        bust = true;
+      }
+    }
+
+    if (bust) {
+      return true;
+    }
+    remaining = nextRemaining;
+
+    if (nextRemaining === 0) {
+      return true;
+    }
+
+    if (dartsThrown >= 3) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function _currentX01ReviewAction() {
+  if (currentPage !== 'game' || !_isX01AccuracyContext()) return null;
+  if (_gameTurnReviewReady) return 'continue_turn';
+  return _x01ReviewWouldFinishTurn() ? 'finish_turn' : null;
+}
+
 function _syncAccuracyReviewActionButtons() {
   const addMissedBtn = document.getElementById('btn-add-missed-dart');
   const finishPracticeBtn = document.getElementById('btn-finish-practice-turn-alt');
   const finishGameBtn = document.getElementById('btn-finish-game-review');
   const showPracticeActions = _isPracticeAccuracyContext();
   const showGameActions = _isX01AccuracyContext() && currentPage === 'game';
+  const gameReviewAction = _currentX01ReviewAction();
 
   _setVisible(addMissedBtn, _practiceAccuracySession.sessionId != null, '');
   _setVisible(finishPracticeBtn, showPracticeActions && !!practiceActive, '');
   _setVisible(finishGameBtn, showGameActions, '');
   if (finishGameBtn) {
-    finishGameBtn.disabled = !_gameTurnReviewReady;
-    finishGameBtn.textContent = _gameTurnReviewReady ? 'Continue Turn' : 'Remove Darts First';
+    finishGameBtn.disabled = !gameReviewAction;
+    finishGameBtn.textContent = gameReviewAction === 'continue_turn'
+      ? 'Continue Turn'
+      : (gameReviewAction === 'finish_turn' ? 'Finish Turn' : 'Remove Darts First');
   }
-  _setGameReviewButtonVisible(showGameActions && _practiceAccuracySession.predictions.length > 0);
+  _setGameReviewButtonVisible(showGameActions && (_practiceAccuracySession.predictions.length > 0 || _practiceAccuracySession.actualDarts.length > 0));
 }
 
 function _newReviewId(prefix = 'actual') {
@@ -2496,6 +2581,102 @@ function _practiceManualActuals() {
   return _practiceAccuracySession.actualDarts.filter((item) => !item.predictionId);
 }
 
+function _sanitizeReviewTurnSlot(slot) {
+  const parsed = Number(slot);
+  if (!Number.isFinite(parsed)) return null;
+  const normalized = Math.trunc(parsed);
+  return normalized >= 1 && normalized <= 3 ? normalized : null;
+}
+
+function _practicePredictionTurnSlot(predictionId, predictions = _practiceAccuracySession.predictions) {
+  const index = (predictions || []).findIndex((item) => item.predictionId === predictionId);
+  return index >= 0 ? index + 1 : null;
+}
+
+function _isPracticeActualSlotPinned(actual) {
+  const slot = _sanitizeReviewTurnSlot(actual?.turnSlot);
+  if (!slot) return false;
+  return !actual?.predictionId || String(actual?.source || '').toLowerCase() === 'manual';
+}
+
+function _resolvePracticeReviewActuals(
+  predictions = _practiceAccuracySession.predictions,
+  actualDarts = _practiceAccuracySession.actualDarts,
+) {
+  const normalizedActuals = (actualDarts || []).map((item, index) => ({
+    ...item,
+    turnSlot: _sanitizeReviewTurnSlot(item.turnSlot),
+    _orderIndex: index,
+  }));
+  const slotMap = new Map();
+  const usedActualIds = new Set();
+
+  const explicitActuals = normalizedActuals
+    .filter((item) => _isPracticeActualSlotPinned(item))
+    .sort((left, right) => {
+      const leftPriority = !left.predictionId ? 2 : 1;
+      const rightPriority = !right.predictionId ? 2 : 1;
+      return (left.turnSlot - right.turnSlot)
+        || (rightPriority - leftPriority)
+        || (left._orderIndex - right._orderIndex);
+    });
+
+  const nextFreeSlot = () => {
+    for (let slot = 1; slot <= 3; slot += 1) {
+      if (!slotMap.has(slot)) return slot;
+    }
+    return null;
+  };
+
+  explicitActuals.forEach((item) => {
+    if (!item.actualId || usedActualIds.has(item.actualId) || !item.turnSlot || slotMap.has(item.turnSlot)) return;
+    slotMap.set(item.turnSlot, { ...item, resolvedTurnSlot: item.turnSlot });
+    usedActualIds.add(item.actualId);
+  });
+
+  (predictions || []).forEach((prediction) => {
+    const actual = normalizedActuals.find((item) => item.predictionId === prediction.predictionId && !usedActualIds.has(item.actualId));
+    if (!actual) return;
+    const slot = nextFreeSlot();
+    if (!slot) return;
+    slotMap.set(slot, { ...actual, resolvedTurnSlot: slot });
+    usedActualIds.add(actual.actualId);
+  });
+
+  normalizedActuals.forEach((item) => {
+    if (!item.actualId || usedActualIds.has(item.actualId)) return;
+    const slot = nextFreeSlot();
+    if (!slot) return;
+    slotMap.set(slot, { ...item, resolvedTurnSlot: slot });
+    usedActualIds.add(item.actualId);
+  });
+
+  return [1, 2, 3].map((slot) => slotMap.get(slot)).filter(Boolean);
+}
+
+function _nextPracticeReviewTurnSlot() {
+  const resolved = _resolvePracticeReviewActuals();
+  const used = new Set(resolved.map((item) => item.resolvedTurnSlot).filter(Boolean));
+  for (let slot = 1; slot <= 3; slot += 1) {
+    if (!used.has(slot)) return slot;
+  }
+  return 3;
+}
+
+function _serializePracticeActual(actual, resolvedTurnSlot = null) {
+  return {
+    id: actual.actualId,
+    prediction_id: actual.predictionId || null,
+    source: actual.source,
+    label: actual.label,
+    score: actual.score,
+    multiplier: actual.multiplier || null,
+    number: actual.number ?? null,
+    single_ring: actual.singleRing || null,
+    turn_slot: _sanitizeReviewTurnSlot(resolvedTurnSlot ?? actual.turnSlot),
+  };
+}
+
 function _practiceReviewMetrics(predictions = _practiceAccuracySession.predictions, actualDarts = _practiceAccuracySession.actualDarts) {
   const predictionMap = new Map(predictions.map((item) => [item.predictionId, item]));
   let exactMatches = 0;
@@ -2570,19 +2751,11 @@ function _practiceReviewScope() {
 }
 
 function _practiceReviewPayload() {
+  const orderedActuals = _resolvePracticeReviewActuals();
   return {
     session_id: _practiceAccuracySession.sessionId,
     turn_id: _practiceAccuracySession.turnId,
-    actual_darts: _practiceAccuracySession.actualDarts.map((item) => ({
-      id: item.actualId,
-      prediction_id: item.predictionId || null,
-      source: item.source,
-      label: item.label,
-      score: item.score,
-      multiplier: item.multiplier || null,
-      number: item.number ?? null,
-      single_ring: item.singleRing || null,
-    })),
+    actual_darts: orderedActuals.map((item) => _serializePracticeActual(item, item.resolvedTurnSlot)),
     notes: _practiceAccuracySession.notes || '',
   };
 }
@@ -2603,6 +2776,26 @@ async function savePracticeAccuracyReview(force = false) {
   } catch (err) {
     console.warn('Failed to save practice accuracy review', err);
   }
+}
+
+async function _submitX01ReviewAction(action) {
+  if (!_practiceAccuracySession.sessionId || !_practiceAccuracySession.turnId) return null;
+  const payload = {
+    ..._practiceReviewPayload(),
+    action,
+  };
+  const res = await fetch('/api/accuracy/review/x01-action', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || data.ok === false) {
+    const error = data.error || `Failed to ${action === 'finish_turn' ? 'finish' : 'continue'} X01 turn.`;
+    throw new Error(error);
+  }
+  _practiceAccuracySession.lastSavedSignature = JSON.stringify(_practiceReviewPayload());
+  return data;
 }
 
 function queuePracticeAccuracySave(immediate = false) {
@@ -2651,6 +2844,11 @@ async function _syncPracticeAccuracyTurnFromServer() {
       multiplier: item.multiplier || null,
       number: item.number ?? null,
       singleRing: item.single_ring || null,
+      turnSlot: (() => {
+        const slot = _sanitizeReviewTurnSlot(item.turn_slot);
+        const source = String(item.source || (item.prediction_id ? 'prediction' : 'manual')).toLowerCase();
+        return slot && (!item.prediction_id || source === 'manual') ? slot : null;
+      })(),
     }));
     _practiceAccuracySession.lastSavedSignature = JSON.stringify(_practiceReviewPayload());
     renderPracticeAccuracyReview();
@@ -2758,6 +2956,7 @@ function _upsertPracticePrediction(data) {
       multiplier: decoded.multiplier,
       number: decoded.number,
       singleRing: decoded.singleRing,
+      turnSlot: null,
     });
   } else if (existingActual.source === 'prediction') {
     const decoded = _decodeAccuracyLabel(prediction.label);
@@ -2766,6 +2965,7 @@ function _upsertPracticePrediction(data) {
     existingActual.multiplier = decoded.multiplier;
     existingActual.number = decoded.number;
     existingActual.singleRing = decoded.singleRing;
+    existingActual.turnSlot = null;
   }
 
   renderPracticeAccuracyReview();
@@ -2784,6 +2984,15 @@ function renderPracticeAccuracyReview() {
 
   const scope = _practiceReviewScope();
   const metrics = _practiceReviewMetrics(scope.predictions, scope.actualDarts);
+  const resolvedActuals = _resolvePracticeReviewActuals();
+  const resolvedSlotByPredictionId = new Map(
+    resolvedActuals
+      .filter((item) => item.predictionId && item.resolvedTurnSlot)
+      .map((item) => [item.predictionId, item.resolvedTurnSlot]),
+  );
+  const manualActuals = scope.focusedPrediction
+    ? []
+    : resolvedActuals.filter((item) => !item.predictionId);
   predictedEl.textContent = String(metrics.predicted);
   actualEl.textContent = String(metrics.actual);
   correctionsEl.textContent = String(metrics.corrections);
@@ -2807,9 +3016,14 @@ function renderPracticeAccuracyReview() {
       ? `Reviewing Dart ${scope.focusedIndex + 1} • Accuracy: ${metrics.accuracyPct.toFixed(1)}%`
       : `Reviewing Dart ${scope.focusedIndex + 1} of this ${_isX01AccuracyContext() ? 'X01' : 'practice'} turn.`;
   } else if (_isX01AccuracyContext()) {
-    sub.textContent = _gameTurnReviewReady
-      ? `Turn review ready • Accuracy: ${metrics.accuracyPct != null ? metrics.accuracyPct.toFixed(1) + '%' : '—'}`
-      : 'Review the scored turn, then remove darts to unlock Continue.';
+    const gameAction = _currentX01ReviewAction();
+    if (gameAction === 'continue_turn') {
+      sub.textContent = `Turn review ready • Accuracy: ${metrics.accuracyPct != null ? metrics.accuracyPct.toFixed(1) + '%' : '—'}`;
+    } else if (gameAction === 'finish_turn') {
+      sub.textContent = 'Review complete. Finish this corrected turn to move into takeout.';
+    } else {
+      sub.textContent = 'Review the scored turn, then remove darts to unlock Continue.';
+    }
   } else {
     sub.textContent = metrics.actual > 0 && metrics.accuracyPct != null
       ? `Current turn accuracy: ${metrics.accuracyPct.toFixed(1)}%`
@@ -2819,6 +3033,7 @@ function renderPracticeAccuracyReview() {
   const predictionRows = scope.predictions.map((prediction) => {
     const index = _practiceAccuracySession.predictions.findIndex((item) => item.predictionId === prediction.predictionId);
     const actual = _practiceActualForPrediction(prediction.predictionId);
+    const turnSlot = resolvedSlotByPredictionId.get(prediction.predictionId) || _practicePredictionTurnSlot(prediction.predictionId);
     const isFalsePositive = !actual;
     const isExact = !!actual
       && actual.label === prediction.label
@@ -2836,7 +3051,7 @@ function renderPracticeAccuracyReview() {
     return `
       <div class="practice-review-row ${stateClass}">
         <div class="practice-review-row-top">
-          <div class="practice-review-row-title">Dart ${index + 1}</div>
+          <div class="practice-review-row-title">Dart ${turnSlot || (index + 1)}</div>
           <div class="practice-review-state">${stateLabel}</div>
         </div>
         <div class="practice-review-row-body">
@@ -2862,10 +3077,10 @@ function renderPracticeAccuracyReview() {
     `;
   });
 
-  const manualRows = scope.manualActuals.map((actual, index) => `
+  const manualRows = manualActuals.map((actual, index) => `
     <div class="practice-review-row is-manual">
       <div class="practice-review-row-top">
-        <div class="practice-review-row-title">Missed Dart ${index + 1}</div>
+        <div class="practice-review-row-title">Dart ${actual.resolvedTurnSlot || actual.turnSlot || (index + 1)}</div>
         <div class="practice-review-state">No Detection</div>
       </div>
       <div class="practice-review-row-body">
@@ -2911,6 +3126,7 @@ function confirmPracticePrediction(predictionId) {
     multiplier: decoded.multiplier,
     number: decoded.number,
     singleRing: decoded.singleRing,
+    turnSlot: null,
   };
   if (actual) {
     Object.assign(actual, updated);
@@ -2943,6 +3159,7 @@ function editPracticePrediction(predictionId) {
     mode: 'edit_prediction',
     predictionId,
     actualId: actual ? actual.actualId : null,
+    turnSlot: _sanitizeReviewTurnSlot(actual?.turnSlot) || _practicePredictionTurnSlot(predictionId) || _nextPracticeReviewTurnSlot(),
     multiplier: decoded.multiplier,
     singleRing: decoded.singleRing,
     number: decoded.number,
@@ -2965,6 +3182,7 @@ function editManualPracticeActual(actualId) {
     mode: 'edit_manual',
     predictionId: null,
     actualId,
+    turnSlot: _sanitizeReviewTurnSlot(actual?.turnSlot) || _nextPracticeReviewTurnSlot(),
     multiplier: decoded.multiplier,
     singleRing: decoded.singleRing,
     number: decoded.number,
@@ -2987,10 +3205,15 @@ function removeManualPracticeActual(actualId) {
 }
 
 function openMissedDartModal() {
+  if (_resolvePracticeReviewActuals().length >= 3) {
+    showToast('This turn already has 3 recorded darts. Edit an existing dart to adjust the review.', 'warn', 2600);
+    return;
+  }
   _missedDartDraft = {
     mode: 'add',
     predictionId: null,
     actualId: null,
+    turnSlot: _nextPracticeReviewTurnSlot(),
     multiplier: 'single',
     singleRing: 'inner',
     number: 20,
@@ -3015,6 +3238,7 @@ function openPracticeManualEventModal() {
     mode: 'practice_manual_event',
     predictionId: null,
     actualId: null,
+    turnSlot: Math.min(3, throwCount + 1),
     multiplier: 'miss',
     singleRing: 'inner',
     number: 20,
@@ -3052,10 +3276,18 @@ function setMissedDartNumber(number) {
   _renderMissedDartModal();
 }
 
+function setMissedDartSlot(slot) {
+  _missedDartDraft.turnSlot = _sanitizeReviewTurnSlot(slot) || _missedDartDraft.turnSlot || 1;
+  _renderMissedDartModal();
+}
+
 function _renderMissedDartModal() {
   const multiplier = _missedDartDraft.multiplier || 'single';
   document.querySelectorAll('.accuracy-choice-btn[data-multiplier]').forEach((btn) => {
     btn.classList.toggle('active', btn.dataset.multiplier === multiplier);
+  });
+  document.querySelectorAll('.accuracy-choice-btn[data-turn-slot]').forEach((btn) => {
+    btn.classList.toggle('active', Number(btn.dataset.turnSlot) === Number(_missedDartDraft.turnSlot || 1));
   });
   document.querySelectorAll('.accuracy-choice-btn[data-single-ring]').forEach((btn) => {
     btn.classList.toggle('active', btn.dataset.singleRing === (_missedDartDraft.singleRing || 'inner'));
@@ -3068,6 +3300,10 @@ function _renderMissedDartModal() {
   });
   const singleRingGroup = document.getElementById('missed-dart-single-ring-group');
   const numberGroup = document.getElementById('missed-dart-number-group');
+  const slotGroup = document.getElementById('missed-dart-slot-group');
+  if (slotGroup) {
+    slotGroup.style.display = _missedDartDraft.mode === 'practice_manual_event' ? 'none' : '';
+  }
   if (singleRingGroup) {
     const show = multiplier === 'single' && Number(_missedDartDraft.number) !== 25;
     singleRingGroup.style.display = show ? '' : 'none';
@@ -3086,6 +3322,7 @@ function _applyPracticeManualEvent(built) {
     return;
   }
 
+  const turnSlot = _sanitizeReviewTurnSlot(_missedDartDraft.turnSlot) || Math.min(3, throwCount + 1);
   const actualId = _newReviewId('actual');
   _practiceAccuracySession.actualDarts.push({
     actualId,
@@ -3096,6 +3333,7 @@ function _applyPracticeManualEvent(built) {
     multiplier: built.multiplier,
     number: built.number,
     singleRing: built.singleRing,
+    turnSlot,
   });
 
   throwCount += 1;
@@ -3147,6 +3385,7 @@ function _applyPracticeManualEvent(built) {
 function submitMissedDartModal() {
   const built = _buildActualFromDraft(_missedDartDraft);
   if (!built) return;
+  const turnSlot = _sanitizeReviewTurnSlot(_missedDartDraft.turnSlot) || _nextPracticeReviewTurnSlot();
 
   if (_missedDartDraft.mode === 'practice_manual_event') {
     closeMissedDartModal();
@@ -3166,6 +3405,7 @@ function submitMissedDartModal() {
       multiplier: built.multiplier,
       number: built.number,
       singleRing: built.singleRing,
+      turnSlot,
     };
     if (existing) {
       Object.assign(existing, nextValue);
@@ -3181,6 +3421,7 @@ function submitMissedDartModal() {
         multiplier: built.multiplier,
         number: built.number,
         singleRing: built.singleRing,
+        turnSlot,
       });
     }
   } else {
@@ -3193,6 +3434,7 @@ function submitMissedDartModal() {
       multiplier: built.multiplier,
       number: built.number,
       singleRing: built.singleRing,
+      turnSlot,
     });
   }
 
@@ -3218,11 +3460,23 @@ async function finishPracticeTurn() {
 }
 
 async function continueGameTurnReview() {
-  if (!socket || !socket.connected || !_isX01AccuracyContext() || !_gameTurnReviewReady) return;
-  closePracticeReviewModal();
-  await savePracticeAccuracyReview(true);
-  setStatus('ready', 'Continuing Match…');
-  socket.emit('skip_takeout');
+  if (!socket || !socket.connected || !_isX01AccuracyContext()) return;
+  const action = _currentX01ReviewAction();
+  if (!action) return;
+
+  try {
+    setStatus(action === 'continue_turn' ? 'ready' : 'takeout',
+      action === 'continue_turn' ? 'Continuing Match…' : 'Finishing Turn…');
+    const result = await _submitX01ReviewAction(action);
+    closePracticeReviewModal();
+    if (action === 'finish_turn' && result?.status === 'awaiting_takeout') {
+      showToast('Turn finished from review. Remove darts to continue.', 'ok', 2400);
+    }
+  } catch (err) {
+    console.warn('Failed to apply X01 review action', err);
+    showToast(err?.message || 'Unable to apply X01 review.', 'error', 2800);
+    _syncAccuracyReviewActionButtons();
+  }
 }
 
 // ══════════════════════════════════════════════════════════════════════
@@ -3836,22 +4090,74 @@ async function selectProfile(name) {
   } catch (err) { alert('Select error: ' + err.message); }
 }
 
-let _confirmDeleteName = null;
+let _confirmModalResolve = null;
 
-function deleteProfile(name) {
-  _confirmDeleteName = name;
+function isConfirmModalOpen() {
   const modal = document.getElementById('confirm-modal');
-  const label = document.getElementById('confirm-delete-name');
-  if (label) label.textContent = `"${name}"`;
-  if (modal) modal.style.display = 'flex';
+  return !!modal && modal.style.display === 'flex';
 }
 
-async function closeConfirmModal(confirmed) {
+function showConfirmModal(options = {}) {
+  const modal = document.getElementById('confirm-modal');
+  const kicker = document.getElementById('confirm-modal-kicker');
+  const icon = document.getElementById('confirm-modal-icon');
+  const title = document.getElementById('confirm-modal-title');
+  const message = document.getElementById('confirm-modal-message');
+  const target = document.getElementById('confirm-modal-target');
+  const confirmBtn = document.getElementById('confirm-modal-confirm');
+  const cancelBtn = document.getElementById('confirm-modal-cancel');
+
+  if (!modal || !title || !message || !confirmBtn || !cancelBtn) {
+    console.warn('[UI] Confirmation modal is unavailable.');
+    return Promise.resolve(false);
+  }
+
+  if (_confirmModalResolve) {
+    _confirmModalResolve(false);
+    _confirmModalResolve = null;
+  }
+
+  if (kicker) kicker.textContent = options.kicker || 'Confirm Action';
+  if (icon) icon.textContent = options.icon || '🗑️';
+  title.textContent = options.title || 'Confirm Action';
+  message.textContent = options.message || 'Are you sure you want to continue?';
+  confirmBtn.textContent = options.confirmText || 'Confirm';
+  cancelBtn.textContent = options.cancelText || 'Cancel';
+
+  if (target) {
+    const targetText = String(options.target ?? '').trim();
+    target.textContent = targetText;
+    target.style.display = targetText ? 'block' : 'none';
+  }
+
+  modal.style.display = 'flex';
+  setTimeout(() => cancelBtn.focus(), 0);
+
+  return new Promise((resolve) => {
+    _confirmModalResolve = resolve;
+  });
+}
+
+function closeConfirmModal(confirmed) {
   const modal = document.getElementById('confirm-modal');
   if (modal) modal.style.display = 'none';
-  if (!confirmed || !_confirmDeleteName) return;
-  const name = _confirmDeleteName;
-  _confirmDeleteName = null;
+  if (_confirmModalResolve) {
+    _confirmModalResolve(Boolean(confirmed));
+    _confirmModalResolve = null;
+  }
+}
+
+async function deleteProfile(name) {
+  const confirmed = await showConfirmModal({
+    kicker: 'Board Profile',
+    icon: '🗑️',
+    title: 'Delete Profile',
+    message: 'Remove this saved board profile from Throw Vision? This action cannot be undone.',
+    target: `"${name}"`,
+    confirmText: 'Delete Profile',
+  });
+  if (!confirmed) return;
+
   try {
     const res = await fetch('/api/board/delete', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -3859,10 +4165,15 @@ async function closeConfirmModal(confirmed) {
     });
     const data = await res.json();
     if (data.ok) {
+      showToast(`Board profile "${name}" deleted.`, 'ok', 2800);
       addLog(`Board profile "${name}" deleted`);
       checkBoardProfile();
-    } else { alert(data.error || 'Delete failed'); }
-  } catch (err) { alert('Delete error: ' + err.message); }
+    } else {
+      showToast(data.error || 'Delete failed.', 'warn', 2800);
+    }
+  } catch (err) {
+    showToast(`Delete error: ${err.message}`, 'warn', 3200);
+  }
 }
 
 // ── Warped Homography Preview (on calibration page) ─────────────────
@@ -4308,19 +4619,164 @@ function _updateTFLunaLive(data) {
 let _selectedGameMode = null;
 let _gameMode = null;        // current active mode
 let _gameOpts = {};           // options for current game
+let _gameFirstPlayer = 1;
+
+const _gameModeCopy = {
+  x01: {
+    kicker: 'X01 Selected',
+    title: 'X01 Match Setup',
+    description: 'Based on 01-game countdown play: reduce your score to exactly zero, with optional double-out finishing for a stricter tournament feel.',
+  },
+  cricket: {
+    kicker: 'Cricket Selected',
+    title: 'Cricket Match Setup',
+    description: 'Standard Cricket closes scoring targets with marks; Random Cricket keeps the same mark logic but changes the live target numbers for each match.',
+  },
+  countup: {
+    kicker: 'Count Up Selected',
+    title: 'Count Up Session Setup',
+    description: 'Count Up totals every round, and Multiple Count-Up boosts later darts in the round for a faster-scoring practice challenge.',
+  },
+};
+
+function setGameFirstPlayer(player) {
+  _gameFirstPlayer = Number(player) === 2 ? 2 : 1;
+  document.getElementById('game-first-player-1')?.classList.toggle('active', _gameFirstPlayer === 1);
+  document.getElementById('game-first-player-2')?.classList.toggle('active', _gameFirstPlayer === 2);
+  updateGameConfigView();
+}
+
+function _isBullOffEnabled() {
+  const input = document.getElementById('match-use-bulloff');
+  return input ? input.checked : true;
+}
+
+function _selectedGameConfig() {
+  if (!_selectedGameMode) return null;
+
+  const config = {
+    mode: _selectedGameMode,
+    bullOff: _isBullOffEnabled(),
+    firstPlayer: _gameFirstPlayer,
+    options: {},
+  };
+
+  if (_selectedGameMode === 'x01') {
+    config.options.starting_score = parseInt(document.getElementById('x01-starting-score')?.value || '501', 10);
+    config.options.finish_rule = String(document.getElementById('x01-finish-rule')?.value || 'straight_out');
+  } else if (_selectedGameMode === 'cricket') {
+    config.options.variant = String(document.getElementById('cricket-variant')?.value || 'standard');
+  } else if (_selectedGameMode === 'countup') {
+    config.options.total_rounds = parseInt(document.getElementById('countup-rounds')?.value || '8', 10);
+    config.options.variant = String(document.getElementById('countup-variant')?.value || 'standard');
+  }
+
+  return config;
+}
+
+function _gameConfigNotes(config) {
+  if (!config) {
+    return ['Choose a mode to see the rules and launch summary.'];
+  }
+
+  const notes = [];
+  notes.push(config.bullOff
+    ? 'Bull-off enabled. The match begins with a bullseye throw to decide who starts.'
+    : `Bull-off disabled. Player ${config.firstPlayer} will throw first immediately.`);
+
+  if (config.mode === 'x01') {
+    const finishText = config.options.finish_rule === 'double_out' ? 'Double Out' : 'Straight Out';
+    notes.push(`${config.options.starting_score} start. Reach exactly zero to win under ${finishText} rules.`);
+    notes.push(finishText === 'Double Out'
+      ? 'A non-double checkout will bust the turn, matching common tournament 501 formats.'
+      : 'Any segment can finish the leg, which keeps the match flow closer to casual straight-out play.');
+  } else if (config.mode === 'cricket') {
+    notes.push(config.options.variant === 'random'
+      ? 'Random Cricket chooses six live scoring numbers plus Bull for this match.'
+      : 'Standard Cricket uses 20 through 15 plus Bull as the live scoring targets.');
+    notes.push('Triples count as three marks, doubles count as two, and scoring only happens on targets your opponent has not closed.');
+  } else if (config.mode === 'countup') {
+    notes.push(`${config.options.total_rounds} rounds total. Each player throws three darts per round.`);
+    notes.push(config.options.variant === 'multiple'
+      ? 'Multiple Count-Up applies x1, x2, and x3 scoring to the first, second, and third dart of every round.'
+      : 'Standard Count Up totals the raw score of every dart across the selected number of rounds.');
+  }
+
+  return notes;
+}
+
+function _gameLaunchSummary(config) {
+  if (!config) return 'Choose a mode to see the launch summary.';
+
+  const summaryBits = [config.bullOff ? 'Bull-off' : `Player ${config.firstPlayer} starts`];
+
+  if (config.mode === 'x01') {
+    summaryBits.push(`${config.options.starting_score}`);
+    summaryBits.push(config.options.finish_rule === 'double_out' ? 'Double Out' : 'Straight Out');
+  } else if (config.mode === 'cricket') {
+    summaryBits.push(config.options.variant === 'random' ? 'Random Cricket' : 'Standard Cricket');
+  } else if (config.mode === 'countup') {
+    summaryBits.push(`${config.options.total_rounds} Rounds`);
+    summaryBits.push(config.options.variant === 'multiple' ? 'Multiple Count-Up' : 'Standard Count Up');
+  }
+
+  return summaryBits.join(' • ');
+}
+
+function updateGameConfigView() {
+  document.querySelectorAll('.game-card').forEach((card) => {
+    card.classList.toggle('selected', card.id === `gc-${_selectedGameMode}`);
+  });
+
+  const config = _selectedGameConfig();
+  const copy = _gameModeCopy[_selectedGameMode] || {
+    kicker: 'Choose a mode',
+    title: 'Select a game from the left',
+    description: 'Each mode exposes real match options supported by the current Throw Vision rules engine.',
+  };
+
+  const kicker = document.getElementById('game-config-kicker');
+  const title = document.getElementById('game-config-title');
+  const desc = document.getElementById('game-config-description');
+  if (kicker) kicker.textContent = copy.kicker;
+  if (title) title.textContent = copy.title;
+  if (desc) desc.textContent = copy.description;
+
+  document.getElementById('config-x01')?.classList.toggle('active', _selectedGameMode === 'x01');
+  document.getElementById('config-cricket')?.classList.toggle('active', _selectedGameMode === 'cricket');
+  document.getElementById('config-countup')?.classList.toggle('active', _selectedGameMode === 'countup');
+
+  const firstPlayerControls = document.getElementById('game-first-player-controls');
+  if (firstPlayerControls) {
+    const show = !_isBullOffEnabled();
+    firstPlayerControls.hidden = !show;
+    firstPlayerControls.style.display = show ? '' : 'none';
+  }
+
+  const notesEl = document.getElementById('game-notes-list');
+  if (notesEl) {
+    notesEl.innerHTML = _gameConfigNotes(config).map((note) =>
+      `<div class="game-note-item">${note}</div>`
+    ).join('');
+  }
+
+  const summaryEl = document.getElementById('game-launch-summary');
+  if (summaryEl) summaryEl.textContent = _gameLaunchSummary(config);
+
+  const startBtn = document.getElementById('btn-start-game');
+  if (startBtn) startBtn.disabled = !_selectedGameMode;
+}
 
 // ── Game Selection ──────────────────────────────────────────────────
 
 function selectGameMode(mode) {
   _selectedGameMode = mode;
-  document.querySelectorAll('.game-card').forEach(c => c.classList.remove('selected'));
-  const card = document.getElementById('gc-' + mode);
-  if (card) card.classList.add('selected');
-  document.getElementById('btn-start-game').disabled = false;
+  updateGameConfigView();
 }
 
 function startGame() {
-  if (!_selectedGameMode) return;
+  const config = _selectedGameConfig();
+  if (!config) return;
   if (!socket || !socket.connected) {
     alert('System is offline');
     return;
@@ -4330,30 +4786,35 @@ function startGame() {
   _gameTurnReviewReady = false;
   _setGameReviewButtonVisible(false);
   closePracticeReviewModal();
-  _gameMode = _selectedGameMode;
-  _gameOpts = {};
+  _gameMode = config.mode;
+  _gameOpts = {
+    ...config.options,
+    bull_off: config.bullOff,
+    first_player: config.firstPlayer,
+  };
   _prevGamePlayer = null;  // Reset turn tracking for new game
-
-  if (_gameMode === 'x01') {
-    _gameOpts.starting_score = parseInt(document.getElementById('x01-starting-score').value);
-  } else if (_gameMode === 'countup') {
-    _gameOpts.total_rounds = parseInt(document.getElementById('countup-rounds').value);
-  }
 
   // Clear any residual dots from previous sessions
   clearBoardDots();
 
-  // Show game page with bullseye phase
+  // Show game page and launch the selected match flow
   showPage('game');
-  document.getElementById('bullseye-phase').style.display = '';
+  document.getElementById('bullseye-phase').style.display = config.bullOff ? '' : 'none';
   document.getElementById('game-active').style.display = 'none';
   document.getElementById('game-result-overlay').style.display = 'none';
 
   // Show opening cameras status immediately before server starts the process
   setStatus('waiting', 'Opening cameras…');
 
-  // Start bullseye throw on server
-  socket.emit('start_bullseye', { mode: _gameMode, options: _gameOpts });
+  if (config.bullOff) {
+    socket.emit('start_bullseye', { mode: _gameMode, options: config.options });
+  } else {
+    socket.emit('start_game', {
+      mode: _gameMode,
+      options: config.options,
+      first_player: config.firstPlayer,
+    });
+  }
 }
 
 function restartGame() {
@@ -4365,9 +4826,22 @@ function restartGame() {
   clearBoardDots();
   document.getElementById('game-result-overlay').style.display = 'none';
   showPage('game');
-  document.getElementById('bullseye-phase').style.display = '';
+  const bullOff = !!_gameOpts.bull_off;
+  const firstPlayer = Number(_gameOpts.first_player || 1);
+  const options = { ..._gameOpts };
+  delete options.bull_off;
+  delete options.first_player;
+  document.getElementById('bullseye-phase').style.display = bullOff ? '' : 'none';
   document.getElementById('game-active').style.display = 'none';
-  socket.emit('start_bullseye', { mode: _gameMode, options: _gameOpts });
+  if (bullOff) {
+    socket.emit('start_bullseye', { mode: _gameMode, options });
+  } else {
+    socket.emit('start_game', {
+      mode: _gameMode,
+      options,
+      first_player: firstPlayer,
+    });
+  }
 }
 
 function endGame() {
@@ -4522,6 +4996,7 @@ let _prevGamePlayer = null;
 
 function onGameState(state) {
   if (state.error) { console.error('Game error:', state.error); return; }
+  _lastGameState = state;
   if (state.type === 'idle') return;
   if (state.type !== 'x01') {
     _gameTurnReviewReady = false;
@@ -4594,47 +5069,288 @@ function onGameOver(state) {
   overlay.style.display = 'flex';
 }
 
+function _setGameModeHeader(tag, title, rules) {
+  const tagEl = document.getElementById('game-mode-tag');
+  const titleEl = document.getElementById('game-mode-title');
+  const rulesEl = document.getElementById('game-mode-rules');
+  if (tagEl) tagEl.textContent = tag;
+  if (titleEl) titleEl.textContent = title;
+  if (rulesEl) rulesEl.textContent = rules;
+}
+
+function _setGameVisualMode(mode) {
+  const gameActive = document.getElementById('game-active');
+  const stage = gameActive?.querySelector('.game-stage');
+  const body = gameActive?.querySelector('.game-body');
+  if (gameActive) gameActive.dataset.mode = mode || '';
+  if (stage) stage.dataset.mode = mode || '';
+  if (body) body.dataset.mode = mode || '';
+}
+
+function _renderGameTurnInfo(state, chips) {
+  const el = document.getElementById('game-turn-info');
+  if (!el) return;
+
+  if (state?.awaiting_takeout) {
+    el.innerHTML = `<span class="game-turn-chip is-alert">${state.turn_info || 'Remove darts from the board!'}</span>`;
+    return;
+  }
+
+  el.innerHTML = chips.join('');
+}
+
+function _renderPlayerMetrics(targetId, metrics) {
+  const el = document.getElementById(targetId);
+  if (!el) return;
+  el.innerHTML = metrics.map((metric) => `
+    <div class="pp-metric-card">
+      <span>${metric.label}</span>
+      <strong>${metric.value}</strong>
+    </div>
+  `).join('');
+}
+
+function _renderPlayerTurn(targetId, darts, mode) {
+  const el = document.getElementById(targetId);
+  if (!el) return;
+  if (!darts || darts.length === 0) {
+    el.innerHTML = '<div class="pp-empty-turn">No darts recorded in the current turn.</div>';
+    return;
+  }
+
+  el.innerHTML = darts.map((dart, index) => {
+    const scoreText = mode === 'countup' && Number(dart.multiplier || 1) > 1
+      ? `${dart.score} pts`
+      : `${dart.score}`;
+    const meta = mode === 'countup' && Number(dart.multiplier || 1) > 1
+      ? `x${dart.multiplier} multiplier`
+      : (dart.points_added ? `+${dart.points_added} pts` : (dart.marks_added ? `${dart.marks_added} marks` : 'Live result'));
+    return `
+      <div class="pp-dart-pill ${dart.bust ? 'is-bust' : ''}">
+        <span class="pp-dart-index">Dart ${index + 1}</span>
+        <strong>${dart.label}</strong>
+        <small>${meta}</small>
+        <em>${dart.bust ? 'BUST' : scoreText}</em>
+      </div>
+    `;
+  }).join('');
+}
+
+function _renderGameThrowStrip(darts, mode) {
+  const el = document.getElementById('game-throw-strip');
+  if (!el) return;
+  const slots = Array.from({ length: 3 }, (_, index) => {
+    const dart = darts[index];
+    if (!dart) {
+      return `
+        <div class="game-throw-card is-empty">
+          <span class="game-throw-kicker">Dart ${index + 1}</span>
+          <strong>No dart</strong>
+          <small>Waiting for detection</small>
+        </div>
+      `;
+    }
+
+    const baseScore = Number(dart.score || 0);
+    const meta = mode === 'countup' && Number(dart.multiplier || 1) > 1
+      ? `Multiplier x${dart.multiplier}`
+      : (dart.points_added
+        ? `Points +${dart.points_added}`
+        : (dart.marks_added ? `Marks ${dart.marks_added}` : 'Recorded'));
+
+    return `
+      <div class="game-throw-card ${dart.bust ? 'is-bust' : ''}">
+        <span class="game-throw-kicker">Dart ${index + 1}</span>
+        <strong>${dart.label}</strong>
+        <small>${meta}</small>
+        <em>${dart.bust ? 'BUST' : `${baseScore}`}</em>
+      </div>
+    `;
+  });
+  el.innerHTML = slots.join('');
+}
+
+function _renderModePanel(kicker, title, bodyHtml) {
+  const el = document.getElementById('game-mode-panel');
+  if (!el) return;
+  el.innerHTML = `
+    <div class="game-mode-panel-card">
+      <div class="game-mode-panel-head">
+        <span>${kicker}</span>
+        <strong>${title}</strong>
+      </div>
+      <div class="game-mode-panel-body">${bodyHtml}</div>
+    </div>
+  `;
+}
+
+function _sumTurnDarts(darts) {
+  return (darts || []).reduce((sum, dart) => sum + (dart && dart.bust ? 0 : Number(dart?.score || 0)), 0);
+}
+
+function _playerTurnHistory(history, player) {
+  return (history || []).filter((turn) => Number(turn.player) === Number(player));
+}
+
+function _x01PlayerStats(state, player) {
+  const turns = _playerTurnHistory(state.turn_history, player);
+  const historyTotal = turns.reduce((sum, turn) => sum + Number(turn.total || 0), 0);
+  const historyDarts = turns.reduce((sum, turn) => sum + ((turn.darts || []).length), 0);
+  const liveTotal = state.current_player === player ? _sumTurnDarts(state.darts_this_turn) : 0;
+  const liveDarts = state.current_player === player ? (state.darts_this_turn || []).length : 0;
+  const scored = historyTotal + liveTotal;
+  const darts = historyDarts + liveDarts;
+  const bestTurn = turns.reduce((best, turn) => Math.max(best, Number(turn.total || 0)), 0);
+  return {
+    avg: darts > 0 ? (scored / darts) : 0,
+    turns: turns.length,
+    darts,
+    bestTurn,
+  };
+}
+
+function _renderX01Chalkboard(history) {
+  if (!history || history.length === 0) {
+    return '<div class="game-panel-empty">No completed turns yet. The chalkboard will fill as the match progresses.</div>';
+  }
+
+  const rows = history.slice(-5).reverse().map((turn) => {
+    const left = turn.busted ? Number(turn.score_before || 0) : Math.max(0, Number(turn.score_before || 0) - Number(turn.total || 0));
+    return `
+      <div class="chalk-row ${turn.busted ? 'is-bust' : ''}">
+        <span>T${turn.turn_index}</span>
+        <span>P${turn.player}</span>
+        <strong>${turn.busted ? 'BUST' : turn.total}</strong>
+        <em>${left}</em>
+      </div>
+    `;
+  }).join('');
+
+  return `
+    <div class="chalk-table">
+      <div class="chalk-head">
+        <span>Turn</span>
+        <span>Player</span>
+        <span>Scored</span>
+        <span>Left</span>
+      </div>
+      ${rows}
+    </div>
+  `;
+}
+
+function _renderCricketMarks(count) {
+  const safeCount = Math.max(0, Math.min(3, Number(count || 0)));
+  return `
+    <span class="cricket-mark ${safeCount >= 1 ? 'is-hit' : ''}"></span>
+    <span class="cricket-mark ${safeCount >= 2 ? 'is-hit' : ''}"></span>
+    <span class="cricket-mark ${safeCount >= 3 ? 'is-hit is-closed' : ''}"></span>
+  `;
+}
+
+function _renderCricketBoard(state) {
+  const numbers = state.numbers || [];
+  if (numbers.length === 0) {
+    return '<div class="game-panel-empty">No Cricket targets are active for this match.</div>';
+  }
+
+  return `
+    <div class="cricket-board">
+      <div class="cricket-board-head">
+        <span>Player 1</span>
+        <span>Target</span>
+        <span>Player 2</span>
+      </div>
+      ${numbers.map((number) => {
+        const key = String(number);
+        const p1 = Number(state.marks?.[0]?.[key] || 0);
+        const p2 = Number(state.marks?.[1]?.[key] || 0);
+        return `
+          <div class="cricket-board-row">
+            <div class="cricket-board-marks">${_renderCricketMarks(p1)}</div>
+            <strong>${number === 25 ? 'Bull' : number}</strong>
+            <div class="cricket-board-marks">${_renderCricketMarks(p2)}</div>
+          </div>
+        `;
+      }).join('')}
+    </div>
+  `;
+}
+
+function _renderCountupBoard(state) {
+  const totalRounds = Number(state.total_rounds || 0);
+  const rows = Array.from({ length: totalRounds }, (_, index) => {
+    const p1Round = state.round_scores?.[0]?.[index];
+    const p2Round = state.round_scores?.[1]?.[index];
+    const currentRound = index + 1 === Number(state.current_round || 1);
+    return `
+      <div class="countup-board-row ${currentRound ? 'is-current' : ''}">
+        <span>R${index + 1}</span>
+        <strong>${p1Round ? p1Round.total : '—'}</strong>
+        <strong>${p2Round ? p2Round.total : '—'}</strong>
+      </div>
+    `;
+  }).join('');
+
+  return `
+    <div class="countup-board">
+      <div class="countup-board-head">
+        <span>Round</span>
+        <span>P1</span>
+        <span>P2</span>
+      </div>
+      ${rows}
+    </div>
+  `;
+}
+
 // ── X01 Renderer ────────────────────────────────────────────────────
 
 function renderX01State(s) {
-  document.getElementById('game-title').textContent = s.starting_score + ' Game';
-  document.getElementById('cricket-grid').style.display = 'none';
-  document.getElementById('game-countup-rounds').style.display = 'none';
-  const gb = document.querySelector('.game-body');
-  gb?.classList.remove('cricket-mode');
-  gb?.classList.remove('countup-mode');
+  const finishRule = s.finish_rule === 'double_out' ? 'Double Out' : 'Straight Out';
+  const turnTotal = _sumTurnDarts(s.darts_this_turn);
+  const p1Stats = _x01PlayerStats(s, 1);
+  const p2Stats = _x01PlayerStats(s, 2);
 
-  // Scores
+  _setGameVisualMode('x01');
+  document.getElementById('game-title').textContent = `${s.starting_score} Match`;
+  _setGameModeHeader('X01 MATCH', `${s.starting_score} Countdown`, `${s.starting_score} start • ${finishRule}`);
+
+  document.getElementById('pp1-score-label').textContent = 'Remaining';
+  document.getElementById('pp2-score-label').textContent = 'Remaining';
   document.getElementById('pp1-score').textContent = s.scores[0];
   document.getElementById('pp2-score').textContent = s.scores[1];
+  document.getElementById('pp1-subline').textContent = `Match Avg ${p1Stats.avg.toFixed(2)}`;
+  document.getElementById('pp2-subline').textContent = `Match Avg ${p2Stats.avg.toFixed(2)}`;
 
-  // Current player indicators
-  document.getElementById('pp1-indicator').textContent = s.current_player === 1 ? '◀ Throwing' : '';
-  document.getElementById('pp2-indicator').textContent = s.current_player === 2 ? 'Throwing ▶' : '';
-
+  document.getElementById('pp1-indicator').textContent = s.current_player === 1 ? 'Throwing' : 'Waiting';
+  document.getElementById('pp2-indicator').textContent = s.current_player === 2 ? 'Throwing' : 'Waiting';
   document.getElementById('player-panel-1').classList.toggle('active-turn', s.current_player === 1);
   document.getElementById('player-panel-2').classList.toggle('active-turn', s.current_player === 2);
 
-  // Darts this turn
-  const dartsEl = s.current_player === 1 ?
-    document.getElementById('pp1-darts') :
-    document.getElementById('pp2-darts');
-  const otherDartsEl = s.current_player === 1 ?
-    document.getElementById('pp2-darts') :
-    document.getElementById('pp1-darts');
+  _renderPlayerMetrics('pp1-metrics', [
+    { label: 'Turns', value: p1Stats.turns },
+    { label: 'Darts', value: p1Stats.darts },
+    { label: 'Best Turn', value: p1Stats.bestTurn },
+  ]);
+  _renderPlayerMetrics('pp2-metrics', [
+    { label: 'Turns', value: p2Stats.turns },
+    { label: 'Darts', value: p2Stats.darts },
+    { label: 'Best Turn', value: p2Stats.bestTurn },
+  ]);
 
-  dartsEl.innerHTML = s.darts_this_turn.map((d, i) =>
-    `<span class="dart-chip ${d.bust ? 'bust' : ''}">${d.label} (${d.score})</span>`
-  ).join('');
-  otherDartsEl.innerHTML = '';
+  _renderPlayerTurn('pp1-darts', s.current_player === 1 ? s.darts_this_turn : [], 'x01');
+  _renderPlayerTurn('pp2-darts', s.current_player === 2 ? s.darts_this_turn : [], 'x01');
+  _renderGameThrowStrip(s.darts_this_turn || [], 'x01');
 
-  // Turn info
-  const turnInfo = document.getElementById('game-turn-info');
-  const turnTotal = s.darts_this_turn.reduce((sum, d) => sum + (d.bust ? 0 : d.score), 0);
-  turnInfo.innerHTML = `<span>Turn: ${turnTotal}</span> <span>Darts: ${s.darts_this_turn.length}/3</span>`;
+  _renderGameTurnInfo(s, [
+    `<span class="game-turn-chip">Player ${s.current_player} Throwing</span>`,
+    `<span class="game-turn-chip">Turn ${turnTotal}</span>`,
+    `<span class="game-turn-chip">${(s.darts_this_turn || []).length}/3 darts</span>`,
+  ]);
 
-  // History
-  renderTurnHistory(s.turn_history);
+  _renderModePanel('Chalkboard', 'Last 5 turns', _renderX01Chalkboard(s.turn_history || []));
+  renderTurnHistory(s.turn_history, 'x01');
 }
 
 // ── Cricket Renderer ────────────────────────────────────────────────
@@ -4642,73 +5358,57 @@ function renderX01State(s) {
 const CRICKET_DISPLAY = { 15: '15', 16: '16', 17: '17', 18: '18', 19: '19', 20: '20', 25: 'Bull' };
 
 function renderCricketState(s) {
-  document.getElementById('game-title').textContent = 'Cricket';
-  // In new design, marks live inside player panels — hide the old center grid
-  document.getElementById('cricket-grid').style.display = 'none';
-  document.getElementById('game-countup-rounds').style.display = 'none';
-  document.querySelector('.game-body')?.classList.add('cricket-mode');
+  const numbers = s.numbers || [15, 16, 17, 18, 19, 20, 25];
+  const currentDarts = s.darts_this_turn || [];
+  const p1Closed = numbers.filter((number) => Number(s.marks?.[0]?.[String(number)] || 0) >= 3).length;
+  const p2Closed = numbers.filter((number) => Number(s.marks?.[1]?.[String(number)] || 0) >= 3).length;
+  const p1Marks = numbers.reduce((sum, number) => sum + Number(s.marks?.[0]?.[String(number)] || 0), 0);
+  const p2Marks = numbers.reduce((sum, number) => sum + Number(s.marks?.[1]?.[String(number)] || 0), 0);
 
-  // Turn info
-  const turnInfo = document.getElementById('game-turn-info');
-  if (turnInfo) {
-    const darts = (s.darts_this_turn || []);
-    const turnTotal = darts.reduce((sum, d) => sum + (d.score || 0), 0);
-    turnInfo.innerHTML = `<span>Darts: ${darts.length}/3</span>${turnTotal > 0 ? `<span class="gt-turn-pts">+${turnTotal}</span>` : ''}`;
-  }
+  _setGameVisualMode('cricket');
+  document.getElementById('game-title').textContent = 'Cricket Match';
+  _setGameModeHeader(
+    'CRICKET MATCH',
+    s.variant === 'random' ? 'Random Cricket' : 'Standard Cricket',
+    numbers.map((number) => CRICKET_DISPLAY[number] || number).join(' • ')
+  );
 
-  // Points (scores)
+  document.getElementById('pp1-score-label').textContent = 'Points';
+  document.getElementById('pp2-score-label').textContent = 'Points';
   document.getElementById('pp1-score').textContent = s.points[0];
   document.getElementById('pp2-score').textContent = s.points[1];
+  document.getElementById('pp1-subline').textContent = `${p1Closed}/${numbers.length} targets closed`;
+  document.getElementById('pp2-subline').textContent = `${p2Closed}/${numbers.length} targets closed`;
 
-  // Active turn highlight
-  document.getElementById('pp1-indicator').textContent = s.current_player === 1 ? '▶ Throwing' : '';
-  document.getElementById('pp2-indicator').textContent = s.current_player === 2 ? '▶ Throwing' : '';
+  document.getElementById('pp1-indicator').textContent = s.current_player === 1 ? 'Throwing' : 'Waiting';
+  document.getElementById('pp2-indicator').textContent = s.current_player === 2 ? 'Throwing' : 'Waiting';
   document.getElementById('player-panel-1').classList.toggle('active-turn', s.current_player === 1);
   document.getElementById('player-panel-2').classList.toggle('active-turn', s.current_player === 2);
 
-  // Render cricket mark rows inside each player's darts container
-  const numbers = s.numbers || [15, 16, 17, 18, 19, 20, 25];
-  const CRICKET_DISPLAY = { 15: '15', 16: '16', 17: '17', 18: '18', 19: '19', 20: '20', 25: 'Bull' };
+  _renderPlayerMetrics('pp1-metrics', [
+    { label: 'Marks', value: p1Marks },
+    { label: 'Closed', value: p1Closed },
+    { label: 'Turns', value: _playerTurnHistory(s.turn_history, 1).length },
+  ]);
+  _renderPlayerMetrics('pp2-metrics', [
+    { label: 'Marks', value: p2Marks },
+    { label: 'Closed', value: p2Closed },
+    { label: 'Turns', value: _playerTurnHistory(s.turn_history, 2).length },
+  ]);
 
-  function buildMarkRows(marks, darts_this_turn, playerIdx) {
-    const isActive = s.current_player === playerIdx + 1;
-    const rows = numbers.map(n => {
-      const key = String(n);
-      const m = (marks[playerIdx] || {})[key] || 0;
-      const label = CRICKET_DISPLAY[n] || n;
-      const closed = m >= 3;
+  _renderPlayerTurn('pp1-darts', s.current_player === 1 ? currentDarts : [], 'cricket');
+  _renderPlayerTurn('pp2-darts', s.current_player === 2 ? currentDarts : [], 'cricket');
+  _renderGameThrowStrip(currentDarts, 'cricket');
 
-      // 3 dot indicators
-      const dots = [1, 2, 3].map(i => {
-        if (closed) return `<span class="cr-dot cr-dot-closed">✕</span>`;
-        if (i === 1 && m >= 1) return `<span class="cr-dot cr-dot-hit cr-dot-slash">/</span>`;
-        if (i === 2 && m >= 2) return `<span class="cr-dot cr-dot-hit">✕</span>`;
-        return `<span class="cr-dot cr-dot-empty"></span>`;
-      }).join('');
+  const turnPoints = currentDarts.reduce((sum, dart) => sum + Number(dart.points_added || 0), 0);
+  _renderGameTurnInfo(s, [
+    `<span class="game-turn-chip">Player ${s.current_player} Throwing</span>`,
+    `<span class="game-turn-chip">${currentDarts.length}/3 darts</span>`,
+    `<span class="game-turn-chip">${turnPoints > 0 ? `+${turnPoints} points` : 'Marking targets'}</span>`,
+  ]);
 
-      return `
-        <div class="cr-target-row${closed ? ' cr-closed' : ''}">
-          <span class="cr-num">${label}</span>
-          <span class="cr-dots">${dots}</span>
-          ${closed ? '<span class="cr-closed-badge">CLOSED</span>' : ''}
-        </div>`;
-    }).join('');
-
-    // Darts this turn (shown for active player only)
-    let dartsHtml = '';
-    if (isActive && darts_this_turn && darts_this_turn.length > 0) {
-      dartsHtml = `<div class="cr-darts-row">${darts_this_turn.map(d =>
-        `<span class="dart-chip cr-dart-chip">${d.label}</span>`
-      ).join('')}</div>`;
-    }
-
-    return `<div class="cr-marks-panel">${rows}</div>${dartsHtml}`;
-  }
-
-  document.getElementById('pp1-darts').innerHTML = buildMarkRows(s.marks, s.darts_this_turn, 0);
-  document.getElementById('pp2-darts').innerHTML = buildMarkRows(s.marks, s.darts_this_turn, 1);
-
-  renderTurnHistory(s.turn_history);
+  _renderModePanel('Target Board', s.variant === 'random' ? 'Random target set' : 'Standard targets', _renderCricketBoard(s));
+  renderTurnHistory(s.turn_history, 'cricket');
 }
 
 
@@ -4722,98 +5422,94 @@ function cricketMarksDisplay(count) {
 // ── Count Up Renderer ───────────────────────────────────────────────
 
 function renderCountUpState(s) {
-  document.getElementById('game-title').textContent = 'Count Up';
-  document.getElementById('cricket-grid').style.display = 'none';
-  // Hide the old center round table — we render inside player panels now
-  document.getElementById('game-countup-rounds').style.display = 'none';
-  const gb = document.querySelector('.game-body');
-  gb?.classList.remove('cricket-mode');
-  gb?.classList.add('countup-mode');
+  const turnDarts = s.darts_this_turn || [];
+  const turnTotal = _sumTurnDarts(turnDarts);
+  const p1Rounds = s.round_scores?.[0] || [];
+  const p2Rounds = s.round_scores?.[1] || [];
+  const p1Best = p1Rounds.reduce((best, round) => Math.max(best, Number(round.total || 0)), 0);
+  const p2Best = p2Rounds.reduce((best, round) => Math.max(best, Number(round.total || 0)), 0);
+  const p1Avg = p1Rounds.length ? (s.scores[0] / p1Rounds.length) : 0;
+  const p2Avg = p2Rounds.length ? (s.scores[1] / p2Rounds.length) : 0;
 
-  // Scores
+  _setGameVisualMode('countup');
+  document.getElementById('game-title').textContent = 'Count Up Match';
+  _setGameModeHeader(
+    'COUNT UP',
+    s.variant === 'multiple' ? 'Multiple Count-Up' : 'Standard Count Up',
+    `${s.total_rounds} rounds • ${s.variant === 'multiple' ? 'x1 / x2 / x3 scoring' : 'Raw scoring'}`
+  );
+
+  document.getElementById('pp1-score-label').textContent = 'Total';
+  document.getElementById('pp2-score-label').textContent = 'Total';
   document.getElementById('pp1-score').textContent = s.scores[0];
   document.getElementById('pp2-score').textContent = s.scores[1];
+  document.getElementById('pp1-subline').textContent = `Avg / Round ${p1Avg.toFixed(1)}`;
+  document.getElementById('pp2-subline').textContent = `Avg / Round ${p2Avg.toFixed(1)}`;
 
-  document.getElementById('pp1-indicator').textContent = s.current_player === 1 ? '▶ Throwing' : '';
-  document.getElementById('pp2-indicator').textContent = s.current_player === 2 ? '▶ Throwing' : '';
-
+  document.getElementById('pp1-indicator').textContent = s.current_player === 1 ? 'Throwing' : 'Waiting';
+  document.getElementById('pp2-indicator').textContent = s.current_player === 2 ? 'Throwing' : 'Waiting';
   document.getElementById('player-panel-1').classList.toggle('active-turn', s.current_player === 1);
   document.getElementById('player-panel-2').classList.toggle('active-turn', s.current_player === 2);
 
-  // Round / turn info in center
-  const curRound = s.current_round || 1;
-  const turnDarts = s.darts_this_turn || [];
-  const turnTotal = turnDarts.reduce((sum, d) => sum + (d.score || 0), 0);
-  const turnInfo = document.getElementById('game-turn-info');
-  if (turnInfo) {
-    turnInfo.innerHTML =
-      `<span class="cu-round-badge">Round ${curRound} <span class="cu-round-of">/ ${s.total_rounds}</span></span>` +
-      `<span class="cu-dart-count">${turnDarts.length}/3 darts</span>` +
-      (turnTotal > 0 ? `<span class="cu-turn-pts">+${turnTotal}</span>` : '');
-  }
+  _renderPlayerMetrics('pp1-metrics', [
+    { label: 'Rounds', value: p1Rounds.length },
+    { label: 'Best Round', value: p1Best },
+    { label: 'Darts', value: _playerTurnHistory(s.turn_history, 1).reduce((sum, turn) => sum + ((turn.darts || []).length), 0) },
+  ]);
+  _renderPlayerMetrics('pp2-metrics', [
+    { label: 'Rounds', value: p2Rounds.length },
+    { label: 'Best Round', value: p2Best },
+    { label: 'Darts', value: _playerTurnHistory(s.turn_history, 2).reduce((sum, turn) => sum + ((turn.darts || []).length), 0) },
+  ]);
 
-  // Build per-player panel content: round history cards + live darts
-  function buildPlayerPanel(playerIdx) {
-    const isActive = s.current_player === playerIdx + 1;
-    const roundScores = s.round_scores[playerIdx] || [];
+  _renderPlayerTurn('pp1-darts', s.current_player === 1 ? turnDarts : [], 'countup');
+  _renderPlayerTurn('pp2-darts', s.current_player === 2 ? turnDarts : [], 'countup');
+  _renderGameThrowStrip(turnDarts, 'countup');
 
-    let rows = '';
-    for (let i = 0; i < s.total_rounds; i++) {
-      const r = roundScores[i];
-      const isCurrent = (i + 1) === curRound;
-      const isPast    = r && r.total !== undefined;
+  _renderGameTurnInfo(s, [
+    `<span class="game-turn-chip">Round ${s.current_round} / ${s.total_rounds}</span>`,
+    `<span class="game-turn-chip">Player ${s.current_player} Throwing</span>`,
+    `<span class="game-turn-chip">Turn ${turnTotal}</span>`,
+  ]);
 
-      let scoreHtml;
-      if (isPast) {
-        const cls = r.total >= 100 ? 'cu-score-high' : (r.total <= 20 ? 'cu-score-low' : '');
-        scoreHtml = `<span class="cu-panel-score ${cls}">${r.total}</span>`;
-      } else if (isCurrent) {
-        scoreHtml = `<span class="cu-panel-score cu-score-pending">\u2026</span>`;
-      } else {
-        scoreHtml = `<span class="cu-panel-score cu-score-low">\u2014</span>`;
-      }
-
-      const dartsRow = isPast && (r.darts || []).length > 0
-        ? `<span class="cu-panel-darts">${(r.darts || []).map(d =>
-            `<span class="cu-dart-pill">${d.label}</span>`).join('')}</span>`
-        : '';
-
-      rows += `<div class="cu-panel-row${isCurrent ? ' cu-panel-current' : ''}${isPast ? ' cu-panel-done' : ''}">` +
-        `<span class="cu-panel-rd">RD ${i + 1}</span>` +
-        scoreHtml +
-        dartsRow +
-        `</div>`;
-    }
-
-    const dartsHtml = isActive && turnDarts.length > 0
-      ? `<div class="cu-live-darts">${turnDarts.map(d =>
-          `<span class="dart-chip cu-dart-chip">${d.label}<span class="cu-chip-pts">${d.score}</span></span>`
-        ).join('')}</div>`
-      : '';
-
-    return `<div class="cu-rounds-panel">${rows}</div>${dartsHtml}`;
-  }
-
-
-  document.getElementById('pp1-darts').innerHTML = buildPlayerPanel(0);
-  document.getElementById('pp2-darts').innerHTML = buildPlayerPanel(1);
-
-  renderTurnHistory(s.turn_history);
+  _renderModePanel('Round Board', 'Score by round', _renderCountupBoard(s));
+  renderTurnHistory(s.turn_history, 'countup');
 }
 
 // ── Shared: Turn History ────────────────────────────────────────────
 
-function renderTurnHistory(history) {
+function renderTurnHistory(history, mode = 'x01') {
   const el = document.getElementById('game-history');
-  if (!el || !history) return;
-  el.innerHTML = history.map(t => {
-    const cls = t.busted ? 'gh-busted' : '';
-    const darts = (t.darts || []).map(d => d.label).join(', ');
-    return `<div class="gh-row ${cls}">
-      <span class="gh-player">P${t.player}</span>
-      <span class="gh-darts">${darts}</span>
-      <span class="gh-total">${t.busted ? 'BUST' : (t.total || 0)}</span>
-    </div>`;
+  const caption = document.getElementById('game-history-caption');
+  if (!el) return;
+
+  if (caption) {
+    caption.textContent = mode === 'countup'
+      ? 'Latest completed rounds'
+      : (mode === 'cricket' ? 'Latest completed turns' : 'Latest scoring turns');
+  }
+
+  if (!history || history.length === 0) {
+    el.innerHTML = '<div class="game-history-empty">No completed turns yet. Match history will appear here.</div>';
+    return;
+  }
+
+  el.innerHTML = history.slice().reverse().map((turn) => {
+    const darts = (turn.darts || []).map((dart) => dart.label).join(' • ');
+    const total = turn.busted ? 'BUST' : (turn.total || 0);
+    const meta = mode === 'countup'
+      ? `Round ${turn.round || turn.turn_index || '—'}`
+      : `Turn ${turn.turn_index || '—'}`;
+    return `
+      <div class="gh-card ${turn.busted ? 'is-busted' : ''}">
+        <div class="gh-topline">
+          <span class="gh-player">Player ${turn.player}</span>
+          <span class="gh-meta">${meta}</span>
+        </div>
+        <div class="gh-darts">${darts || 'No darts'}</div>
+        <div class="gh-total">${total}</div>
+      </div>
+    `;
   }).join('');
 }
 
@@ -5096,7 +5792,15 @@ function renderAccuracyStats(data) {
 }
 
 async function resetGameStats() {
-  if (!window.confirm('Delete all saved game statistics and match history?')) return;
+  const confirmed = await showConfirmModal({
+    kicker: 'Game Statistics',
+    icon: '⚠️',
+    title: 'Reset Game Stats',
+    message: 'Delete all saved game statistics and match history? This action cannot be undone.',
+    confirmText: 'Reset Stats',
+  });
+  if (!confirmed) return;
+
   try {
     const res = await fetch('/api/stats/reset', { method: 'POST' });
     if (!res.ok) throw new Error('reset failed');
@@ -5109,7 +5813,15 @@ async function resetGameStats() {
 
 async function deleteGameStat(gameId) {
   if (!gameId) return;
-  if (!window.confirm('Delete this saved match from history?')) return;
+  const confirmed = await showConfirmModal({
+    kicker: 'Match History',
+    icon: '🗑️',
+    title: 'Delete Saved Match',
+    message: 'Delete this saved match from history? The stored result for this entry will be permanently removed.',
+    confirmText: 'Delete Match',
+  });
+  if (!confirmed) return;
+
   try {
     const res = await fetch(`/api/stats/game/${gameId}`, { method: 'DELETE' });
     if (!res.ok) throw new Error('delete failed');
@@ -5121,7 +5833,15 @@ async function deleteGameStat(gameId) {
 }
 
 async function resetAccuracyStats() {
-  if (!window.confirm('Delete all saved accuracy review sessions?')) return;
+  const confirmed = await showConfirmModal({
+    kicker: 'Accuracy Review',
+    icon: '⚠️',
+    title: 'Reset Accuracy Stats',
+    message: 'Delete all saved accuracy review sessions? This action cannot be undone.',
+    confirmText: 'Reset Accuracy',
+  });
+  if (!confirmed) return;
+
   try {
     const res = await fetch('/api/accuracy/reset', { method: 'POST' });
     if (!res.ok) throw new Error('reset failed');

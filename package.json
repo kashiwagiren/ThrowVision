@@ -1,6 +1,6 @@
 {
   "name": "throwvision",
-  "version": "1.3.0",
+  "version": "1.3.5",
   "description": "Real-Time, Vision-Based Automated Scoring System for Steel-Tip Darts",
   "main": "electron/main.js",
   "scripts": {

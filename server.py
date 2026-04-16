@@ -16,6 +16,7 @@ import base64
 import json
 import math
 import os
+import random
 import threading
 import time
 import traceback
@@ -2127,13 +2128,52 @@ def _create_game(mode: str, options: dict):
     """Factory for game instances."""
     if mode == "x01":
         starting = int(options.get("starting_score", 501))
-        return GameX01(starting_score=starting)
+        finish_rule = str(options.get("finish_rule", "straight_out") or "straight_out")
+        return GameX01(starting_score=starting, finish_rule=finish_rule)
     elif mode == "cricket":
-        return GameCricket()
+        variant = str(options.get("variant", "standard") or "standard")
+        target_numbers = None
+        if variant == "random":
+            target_numbers = sorted(random.sample(range(1, 21), 6), reverse=True) + [25]
+        return GameCricket(variant=variant, target_numbers=target_numbers)
     elif mode == "countup":
         rounds = int(options.get("total_rounds", 8))
-        return GameCountUp(total_rounds=rounds)
+        variant = str(options.get("variant", "standard") or "standard")
+        return GameCountUp(total_rounds=rounds, variant=variant)
     return None
+
+
+def _build_x01_takeout_state(game_state: dict, previous_player: int) -> dict:
+    """Show the finished turn while holding back the next-player state."""
+    held_back = dict(game_state)
+    held_back["current_player"] = previous_player + 1
+    held_back["awaiting_takeout"] = True
+    held_back["turn_info"] = "Remove darts from the board!"
+    if game_state.get("turn_history"):
+        last_turn = game_state["turn_history"][-1]
+        held_back["darts_this_turn"] = last_turn.get("darts", [])
+    return held_back
+
+
+def _queue_x01_turn_takeout(game_state: dict, previous_player: int, *, emit_state: bool = True) -> dict:
+    """Enter the between-turn takeout flow for X01."""
+    global _awaiting_takeout, _takeout_hand_seen, _takeout_ready_at, _takeout_reason
+    global _needs_takeout_init, _pending_turn_state, _turn_continue_pending, _detection_paused
+
+    held_back = _build_x01_takeout_state(game_state, previous_player)
+    if emit_state:
+        socketio.emit("game_state", held_back)
+
+    _pending_turn_state = game_state
+    _awaiting_takeout = True
+    _takeout_hand_seen = False
+    _takeout_ready_at = time.time() + 3.0
+    _takeout_reason = "turn"
+    _needs_takeout_init = True
+    _turn_continue_pending = False
+    _detection_paused = False
+    socketio.emit("turn_takeout", {"message": "Remove darts from the board!"})
+    return held_back
 
 
 _awaiting_takeout: bool = False
@@ -2634,6 +2674,111 @@ def api_accuracy_review():
     return jsonify({"ok": True, "turn": turn})
 
 
+@app.route("/api/accuracy/review/x01-action", methods=["POST"])
+def api_accuracy_review_x01_action():
+    global _pending_turn_state, _awaiting_takeout, _takeout_hand_seen, _takeout_reason
+    global _turn_continue_pending, _detection_paused
+
+    data = request.get_json(silent=True) or {}
+    session_id = str(data.get("session_id") or "")
+    turn_id = str(data.get("turn_id") or "")
+    action = str(data.get("action") or "").strip().lower()
+    actual_darts = data.get("actual_darts") or []
+
+    if not session_id or not turn_id:
+        return jsonify({"ok": False, "error": "session_id and turn_id are required"}), 400
+    if action not in {"finish_turn", "continue_turn"}:
+        return jsonify({"ok": False, "error": "Unsupported X01 review action"}), 400
+    if _game_mode != "x01" or _game is None:
+        return jsonify({"ok": False, "error": "No active X01 game"}), 409
+
+    turn = accuracy_stats.update_review(
+        session_id,
+        turn_id,
+        actual_darts,
+        notes=str(data.get("notes") or ""),
+    )
+    if turn is None:
+        return jsonify({"ok": False, "error": "Accuracy turn not found"}), 404
+
+    if action == "finish_turn":
+        if _turn_continue_pending or (_awaiting_takeout and _takeout_reason == "turn"):
+            return jsonify({"ok": False, "error": "Turn is already awaiting takeout"}), 409
+        previous_player = _game.current_player
+        game_state = _game.apply_reviewed_current_turn(actual_darts, force_end=True)
+
+        if _game.is_finished:
+            socketio.emit("game_state", game_state)
+            socketio.emit("game_over", game_state)
+            try:
+                game_stats.save_game(_game.stats_summary())
+            except Exception as e:
+                print(f"[STATS] Error saving: {e}")
+            return jsonify({
+                "ok": True,
+                "action": action,
+                "status": "game_over",
+                "turn": turn,
+                "game_state": game_state,
+            })
+
+        if _game.current_player == previous_player:
+            socketio.emit("game_state", game_state)
+            return jsonify({
+                "ok": False,
+                "action": action,
+                "error": "Reviewed turn is not ready to finish yet",
+                "turn": turn,
+                "game_state": game_state,
+            }), 409
+
+        held_back = _queue_x01_turn_takeout(game_state, previous_player, emit_state=True)
+        print("[GAME] X01 review finished a live turn — awaiting takeout")
+        return jsonify({
+            "ok": True,
+            "action": action,
+            "status": "awaiting_takeout",
+            "turn": turn,
+            "game_state": held_back,
+        })
+
+    if not _turn_continue_pending:
+        return jsonify({"ok": False, "error": "Turn is not ready to continue"}), 409
+
+    game_state = _game.apply_reviewed_last_turn(actual_darts)
+    if _game.is_finished:
+        _pending_turn_state = None
+        _awaiting_takeout = False
+        _takeout_hand_seen = False
+        _takeout_reason = ""
+        _turn_continue_pending = False
+        _detection_paused = False
+        socketio.emit("detection_state", {"paused": False})
+        socketio.emit("game_state", game_state)
+        socketio.emit("game_over", game_state)
+        try:
+            game_stats.save_game(_game.stats_summary())
+        except Exception as e:
+            print(f"[STATS] Error saving: {e}")
+        return jsonify({
+            "ok": True,
+            "action": action,
+            "status": "game_over",
+            "turn": turn,
+            "game_state": game_state,
+        })
+
+    _pending_turn_state = game_state
+    on_skip_takeout()
+    return jsonify({
+        "ok": True,
+        "action": action,
+        "status": "continued",
+        "turn": turn,
+        "game_state": game_state,
+    })
+
+
 @app.route("/api/accuracy/reset", methods=["POST"])
 def api_accuracy_reset():
     _end_accuracy_session(finalize_open_turn=False)
@@ -2725,27 +2870,7 @@ def _emit_dart(label: str, score: int, x_mm: float, y_mm: float,
             except Exception as e:
                 print(f'[STATS] Error saving: {e}')
         elif _game.current_player != prev_player:
-            # Turn ended — hold back new game_state until darts are removed
-            # Emit only the current score, keeping same current_player display
-            held_back = dict(game_state)
-            held_back['current_player'] = prev_player + 1   # 1-indexed, stay on old player
-
-            held_back['awaiting_takeout'] = True
-            held_back['turn_info'] = 'Remove darts from the board!'
-            # Restore the just-thrown darts for display — _end_turn() moves them
-            # to turn_history so darts_this_turn is [] in the new game_state.
-            # Pull them back so dart chips stay visible during takeout wait.
-            if game_state.get('turn_history'):
-                last_turn = game_state['turn_history'][-1]
-                held_back['darts_this_turn'] = last_turn.get('darts', [])
-            socketio.emit('game_state', held_back)           # score update, same player
-            _pending_turn_state = game_state                 # emit this after takeout
-            _awaiting_takeout = True
-            _takeout_hand_seen = False
-            _takeout_ready_at = time.time() + 3.0
-            _takeout_reason = 'turn'
-            _needs_takeout_init = True
-            socketio.emit('turn_takeout', {'message': 'Remove darts from the board!'})
+            _queue_x01_turn_takeout(game_state, prev_player)
             print(f"[GAME] Turn ended — awaiting takeout before Player {_game.current_player + 1} throws")
         else:
             socketio.emit('game_state', game_state)          # mid-turn dart, emit normally

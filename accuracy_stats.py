@@ -113,6 +113,7 @@ def _sanitize_actual(actual: dict) -> dict:
     label = str(actual.get("label") or "").upper()
     score = _safe_int(actual.get("score"), 0)
     prediction_id = actual.get("prediction_id")
+    turn_slot = _safe_int(actual.get("turn_slot"), 0)
     return {
         "id": str(actual.get("id") or _new_id("actual")),
         "prediction_id": str(prediction_id) if prediction_id else None,
@@ -122,6 +123,7 @@ def _sanitize_actual(actual: dict) -> dict:
         "multiplier": actual.get("multiplier"),
         "number": _safe_int(actual.get("number"), 0) if actual.get("number") is not None else None,
         "single_ring": actual.get("single_ring"),
+        "turn_slot": turn_slot if 1 <= turn_slot <= 3 else None,
         "created_at": _safe_float(actual.get("created_at")) or _now(),
     }
 
