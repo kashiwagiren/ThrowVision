@@ -125,7 +125,8 @@
         <div class="game-config-head">
           <span class="game-config-kicker" id="game-config-kicker">Choose a mode</span>
           <h3 id="game-config-title">Select a game from the left</h3>
-          <p id="game-config-description">Each mode exposes real match options supported by the current Throw Vision rules engine.</p>
+          <p id="game-config-description">Each mode exposes real match options supported by the current Throw Vision
+            rules engine.</p>
         </div>
 
         <div class="game-config-body">
@@ -257,18 +258,18 @@
         <div class="bullseye-player" id="bullseye-p1">
           <div class="bp-label">Player 1</div>
           <div class="bp-color" style="background:#ef4444"></div>
-          <div class="bp-distance" id="bp1-distance">—</div>
           <div class="bp-score" id="bp1-label"></div>
+          <div class="bp-distance" id="bp1-distance">—</div>
         </div>
         <div class="bullseye-center">
-          <svg id="bullseye-board" viewBox="0 0 442 440" class="dartboard bullseye-dartboard"></svg>
+          <div class="bullseye-vs">VS</div>
           <div class="bullseye-prompt" id="bullseye-prompt">Waiting...</div>
         </div>
         <div class="bullseye-player" id="bullseye-p2">
           <div class="bp-label">Player 2</div>
           <div class="bp-color" style="background:#3b82f6"></div>
-          <div class="bp-distance" id="bp2-distance">—</div>
           <div class="bp-score" id="bp2-label"></div>
+          <div class="bp-distance" id="bp2-distance">—</div>
         </div>
       </div>
     </div>
@@ -379,8 +380,10 @@
     </div>
     <div class="stats-shell">
       <div class="stats-section-tabs">
-        <button class="stats-section-tab active" data-section="games" onclick="setStatsSection('games')">Game Stats</button>
-        <button class="stats-section-tab" data-section="accuracy" onclick="setStatsSection('accuracy')">Accuracy</button>
+        <button class="stats-section-tab active" data-section="games" onclick="setStatsSection('games')">Game
+          Stats</button>
+        <button class="stats-section-tab" data-section="accuracy"
+          onclick="setStatsSection('accuracy')">Accuracy</button>
       </div>
 
       <section class="stats-section active" id="stats-games-section">
@@ -535,7 +538,8 @@
             <strong>Remove darts from the board</strong>
             <small id="practice-takeout-sub">Board will reset automatically when darts are removed</small>
           </div>
-          <button class="btn btn-sm btn-accent" onclick="skipPracticeTakeout()" title="Manual reset if hand detection doesn't trigger">↺ Continue</button>
+          <button class="btn btn-sm btn-accent" onclick="skipPracticeTakeout()"
+            title="Manual reset if hand detection doesn't trigger">↺ Continue</button>
         </div>
 
         <div class="prac-score-hero">
@@ -642,7 +646,8 @@
       <section class="settings-card">
         <div class="settings-card-header">
           <h3><span class="card-icon">📷</span> Camera</h3>
-          <button class="btn btn-sm btn-primary" id="btn-toggle-cams" onclick="toggleCamerasManually()">Open Cameras</button>
+          <button class="btn btn-sm btn-primary" id="btn-toggle-cams" onclick="toggleCamerasManually()">Open
+            Cameras</button>
         </div>
         <div class="setting-row">
           <label>Resolution</label>
@@ -672,7 +677,8 @@
         <div id="cam-preview-section" class="cam-preview-inline" style="display:none;">
           <div class="cam-preview-toolbar">
             <div class="cam-view-toggle">
-              <button class="btn btn-sm btn-secondary cam-toggle-btn active" onclick="setCamView('raw')">Raw Feed</button>
+              <button class="btn btn-sm btn-secondary cam-toggle-btn active" onclick="setCamView('raw')">Raw
+                Feed</button>
               <button class="btn btn-sm btn-secondary cam-toggle-btn" onclick="setCamView('warped')">Warped</button>
             </div>
             <div class="cam-select-tabs">
@@ -696,8 +702,8 @@
                 </div>
                 <div class="cam-no-profile" id="cam-no-profile-0" style="display:none">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="28" height="28">
-                    <circle cx="12" cy="12" r="10"/>
-                    <line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/>
+                    <circle cx="12" cy="12" r="10" />
+                    <line x1="4.93" y1="4.93" x2="19.07" y2="19.07" />
                   </svg>
                   <span>No Board Profile</span>
                   <small>Calibrate &amp; save a profile first</small>
@@ -718,8 +724,8 @@
                 </div>
                 <div class="cam-no-profile" id="cam-no-profile-1" style="display:none">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="28" height="28">
-                    <circle cx="12" cy="12" r="10"/>
-                    <line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/>
+                    <circle cx="12" cy="12" r="10" />
+                    <line x1="4.93" y1="4.93" x2="19.07" y2="19.07" />
                   </svg>
                   <span>No Board Profile</span>
                   <small>Calibrate &amp; save a profile first</small>
@@ -740,8 +746,8 @@
                 </div>
                 <div class="cam-no-profile" id="cam-no-profile-2" style="display:none">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" width="28" height="28">
-                    <circle cx="12" cy="12" r="10"/>
-                    <line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/>
+                    <circle cx="12" cy="12" r="10" />
+                    <line x1="4.93" y1="4.93" x2="19.07" y2="19.07" />
                   </svg>
                   <span>No Board Profile</span>
                   <small>Calibrate &amp; save a profile first</small>
@@ -821,7 +827,8 @@
             <span class="tfluna-dot" id="tfluna-dot"></span>
             <span id="tfluna-status-text">Not checked</span>
           </span>
-          <button class="btn btn-sm btn-secondary" id="btn-tfluna-probe" onclick="probeTFLuna()">Test Connection</button>
+          <button class="btn btn-sm btn-secondary" id="btn-tfluna-probe" onclick="probeTFLuna()">Test
+            Connection</button>
         </div>
         <div class="setting-row toggle-row">
           <label>Enable TF-Luna</label>
@@ -877,8 +884,8 @@
         </span>
         <!-- Point mode toggle -->
         <span class="cal-mode-toggle" title="Calibration point mode">
-          <button class="btn btn-sm btn-secondary cal-mode-btn active" id="btn-cal-4pt" hidden aria-hidden="true" tabindex="-1"
-            onclick="calSetMode(4)" title="Legacy: 4 outer double-ring points">4-pt</button>
+          <button class="btn btn-sm btn-secondary cal-mode-btn active" id="btn-cal-4pt" hidden aria-hidden="true"
+            tabindex="-1" onclick="calSetMode(4)" title="Legacy: 4 outer double-ring points">4-pt</button>
           <button class="btn btn-sm btn-secondary cal-mode-btn" id="btn-cal-8pt" hidden aria-hidden="true" tabindex="-1"
             onclick="calSetMode(8)" title="Precise: 4 outer + 4 inner triple-ring points">8-pt</button>
         </span>
@@ -926,8 +933,11 @@
     </div>
     <div class="cal-instructions" id="cal-hint">
       Drag <strong id="cal-hint-n">8 points</strong> to the dartboard wire intersections:
-      <span id="cal-hint-outer"><strong style="color:#00d4ff">●</strong> D20/D1 <strong style="color:#00d4ff">●</strong> D6/D10 <strong style="color:#00d4ff">●</strong> D3/D19 <strong style="color:#00d4ff">●</strong> D11/D14</span>
-      <span id="cal-hint-inner">&nbsp;+&nbsp;<strong style="color:#ff8c00">●</strong> T20/T1 <strong style="color:#ff8c00">●</strong> T6/T10 <strong style="color:#ff8c00">●</strong> T3/T19 <strong style="color:#ff8c00">●</strong> T11/T14</span>
+      <span id="cal-hint-outer"><strong style="color:#00d4ff">●</strong> D20/D1 <strong style="color:#00d4ff">●</strong>
+        D6/D10 <strong style="color:#00d4ff">●</strong> D3/D19 <strong style="color:#00d4ff">●</strong> D11/D14</span>
+      <span id="cal-hint-inner">&nbsp;+&nbsp;<strong style="color:#ff8c00">●</strong> T20/T1 <strong
+          style="color:#ff8c00">●</strong> T6/T10 <strong style="color:#ff8c00">●</strong> T3/T19 <strong
+          style="color:#ff8c00">●</strong> T11/T14</span>
       &nbsp;|&nbsp; Arrow keys = nudge &nbsp;|&nbsp; Accept when aligned
     </div>
   </main>
@@ -1148,8 +1158,10 @@
       <p>Save this dartboard profile for faster auto-calibration next time.</p>
       <input type="text" id="profile-modal-name" placeholder="Enter profile name…" autocomplete="off">
       <div class="profile-modal-actions">
-        <button class="btn btn-secondary profile-modal-btn" id="profile-modal-skip-btn" onclick="closeProfileModal(false)">Skip</button>
-        <button class="btn btn-primary profile-modal-btn" id="profile-modal-save-btn" onclick="closeProfileModal(true)">💾 Save Profile</button>
+        <button class="btn btn-secondary profile-modal-btn" id="profile-modal-skip-btn"
+          onclick="closeProfileModal(false)">Skip</button>
+        <button class="btn btn-primary profile-modal-btn" id="profile-modal-save-btn"
+          onclick="closeProfileModal(true)">💾 Save Profile</button>
       </div>
     </div>
   </div>
@@ -1206,8 +1218,8 @@
     <!-- Camera tabs -->
     <div class="lcm-tabs">
       <button class="lcm-tab active" id="lcm-tab-0" onclick="lensCalSetCam(0)">Cam 1</button>
-      <button class="lcm-tab"        id="lcm-tab-1" onclick="lensCalSetCam(1)">Cam 2</button>
-      <button class="lcm-tab"        id="lcm-tab-2" onclick="lensCalSetCam(2)">Cam 3</button>
+      <button class="lcm-tab" id="lcm-tab-1" onclick="lensCalSetCam(1)">Cam 2</button>
+      <button class="lcm-tab" id="lcm-tab-2" onclick="lensCalSetCam(2)">Cam 3</button>
     </div>
 
     <!-- Instruction -->
