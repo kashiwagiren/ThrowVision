@@ -12,11 +12,13 @@ Usage:
 """
 
 import argparse
+import atexit
 import base64
 import json
 import math
 import os
 import random
+import signal
 import threading
 import time
 import traceback
@@ -2013,6 +2015,7 @@ def _do_close_cameras():
                 "state": "OFFLINE", "fps": 0.0, "active": False,
             }
         _cameras_open = False
+        # TODO: match_review — cameras_lost abandonment
         _emit_cam_status()
         print("[SRV] Cameras released.")
         socketio.emit("cameras_state", {"open": False})
@@ -2068,6 +2071,8 @@ def on_start_bullseye(data=None):
     global _game_pending_mode, _game_pending_opts
     global _awaiting_takeout, _takeout_hand_seen
 
+    if _game is not None and not _game.is_finished:
+        _abandon_current_match("user_quit")
     _end_accuracy_session(finalize_open_turn=False)
 
     _game_pending_mode = data.get("mode", "x01") if data else "x01"
@@ -2104,6 +2109,8 @@ def on_start_game(data):
     """Start a game directly (skip bullseye if desired)."""
     global _game_mode, _game, _bullseye, _detection_paused
 
+    if _game is not None and not _game.is_finished:
+        _abandon_current_match("user_quit")
     _end_accuracy_session(finalize_open_turn=False)
 
     mode = data.get("mode", "x01")
@@ -2197,6 +2204,8 @@ def on_end_game():
     _practice_dart_count = 0
     _pending_turn_state = None
     _turn_continue_pending = False
+    if _game is not None and not _game.is_finished:
+        _abandon_current_match("user_quit")
     _end_accuracy_session(finalize_open_turn=True)
     # Clear scored tips so next session starts clean
     for det in _detectors:
@@ -2653,6 +2662,49 @@ def _end_accuracy_session(*, finalize_open_turn: bool = False) -> None:
     _accuracy_session_context = None
     _accuracy_session_mode = None
     _emit_accuracy_session_state()
+
+
+def _abandon_current_match(reason: str) -> None:
+    """Finalize the in-flight match as abandoned. Safe to call multiple times."""
+    global _match_review_game_id, _game
+    gid = _match_review_game_id
+    if gid is None:
+        return
+    try:
+        summary = {}
+        if _game is not None and not _game.is_finished:
+            try:
+                summary = _game.stats_summary()
+            except Exception:
+                summary = {}
+            summary["status"] = "abandoned"
+            summary["abandoned_reason"] = reason
+            summary["id"] = gid
+            try:
+                game_stats.save_game(summary)
+            except Exception as exc:
+                print(f"[MATCH_REVIEW] abandoned save_game failed: {exc}")
+        match_review.finalize(gid, summary, abandoned=True, reason=reason)
+    except Exception as exc:
+        print(f"[MATCH_REVIEW] abandon failed: {exc}")
+    finally:
+        _match_review_game_id = None
+
+
+def _on_shutdown(*_args):
+    try:
+        _abandon_current_match("server_restart")
+    except Exception:
+        pass
+
+
+atexit.register(_on_shutdown)
+try:
+    signal.signal(signal.SIGTERM, _on_shutdown)
+    signal.signal(signal.SIGINT, _on_shutdown)
+except (ValueError, AttributeError):
+    # signal.signal not allowed off main thread; atexit still covers it.
+    pass
 
 
 def _attach_accuracy_prediction(
