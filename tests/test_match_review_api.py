@@ -80,3 +80,34 @@ def test_invalid_kind_rejected(client):
     _seed(42)
     resp = client.get("/api/matches/42/frame/evil/1/1/0/0")
     assert resp.status_code == 400
+
+
+def test_delete_removes_review_and_stats(client, tmp_path, monkeypatch):
+    import stats
+    monkeypatch.setattr(stats, "STATS_DIR", tmp_path)
+    monkeypatch.setattr(stats, "STATS_FILE", tmp_path / "stats.json")
+    stats.save_game({"id": 42, "mode": "x01", "winner": 1})
+    _seed(42)
+
+    resp = client.delete("/api/stats/game/42")
+    assert resp.status_code == 200
+
+    assert not (match_review.DATA_ROOT / "match_42.json").exists()
+    assert not (match_review.DATA_ROOT / "match_42").exists()
+
+
+def test_stats_list_includes_has_review(client, tmp_path, monkeypatch):
+    import stats
+    monkeypatch.setattr(stats, "STATS_DIR", tmp_path)
+    monkeypatch.setattr(stats, "STATS_FILE", tmp_path / "stats.json")
+    stats.save_game({"id": 42, "mode": "x01", "winner": 1})
+    stats.save_game({"id": 43, "mode": "x01", "winner": 2})
+    _seed(42)  # only 42 has a review
+
+    resp = client.get("/api/stats?mode=x01")
+    assert resp.status_code == 200
+    payload = resp.get_json()
+    recent = payload.get("recent") or []
+    by_id = {r["id"]: r for r in recent}
+    assert by_id[42].get("has_review") is True
+    assert by_id[43].get("has_review") is False

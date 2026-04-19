@@ -2270,6 +2270,10 @@ def on_get_stats(data=None):
     """Return statistics for a game mode."""
     mode = data.get("mode") if data else None
     stats = game_stats.get_stats(mode)
+    # Annotate the shared-shape stats dict the same way the HTTP /api/stats does.
+    _annotate_has_review(stats.get("recent"))
+    for mode_bucket in (stats.get("by_mode") or {}).values():
+        _annotate_has_review(mode_bucket.get("recent"))
     socketio.emit("stats_data", stats)
 
 
@@ -2279,6 +2283,7 @@ def on_get_recent_games(data=None):
     mode = data.get("mode") if data else None
     limit = data.get("limit", 20) if data else 20
     recent = game_stats.get_recent(mode, limit)
+    _annotate_has_review(recent)
     socketio.emit("recent_games", {"games": recent})
 
 
@@ -2825,17 +2830,31 @@ def _reset_practice_turn(reset_reason: str = "manual_reset") -> dict:
 
 # ── Stats API endpoints ─────────────────────────────────────────────────────
 
+def _annotate_has_review(rows):
+    for row in rows or []:
+        try:
+            row["has_review"] = match_review.has_review(int(row.get("id") or 0))
+        except Exception:
+            row["has_review"] = False
+
+
 @app.route("/api/stats")
 def api_stats():
     mode = request.args.get("mode")
-    return jsonify(game_stats.get_stats(mode))
+    result = game_stats.get_stats(mode)
+    _annotate_has_review(result.get("recent"))
+    for mode_bucket in (result.get("by_mode") or {}).values():
+        _annotate_has_review(mode_bucket.get("recent"))
+    return jsonify(result)
 
 
 @app.route("/api/stats/recent")
 def api_stats_recent():
     mode = request.args.get("mode")
     limit = int(request.args.get("limit", 20))
-    return jsonify({"games": game_stats.get_recent(mode, limit)})
+    games = game_stats.get_recent(mode, limit)
+    _annotate_has_review(games)
+    return jsonify({"games": games})
 
 
 @app.route("/api/stats/reset", methods=["POST"])
@@ -2848,6 +2867,10 @@ def api_stats_reset():
 def api_stats_delete_game(game_id: int):
     if not game_stats.delete_game(game_id):
         return jsonify({"ok": False, "error": "Game not found"}), 404
+    try:
+        match_review.delete_review(game_id)
+    except Exception as exc:
+        print(f"[MATCH_REVIEW] delete_review failed: {exc}")
     return jsonify({"ok": True, "id": game_id})
 
 
