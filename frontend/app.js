@@ -6104,3 +6104,111 @@ function onStatsData(data) {
     renderStats(data, data.mode || _statsMode);
   }
 }
+
+const _lightbox = {
+    matchId: null,
+    sequence: [],  // list of {kind, player, round, dart, cam}
+    position: 0,
+    annotated: false,
+};
+
+
+function buildLightboxSequence(data) {
+    const seq = [];
+    (data.players || []).forEach(p => {
+        (p.turns || []).forEach(t => {
+            (t.darts || []).forEach(d => {
+                for (let cam = 0; cam < 3; cam++) {
+                    seq.push({
+                        kind: 'per_dart', player: p.player, round: t.round,
+                        dart: d.dart_index, cam,
+                    });
+                }
+            });
+            if (t.end_of_turn) {
+                for (let cam = 0; cam < 3; cam++) {
+                    seq.push({
+                        kind: 'eot', player: p.player, round: t.round,
+                        dart: 0, cam,
+                    });
+                }
+            }
+        });
+    });
+    return seq;
+}
+
+
+function openLightbox(matchId, kind, player, round, dart, cam) {
+    const data = window._currentMatchReview;
+    if (!data) return;
+    _lightbox.sequence = buildLightboxSequence(data);
+    _lightbox.position = _lightbox.sequence.findIndex(s =>
+        s.kind === kind && s.player === player && s.round === round
+        && s.dart === dart && s.cam === cam);
+    if (_lightbox.position < 0) _lightbox.position = 0;
+    _lightbox.annotated = false;
+    _lightbox.matchId = matchId;
+    _applyLightbox();
+    document.getElementById('mr-lightbox').style.display = '';
+    document.addEventListener('keydown', _lightboxKey);
+}
+
+
+function closeLightbox() {
+    document.getElementById('mr-lightbox').style.display = 'none';
+    document.removeEventListener('keydown', _lightboxKey);
+}
+
+
+function lightboxPrev() {
+    if (_lightbox.position > 0) {
+        _lightbox.position -= 1;
+        _applyLightbox();
+    }
+}
+
+
+function lightboxNext() {
+    if (_lightbox.position < _lightbox.sequence.length - 1) {
+        _lightbox.position += 1;
+        _applyLightbox();
+    }
+}
+
+
+function _lightboxKey(ev) {
+    if (ev.key === 'Escape') closeLightbox();
+    else if (ev.key === 'ArrowLeft') lightboxPrev();
+    else if (ev.key === 'ArrowRight') lightboxNext();
+}
+
+
+function _applyLightbox() {
+    const item = _lightbox.sequence[_lightbox.position];
+    if (!item) return;
+    const suffix = _lightbox.annotated ? '/annotated' : '';
+    const url = `/api/matches/${_lightbox.matchId}/frame/${item.kind}/${item.player}/${item.round}/${item.dart}/${item.cam}${suffix}`;
+    document.getElementById('mr-lightbox-img').src = url;
+    const kindLabel = item.kind === 'per_dart' ? `Dart ${item.dart + 1}` : 'End-of-turn';
+    document.getElementById('mr-lightbox-caption').textContent =
+        `Player ${item.player} · Round ${item.round} · ${kindLabel} · Cam ${item.cam}`;
+    document.getElementById('mr-lightbox-pos').textContent =
+        `${_lightbox.position + 1} / ${_lightbox.sequence.length}`;
+    document.getElementById('mr-lightbox-raw').classList.toggle('mr-btn--active', !_lightbox.annotated);
+    document.getElementById('mr-lightbox-ann').classList.toggle('mr-btn--active', _lightbox.annotated);
+}
+
+
+document.addEventListener('DOMContentLoaded', () => {
+    const raw = document.getElementById('mr-lightbox-raw');
+    const ann = document.getElementById('mr-lightbox-ann');
+    if (raw) raw.addEventListener('click', () => { _lightbox.annotated = false; _applyLightbox(); });
+    if (ann) ann.addEventListener('click', () => { _lightbox.annotated = true; _applyLightbox(); });
+});
+
+window.openLightbox = openLightbox;
+window.closeLightbox = closeLightbox;
+window.lightboxPrev = lightboxPrev;
+window.lightboxNext = lightboxNext;
+
