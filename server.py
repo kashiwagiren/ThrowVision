@@ -4562,6 +4562,11 @@ def main():
     global _cfg
     _cfg = cfg
 
+    try:
+        match_review.scan_orphans()
+    except Exception as exc:
+        print(f"[MATCH_REVIEW] startup orphan scan failed: {exc}")
+
     if args.cameras:
         cam_ids = [int(c.strip()) for c in args.cameras.split(",")]
     elif args.demo:

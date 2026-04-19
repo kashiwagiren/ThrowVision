@@ -225,3 +225,20 @@ def test_render_annotated_returns_non_empty_jpeg():
     assert len(out) > 100
     raw = (match_review._frames_dir(30) / "p1_r1_d0_cam0.jpg").read_bytes()
     assert bytes(out) != raw
+
+
+def test_scan_orphans_renames_folders_without_json():
+    orphan = match_review.DATA_ROOT / "match_77" / "frames"
+    orphan.mkdir(parents=True)
+    (orphan / "p1_r1_d0_cam0.jpg").write_bytes(b"stub")
+
+    ok = match_review.DATA_ROOT / "match_88" / "frames"
+    ok.mkdir(parents=True)
+    (match_review.DATA_ROOT / "match_88.json").write_text("{}", encoding="utf-8")
+
+    renamed = match_review.scan_orphans()
+
+    assert 77 in renamed
+    assert not (match_review.DATA_ROOT / "match_77").exists()
+    assert (match_review.DATA_ROOT / "match_77_orphan").exists()
+    assert (match_review.DATA_ROOT / "match_88").exists()  # untouched

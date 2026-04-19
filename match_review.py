@@ -309,3 +309,32 @@ def finalize(
         rec["ended_at"] = float((summary or {}).get("finished_at") or time.time())
         _flush(gid)
         _active.pop(gid, None)
+
+
+def scan_orphans() -> List[int]:
+    """Find match_<id>/ folders without matching match_<id>.json; rename to
+    match_<id>_orphan/. Returns list of renamed ids. Never deletes."""
+    renamed: List[int] = []
+    root = DATA_ROOT
+    if not root.is_dir():
+        return renamed
+    with _LOCK:
+        for entry in root.iterdir():
+            if not entry.is_dir():
+                continue
+            name = entry.name
+            if not name.startswith("match_") or name.endswith("_orphan"):
+                continue
+            try:
+                gid = int(name.split("_", 1)[1])
+            except (IndexError, ValueError):
+                continue
+            if (root / f"match_{gid}.json").is_file():
+                continue
+            try:
+                entry.rename(root / f"match_{gid}_orphan")
+                renamed.append(gid)
+                print(f"[MATCH_REVIEW] renamed orphan match_{gid}")
+            except OSError as exc:
+                print(f"[MATCH_REVIEW] orphan rename failed for {gid}: {exc}")
+    return renamed
