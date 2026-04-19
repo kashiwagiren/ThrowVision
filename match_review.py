@@ -96,3 +96,77 @@ def delete_review(game_id: int) -> None:
                 pass
         if d.exists():
             shutil.rmtree(d, ignore_errors=True)
+
+
+JPEG_QUALITY = 80
+
+
+def _write_jpeg(path: Path, frame_bgr: np.ndarray) -> bool:
+    """Encode + write a BGR frame as JPEG. Returns True on success."""
+    try:
+        ok, buf = cv2.imencode(".jpg", frame_bgr,
+                                [int(cv2.IMWRITE_JPEG_QUALITY), JPEG_QUALITY])
+        if not ok:
+            return False
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "wb") as f:
+            f.write(buf.tobytes())
+        return True
+    except Exception as exc:
+        print(f"[MATCH_REVIEW] JPEG write failed {path}: {exc}")
+        return False
+
+
+def _ensure_turn(player_entry: Dict[str, Any], turn_idx: int,
+                 round_num: int) -> Dict[str, Any]:
+    for t in player_entry["turns"]:
+        if t["index"] == turn_idx:
+            return t
+    turn = {"index": int(turn_idx), "round": int(round_num),
+            "darts": [], "end_of_turn": None}
+    player_entry["turns"].append(turn)
+    return turn
+
+
+def record_dart(
+    game_id: int,
+    player: int,
+    turn_idx: int,
+    round_num: int,
+    dart_idx: int,
+    prediction: Dict[str, Any],
+    frames_bgr: Dict[int, np.ndarray],
+) -> None:
+    """Record a confirmed dart + write per-cam JPEGs + flush JSON."""
+    gid = int(game_id)
+    with _LOCK:
+        rec = _active.get(gid)
+        if rec is None:
+            print(f"[MATCH_REVIEW] record_dart: no active match {gid}")
+            return
+        fdir = _frames_dir(gid)
+        fdir.mkdir(parents=True, exist_ok=True)
+
+        any_written = False
+        for cam_idx, frame in (frames_bgr or {}).items():
+            if frame is None:
+                continue
+            name = f"p{int(player)}_r{int(round_num)}_d{int(dart_idx)}_cam{int(cam_idx)}.jpg"
+            if _write_jpeg(fdir / name, frame):
+                any_written = True
+
+        player_entry = next(p for p in rec["players"]
+                            if p["player"] == int(player))
+        turn = _ensure_turn(player_entry, turn_idx, round_num)
+        turn["darts"].append({
+            "dart_index": int(dart_idx),
+            "ts": float(prediction.get("ts") or time.time()),
+            "label": prediction.get("label", ""),
+            "score": int(prediction.get("score", 0) or 0),
+            "x_mm": prediction.get("x_mm"),
+            "y_mm": prediction.get("y_mm"),
+            "agreement_bucket": prediction.get("agreement_bucket"),
+            "cam_details": list(prediction.get("cam_details") or []),
+            "frames": {"per_dart": bool(any_written)},
+        })
+        _flush(gid)
