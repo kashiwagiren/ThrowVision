@@ -5893,7 +5893,186 @@ async function openMatchReview(matchId) {
         console.error('openMatchReview failed', err);
     }
 }
-function renderMatchReview(data) { /* populated in Task 14 */ }
+function fmtMm(v) {
+    if (v === null || v === undefined) return '—';
+    const sign = v >= 0 ? '+' : '';
+    return `${sign}${Number(v).toFixed(1)}mm`;
+}
+
+
+function _mrThumb(matchId, kind, player, round, dart, cam) {
+    const img = document.createElement('img');
+    img.className = 'mr-thumb';
+    img.loading = 'lazy';
+    img.src = `/api/matches/${matchId}/frame/${kind}/${player}/${round}/${dart}/${cam}`;
+    img.alt = `cam${cam}`;
+    img.addEventListener('error', () => img.classList.add('mr-thumb--missing'));
+    img.addEventListener('click',
+        () => openLightbox(matchId, kind, player, round, dart, cam));
+    return img;
+}
+
+
+function _mrThumbRow(labelText, thumbs) {
+    const row = document.createElement('div');
+    row.className = 'mr-thumbrow';
+    const label = document.createElement('span');
+    label.className = 'mr-thumb-label';
+    label.textContent = labelText;
+    row.appendChild(label);
+    thumbs.forEach(t => row.appendChild(t));
+    return row;
+}
+
+
+function renderMatchReview(data) {
+    // Title
+    const titleEl = document.querySelector('.mr-title');
+    if (titleEl) titleEl.textContent = `Match #${data.match_id} Review`;
+
+    // Abandonment banner
+    const banner = document.getElementById('mr-abandoned-banner');
+    if (data.status === 'abandoned') {
+        const reasonMap = {
+            user_quit: 'quit by user',
+            server_restart: 'server restart',
+            cameras_lost: 'cameras lost',
+        };
+        banner.style.display = '';
+        banner.textContent =
+            `⚠  This match was not completed — reason: ${reasonMap[data.abandoned_reason] || data.abandoned_reason || 'unknown'}`;
+    } else {
+        banner.style.display = 'none';
+        banner.textContent = '';
+    }
+
+    // Meta
+    const meta = document.getElementById('mr-meta');
+    const winnerTxt = data.winner
+        ? `Player ${data.winner} won`
+        : (data.status === 'abandoned' ? '—' : 'Draw');
+    const startedTs = data.started_at
+        ? new Date(data.started_at * 1000).toLocaleString() : '';
+    const totalDarts = (data.players || []).reduce(
+        (n, p) => n + (p.turns || []).reduce((m, t) => m + (t.darts || []).length, 0), 0);
+    meta.textContent =
+        `${(data.mode || '').toUpperCase()} • ${winnerTxt} • ${startedTs} • ${totalDarts} darts`;
+
+    // Delete button
+    const delBtn = document.getElementById('mr-delete-btn');
+    delBtn.onclick = async () => {
+        if (!confirm('Delete this match permanently?')) return;
+        await fetch(`/api/stats/game/${data.match_id}`, { method: 'DELETE' });
+        showPage('stats');
+        if (typeof refreshStats === 'function') refreshStats();
+    };
+
+    // Tabs
+    const tabs = document.getElementById('mr-tabs');
+    tabs.replaceChildren();
+    (data.players || []).forEach((p, idx) => {
+        const btn = document.createElement('button');
+        btn.className = 'mr-tab' + (idx === 0 ? ' mr-tab--active' : '');
+        btn.textContent = p.name || `Player ${p.player}`;
+        btn.addEventListener('click', () => {
+            tabs.querySelectorAll('.mr-tab').forEach(b => b.classList.remove('mr-tab--active'));
+            btn.classList.add('mr-tab--active');
+            renderMatchReviewPlayer(data, p.player);
+        });
+        tabs.appendChild(btn);
+    });
+
+    if (data.players && data.players.length) {
+        renderMatchReviewPlayer(data, data.players[0].player);
+    }
+}
+
+
+function renderMatchReviewPlayer(data, playerNum) {
+    const turnsEl = document.getElementById('mr-turns');
+    turnsEl.replaceChildren();
+    const p = (data.players || []).find(x => x.player === playerNum);
+    if (!p) return;
+
+    (p.turns || []).forEach(turn => {
+        const card = document.createElement('div');
+        card.className = 'mr-turn-card';
+
+        // Head
+        const head = document.createElement('div');
+        head.className = 'mr-turn-card__head';
+        const headLabel = document.createElement('span');
+        headLabel.textContent = `Round ${turn.round} · Turn ${turn.index + 1}`;
+        head.appendChild(headLabel);
+
+        const total = (turn.darts || []).reduce((s, d) => s + (d.score || 0), 0);
+        const totalEl = document.createElement('span');
+        totalEl.className = 'mr-turn-card__total';
+        totalEl.textContent = `Total: ${total}`;
+        head.appendChild(totalEl);
+        card.appendChild(head);
+
+        // Dart rows
+        const dartsEl = document.createElement('div');
+        dartsEl.className = 'mr-turn-card__darts';
+        (turn.darts || []).forEach(d => {
+            const row = document.createElement('div');
+            row.className = 'mr-dart-row';
+
+            const l1 = document.createElement('span');
+            l1.className = 'mr-dart-label';
+            l1.textContent = `Dart ${d.dart_index + 1}:`;
+            row.appendChild(l1);
+
+            const l2 = document.createElement('span');
+            l2.className = 'mr-dart-call';
+            l2.textContent = `${d.label} (${d.score})`;
+            row.appendChild(l2);
+
+            const l3 = document.createElement('span');
+            l3.className = 'mr-dart-mm';
+            l3.textContent = `${fmtMm(d.x_mm)}, ${fmtMm(d.y_mm)}`;
+            row.appendChild(l3);
+
+            const l4 = document.createElement('span');
+            l4.className = 'mr-dart-agree';
+            l4.textContent = d.agreement_bucket || '';
+            row.appendChild(l4);
+
+            dartsEl.appendChild(row);
+        });
+        card.appendChild(dartsEl);
+
+        // Captures
+        const caps = document.createElement('div');
+        caps.className = 'mr-turn-card__captures';
+
+        const capLabel = document.createElement('div');
+        capLabel.className = 'mr-captures-label';
+        capLabel.textContent = 'Per-dart captures:';
+        caps.appendChild(capLabel);
+
+        (turn.darts || []).forEach(d => {
+            const thumbs = [0, 1, 2].map(cam =>
+                _mrThumb(data.match_id, 'per_dart', playerNum, turn.round, d.dart_index, cam));
+            caps.appendChild(_mrThumbRow(`Dart ${d.dart_index + 1}:`, thumbs));
+        });
+
+        if (turn.end_of_turn) {
+            const eotLabel = document.createElement('div');
+            eotLabel.className = 'mr-captures-label';
+            eotLabel.textContent = 'End-of-turn:';
+            caps.appendChild(eotLabel);
+            const thumbs = [0, 1, 2].map(cam =>
+                _mrThumb(data.match_id, 'eot', playerNum, turn.round, 0, cam));
+            caps.appendChild(_mrThumbRow('EOT:', thumbs));
+        }
+
+        card.appendChild(caps);
+        turnsEl.appendChild(card);
+    });
+}
+window.renderMatchReview = renderMatchReview;
 window.openMatchReview = openMatchReview;
 
 async function resetAccuracyStats() {
