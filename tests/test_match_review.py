@@ -149,3 +149,36 @@ def test_record_turn_end_writes_eot_frames():
     p1 = match_review._active[3]["players"][0]
     turn = p1["turns"][0]
     assert turn["end_of_turn"] == {"frames": True, "ts": 1776500020.1}
+
+
+def test_finalize_completed_sets_status_and_merges_summary():
+    match_review.start(game_id=10, mode="countup",
+                       players=[{"player": 1, "name": "P1"},
+                                {"player": 2, "name": "P2"}],
+                       started_at=0.0)
+    summary = {"winner": 2, "mode": "countup", "finished_at": 1776500600.0}
+    match_review.finalize(10, summary)
+
+    data = json.loads(match_review._match_json(10).read_text(encoding="utf-8"))
+    assert data["status"] == "completed"
+    assert data["winner"] == 2
+    assert data["ended_at"] == 1776500600.0
+    assert data["abandoned_reason"] is None
+    assert 10 not in match_review._active
+
+
+def test_finalize_abandoned_sets_reason():
+    match_review.start(game_id=11, mode="x01",
+                       players=[{"player": 1, "name": "P1"}],
+                       started_at=0.0)
+    match_review.finalize(11, {"mode": "x01"},
+                          abandoned=True, reason="user_quit")
+
+    data = json.loads(match_review._match_json(11).read_text(encoding="utf-8"))
+    assert data["status"] == "abandoned"
+    assert data["abandoned_reason"] == "user_quit"
+    assert 11 not in match_review._active
+
+
+def test_finalize_no_active_match_no_op():
+    match_review.finalize(9999, {})  # should not raise

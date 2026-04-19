@@ -206,3 +206,24 @@ def record_turn_end(
             "ts": float(ts if ts is not None else time.time()),
         }
         _flush(gid)
+
+
+def finalize(
+    game_id: int,
+    summary: Dict[str, Any],
+    abandoned: bool = False,
+    reason: Optional[str] = None,
+) -> None:
+    """Close the match bundle. Safe to call when no active record."""
+    gid = int(game_id)
+    with _LOCK:
+        rec = _active.get(gid)
+        if rec is None:
+            return
+        rec["status"] = "abandoned" if abandoned else "completed"
+        rec["abandoned_reason"] = reason if abandoned else None
+        if summary and "winner" in summary:
+            rec["winner"] = summary.get("winner")
+        rec["ended_at"] = float((summary or {}).get("finished_at") or time.time())
+        _flush(gid)
+        _active.pop(gid, None)
