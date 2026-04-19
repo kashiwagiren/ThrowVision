@@ -2851,6 +2851,63 @@ def api_stats_delete_game(game_id: int):
     return jsonify({"ok": True, "id": game_id})
 
 
+@app.route("/api/matches/<int:match_id>/review", methods=["GET"])
+def api_get_match_review(match_id: int):
+    data = match_review.get_review(match_id)
+    if data is None:
+        return ("", 404)
+    return jsonify(data)
+
+
+_ALLOWED_KINDS = {"per_dart", "eot"}
+
+
+def _mr_frame_filename(kind: str, p: int, r: int, d: int, cam: int) -> Optional[str]:
+    if kind == "per_dart":
+        return f"p{int(p)}_r{int(r)}_d{int(d)}_cam{int(cam)}.jpg"
+    if kind == "eot":
+        return f"p{int(p)}_r{int(r)}_eot_cam{int(cam)}.jpg"
+    return None
+
+
+def _mr_validate_coords(p: int, r: int, d: int, cam: int) -> bool:
+    return 1 <= p <= 4 and 1 <= r <= 40 and 0 <= d <= 2 and 0 <= cam <= 2
+
+
+@app.route("/api/matches/<int:match_id>/frame/<kind>/<int:p>/<int:r>/<int:d>/<int:cam>",
+           methods=["GET"])
+def api_get_match_frame(match_id: int, kind: str, p: int, r: int,
+                        d: int, cam: int):
+    if kind not in _ALLOWED_KINDS:
+        return ("invalid kind", 400)
+    if not _mr_validate_coords(p, r, d, cam):
+        return ("out of range", 400)
+    fname = _mr_frame_filename(kind, p, r, d, cam)
+    if fname is None:
+        return ("invalid kind", 400)
+    folder = (match_review.DATA_ROOT / f"match_{match_id}" / "frames").resolve()
+    if not folder.is_dir():
+        return ("", 404)
+    return send_from_directory(str(folder), fname, mimetype="image/jpeg")
+
+
+@app.route("/api/matches/<int:match_id>/frame/<kind>/<int:p>/<int:r>/<int:d>/<int:cam>/annotated",
+           methods=["GET"])
+def api_get_match_frame_annotated(match_id: int, kind: str, p: int, r: int,
+                                   d: int, cam: int):
+    if kind not in _ALLOWED_KINDS:
+        return ("invalid kind", 400)
+    if not _mr_validate_coords(p, r, d, cam):
+        return ("out of range", 400)
+    blob = match_review.render_annotated(
+        game_id=match_id, kind=kind, player=p,
+        round_num=r, dart_idx=d, cam_idx=cam,
+    )
+    if blob is None:
+        return ("", 404)
+    return Response(blob, mimetype="image/jpeg")
+
+
 @app.route("/api/accuracy/summary")
 def api_accuracy_summary():
     limit = int(request.args.get("limit", 50))
