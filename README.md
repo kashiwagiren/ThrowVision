@@ -6,7 +6,7 @@
 ![License](https://img.shields.io/badge/License-MIT-yellow)
 ![Cameras](https://img.shields.io/badge/Cameras-3×_USB-orange)
 ![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux-lightgrey)
-![Version](https://img.shields.io/badge/Version-1.3.0-brightgreen)
+![Version](https://img.shields.io/badge/Version-1.3.5-brightgreen)
 
 **ThrowVision** is an open-source, camera-based automatic dart scoring system. Three USB webcams at 120° intervals detect dart tips with millimetre accuracy using frame differencing, perspective homography, and multi-camera consensus fusion.
 
