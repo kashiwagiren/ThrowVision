@@ -124,3 +124,28 @@ def test_record_dart_skips_missing_cams():
     assert (fdir / "p1_r1_d0_cam0.jpg").is_file()
     assert not (fdir / "p1_r1_d0_cam1.jpg").exists()
     assert (fdir / "p1_r1_d0_cam2.jpg").is_file()
+
+
+def test_record_turn_end_writes_eot_frames():
+    match_review.start(game_id=3, mode="x01",
+                       players=[{"player": 1, "name": "P1"}],
+                       started_at=0.0)
+    match_review.record_dart(
+        game_id=3, player=1, turn_idx=0, round_num=1, dart_idx=0,
+        prediction={"label": "S1", "score": 1, "x_mm": 0, "y_mm": 0,
+                    "agreement_bucket": "x", "cam_details": [], "ts": 0},
+        frames_bgr={0: _fake_frame()},
+    )
+    frames = {0: _fake_frame(), 1: _fake_frame(), 2: _fake_frame()}
+    match_review.record_turn_end(
+        game_id=3, player=1, turn_idx=0, round_num=1,
+        frames_bgr=frames, ts=1776500020.1,
+    )
+    fdir = match_review._frames_dir(3)
+    assert (fdir / "p1_r1_eot_cam0.jpg").is_file()
+    assert (fdir / "p1_r1_eot_cam1.jpg").is_file()
+    assert (fdir / "p1_r1_eot_cam2.jpg").is_file()
+
+    p1 = match_review._active[3]["players"][0]
+    turn = p1["turns"][0]
+    assert turn["end_of_turn"] == {"frames": True, "ts": 1776500020.1}

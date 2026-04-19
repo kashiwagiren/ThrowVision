@@ -170,3 +170,39 @@ def record_dart(
             "frames": {"per_dart": bool(any_written)},
         })
         _flush(gid)
+
+
+def record_turn_end(
+    game_id: int,
+    player: int,
+    turn_idx: int,
+    round_num: int,
+    frames_bgr: Dict[int, np.ndarray],
+    ts: Optional[float] = None,
+) -> None:
+    """Record end-of-turn captures + flush JSON."""
+    gid = int(game_id)
+    with _LOCK:
+        rec = _active.get(gid)
+        if rec is None:
+            print(f"[MATCH_REVIEW] record_turn_end: no active match {gid}")
+            return
+        fdir = _frames_dir(gid)
+        fdir.mkdir(parents=True, exist_ok=True)
+
+        any_written = False
+        for cam_idx, frame in (frames_bgr or {}).items():
+            if frame is None:
+                continue
+            name = f"p{int(player)}_r{int(round_num)}_eot_cam{int(cam_idx)}.jpg"
+            if _write_jpeg(fdir / name, frame):
+                any_written = True
+
+        player_entry = next(p for p in rec["players"]
+                            if p["player"] == int(player))
+        turn = _ensure_turn(player_entry, turn_idx, round_num)
+        turn["end_of_turn"] = {
+            "frames": bool(any_written),
+            "ts": float(ts if ts is not None else time.time()),
+        }
+        _flush(gid)
