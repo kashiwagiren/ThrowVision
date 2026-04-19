@@ -425,6 +425,39 @@
       </section>
     </div>
   </main>
+
+  <main class="page" id="page-match-review" style="display: none;">
+    <div class="mr-header">
+      <button class="btn page-back-btn" onclick="showPage('stats')">← Back</button>
+      <h2 class="mr-title">Match Review</h2>
+      <button class="btn btn--danger mr-delete-btn" id="mr-delete-btn">🗑 Delete Match</button>
+    </div>
+
+    <div class="mr-abandoned-banner" id="mr-abandoned-banner" style="display:none;"></div>
+
+    <div class="mr-meta" id="mr-meta"></div>
+
+    <div class="mr-tabs" id="mr-tabs" role="tablist"></div>
+
+    <div class="mr-turns" id="mr-turns"></div>
+  </main>
+
+  <!-- Lightbox overlay (shared singleton) -->
+  <div class="mr-lightbox" id="mr-lightbox" style="display:none;">
+    <button class="mr-lightbox__close" onclick="closeLightbox()">✕</button>
+    <img class="mr-lightbox__img" id="mr-lightbox-img" alt="Capture">
+    <div class="mr-lightbox__caption" id="mr-lightbox-caption"></div>
+    <div class="mr-lightbox__controls">
+      <button class="btn" id="mr-lightbox-raw">Raw</button>
+      <button class="btn" id="mr-lightbox-ann">Annotated</button>
+    </div>
+    <div class="mr-lightbox__nav">
+      <button class="btn" onclick="lightboxPrev()">◀ Prev</button>
+      <span id="mr-lightbox-pos"></span>
+      <button class="btn" onclick="lightboxNext()">Next ▶</button>
+    </div>
+  </div>
+
   <div class="loading-overlay" id="practice-loading" style="display:none">
     <div class="loading-content">
       <div class="loading-spinner">
