@@ -5582,6 +5582,64 @@ function loadAccuracyStats() {
     });
 }
 
+function buildStatsRow(game, modeLabel, winnerText, date, summary) {
+    const row = document.createElement('div');
+    row.className = 'sr-row';
+    if (game.has_review) {
+        row.classList.add('sr-row--clickable');
+        row.addEventListener('click', (e) => {
+            if (e.target.closest('.sr-delete')) return;
+            openMatchReview(Number(game.id));
+        });
+    }
+
+    const main = document.createElement('div');
+    main.className = 'sr-main';
+
+    const topline = document.createElement('div');
+    topline.className = 'sr-topline';
+    const modeSpan = document.createElement('span');
+    modeSpan.className = 'sr-mode';
+    modeSpan.textContent = modeLabel;
+    topline.appendChild(modeSpan);
+    const summarySpan = document.createElement('span');
+    summarySpan.className = 'sr-summary';
+    summarySpan.textContent = summary;
+    topline.appendChild(summarySpan);
+    if (game.status === 'abandoned') {
+        const badge = document.createElement('span');
+        badge.className = 'mr-abandoned-badge';
+        badge.textContent = 'Abandoned';
+        topline.appendChild(badge);
+    }
+    main.appendChild(topline);
+
+    const meta = document.createElement('div');
+    meta.className = 'sr-meta';
+    const winSpan = document.createElement('span');
+    winSpan.textContent = winnerText;
+    meta.appendChild(winSpan);
+    const dateSpan = document.createElement('span');
+    dateSpan.textContent = date;
+    meta.appendChild(dateSpan);
+    main.appendChild(meta);
+
+    row.appendChild(main);
+
+    if (game.id) {
+        const delBtn = document.createElement('button');
+        delBtn.className = 'btn btn-sm btn-secondary sr-delete';
+        delBtn.textContent = 'Delete';
+        delBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            deleteGameStat(Number(game.id));
+        });
+        row.appendChild(delBtn);
+    }
+
+    return row;
+}
+
 function renderStats(data, mode) {
   const dash = document.getElementById('stats-dashboard');
   const recentList = document.getElementById('stats-recent-list');
@@ -5631,28 +5689,15 @@ function renderStats(data, mode) {
   if (recent.length === 0) {
     recentList.innerHTML = '<div class="stats-empty">No saved matches yet.</div>';
   } else {
-    recentList.innerHTML = recent.map(g => {
+    recentList.replaceChildren();
+    recent.forEach(g => {
       const date = formatStatsDate(g.started_at);
       const modeLabel = (g.mode || '').toUpperCase();
-      const winner = g.winner ? 'Player ' + g.winner + ' won' : 'Tie';
+      const winnerText = g.winner ? 'Player ' + g.winner + ' won'
+                       : (g.status === 'abandoned' ? 'Abandoned' : 'Tie');
       const summary = gameSummaryText(g);
-      const deleteBtn = g.id
-        ? `<button class="btn btn-sm btn-secondary sr-delete" onclick="deleteGameStat(${Number(g.id)})">Delete</button>`
-        : '';
-      return `<div class="sr-row">
-        <div class="sr-main">
-          <div class="sr-topline">
-            <span class="sr-mode">${modeLabel}</span>
-            <span class="sr-summary">${summary}</span>
-          </div>
-          <div class="sr-meta">
-            <span>${winner}</span>
-            <span>${date}</span>
-          </div>
-        </div>
-        ${deleteBtn}
-      </div>`;
-    }).join('');
+      recentList.appendChild(buildStatsRow(g, modeLabel, winnerText, date, summary));
+    });
   }
 }
 
@@ -5832,6 +5877,24 @@ async function deleteGameStat(gameId) {
     showToast('Failed to delete saved match.', 'warn', 2600);
   }
 }
+
+async function openMatchReview(matchId) {
+    try {
+        const resp = await fetch(`/api/matches/${matchId}/review`);
+        if (!resp.ok) {
+            alert('Review not available');
+            return;
+        }
+        const data = await resp.json();
+        window._currentMatchReview = data;
+        showPage('match-review');
+        renderMatchReview(data);
+    } catch (err) {
+        console.error('openMatchReview failed', err);
+    }
+}
+function renderMatchReview(data) { /* populated in Task 14 */ }
+window.openMatchReview = openMatchReview;
 
 async function resetAccuracyStats() {
   const confirmed = await showConfirmModal({
