@@ -182,3 +182,46 @@ def test_finalize_abandoned_sets_reason():
 
 def test_finalize_no_active_match_no_op():
     match_review.finalize(9999, {})  # should not raise
+
+
+def test_get_review_returns_data_or_none():
+    assert match_review.get_review(404) is None
+
+    match_review.start(game_id=20, mode="x01",
+                       players=[{"player": 1, "name": "P1"}],
+                       started_at=0.0)
+    match_review.finalize(20, {"winner": 1, "finished_at": 100.0})
+
+    data = match_review.get_review(20)
+    assert data is not None
+    assert data["match_id"] == 20
+    assert data["status"] == "completed"
+
+
+def test_render_annotated_returns_non_empty_jpeg():
+    import numpy as np
+    match_review.start(game_id=30, mode="x01",
+                       players=[{"player": 1, "name": "P1"}],
+                       started_at=0.0)
+    frame = (np.ones((200, 200, 3), dtype=np.uint8) * 50)
+    match_review.record_dart(
+        game_id=30, player=1, turn_idx=0, round_num=1, dart_idx=0,
+        prediction={"label": "T20", "score": 60,
+                    "x_mm": 0, "y_mm": 0,
+                    "agreement_bucket": "x",
+                    "cam_details": [
+                        {"cam": 0, "label": "T20", "score": 60,
+                         "x_px": 100, "y_px": 100, "used": True}
+                    ],
+                    "ts": 0},
+        frames_bgr={0: frame},
+    )
+    out = match_review.render_annotated(
+        game_id=30, kind="per_dart", player=1, round_num=1,
+        dart_idx=0, cam_idx=0,
+    )
+    assert out is not None
+    assert isinstance(out, (bytes, bytearray))
+    assert len(out) > 100
+    raw = (match_review._frames_dir(30) / "p1_r1_d0_cam0.jpg").read_bytes()
+    assert bytes(out) != raw

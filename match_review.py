@@ -208,6 +208,88 @@ def record_turn_end(
         _flush(gid)
 
 
+def get_review(game_id: int) -> Optional[Dict[str, Any]]:
+    """Return review JSON for a completed/abandoned match, or None."""
+    path = _match_json(game_id)
+    if not path.is_file():
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    return data
+
+
+def _find_dart(review: Dict[str, Any], player: int, round_num: int,
+               dart_idx: int) -> Optional[Dict[str, Any]]:
+    for p in review.get("players", []):
+        if int(p.get("player", 0)) != int(player):
+            continue
+        for t in p.get("turns", []):
+            if int(t.get("round", -1)) != int(round_num):
+                continue
+            for d in t.get("darts", []):
+                if int(d.get("dart_index", -1)) == int(dart_idx):
+                    return d
+    return None
+
+
+def render_annotated(
+    game_id: int,
+    kind: str,
+    player: int,
+    round_num: int,
+    dart_idx: int,
+    cam_idx: int,
+) -> Optional[bytes]:
+    """Render raw frame with detection overlay. Returns JPEG bytes or None."""
+    if kind not in ("per_dart", "eot"):
+        return None
+    fdir = _frames_dir(game_id)
+    if kind == "per_dart":
+        path = fdir / f"p{int(player)}_r{int(round_num)}_d{int(dart_idx)}_cam{int(cam_idx)}.jpg"
+    else:
+        path = fdir / f"p{int(player)}_r{int(round_num)}_eot_cam{int(cam_idx)}.jpg"
+    if not path.is_file():
+        return None
+
+    img = cv2.imread(str(path), cv2.IMREAD_COLOR)
+    if img is None:
+        return None
+
+    if kind == "per_dart":
+        review = get_review(game_id)
+        if review is not None:
+            dart = _find_dart(review, player, round_num, dart_idx)
+            if dart is not None:
+                cam_detail = None
+                for cd in dart.get("cam_details") or []:
+                    if int(cd.get("cam", -1)) == int(cam_idx):
+                        cam_detail = cd
+                        break
+                if cam_detail is not None:
+                    px = cam_detail.get("x_px")
+                    py = cam_detail.get("y_px")
+                    if px is not None and py is not None:
+                        px, py = int(px), int(py)
+                        cv2.drawMarker(img, (px, py), (0, 255, 0),
+                                       cv2.MARKER_CROSS, 24, 2)
+                        cv2.circle(img, (px, py), 14, (0, 255, 0), 2)
+                        label = str(cam_detail.get("label") or dart.get("label") or "")
+                        cv2.putText(img, label, (px + 18, py - 10),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6,
+                                    (0, 255, 0), 2, cv2.LINE_AA)
+
+    ok, buf = cv2.imencode(".jpg", img,
+                           [int(cv2.IMWRITE_JPEG_QUALITY), JPEG_QUALITY])
+    if not ok:
+        return None
+    return buf.tobytes()
+
+
 def finalize(
     game_id: int,
     summary: Dict[str, Any],
