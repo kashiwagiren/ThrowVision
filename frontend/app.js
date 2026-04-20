@@ -1998,17 +1998,14 @@ function connectSocket() {
   });
 
   // ── TF-Luna hotplug auto-detection ─────────────────────────────────
-  // Toast policy:
-  //   * NEVER toast on the very first tfluna_status event — that's the
-  //     initial sync when the page loads / reconnects, and the sensor's
-  //     status is already visible in the settings panel.
-  //   * Only toast on a genuine OFFLINE -> ONLINE transition AFTER we've
-  //     seen at least one prior event (i.e. a real plug-in during the
-  //     session), or if the sensor hops to a different COM port.
-  //   * Unplug events update the UI silently.
-  let _tflunaWasOnline = false;
-  let _tflunaLastPort = null;
-  let _tflunaStatusSeen = false;
+  // NO toast: the sensor's connection state is already visible in the
+  // Settings panel (status dot + "Auto-detected on COMx" label). Toasts
+  // were firing on every startup because the server emits tfluna_status
+  // at least twice during boot (once offline during probe, once online
+  // after auto-detect), which no amount of client-side gating could
+  // reliably distinguish from a genuine plug event. Drop the toast
+  // entirely — real unplug/replug events still update the status dot
+  // silently.
   socket.on('tfluna_status', (data) => {
     const enabledEl = document.getElementById('set-tfluna-enabled');
     const portEl = document.getElementById('set-tfluna-port');
@@ -2018,23 +2015,10 @@ function connectSocket() {
     const online = !!(data.detected && data.connected);
     if (online) {
       _setTFLunaStatus('tfluna-ok', `Auto-detected on ${data.port}`);
-      const isGenuineTransition =
-        _tflunaStatusSeen && (!_tflunaWasOnline || _tflunaLastPort !== data.port);
-      if (isGenuineTransition) {
-        showToast(`TF-Luna sensor detected on ${data.port}`, 'ok');
-      }
-      _tflunaWasOnline = true;
-      _tflunaLastPort = data.port;
     } else if (!data.detected) {
       _setTFLunaStatus('tfluna-fail', 'Sensor removed');
       _updateTFLunaLive({ connected: false });
-      _tflunaWasOnline = false;
-      _tflunaLastPort = null;
-    } else {
-      // detected but not connected
-      _tflunaWasOnline = false;
     }
-    _tflunaStatusSeen = true;
   });
 
   socket.on('practice_awaiting_takeout', (data) => {
