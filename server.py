@@ -2473,6 +2473,11 @@ def on_end_game():
     global _confirm_thread_count, _pending_turn_state, _turn_continue_pending
     # Stats were already saved when the game finished (in the dart-detection path).
     # Do NOT save again here — that caused every win to be recorded twice.
+    # HOWEVER, if the user quits mid-match (game not finished), we must record
+    # the abandoned match BEFORE nulling _game, otherwise the abandon check
+    # below would always be False.
+    if _game is not None and not _game.is_finished:
+        _abandon_current_match("user_quit")
 
     with _confirm_thread_lock:
         _confirm_thread_count = 0
@@ -2486,8 +2491,6 @@ def on_end_game():
     _practice_dart_count = 0
     _pending_turn_state = None
     _turn_continue_pending = False
-    if _game is not None and not _game.is_finished:
-        _abandon_current_match("user_quit")
     _end_accuracy_session(finalize_open_turn=True)
     # Clear scored tips so next session starts clean
     for det in _detectors:
