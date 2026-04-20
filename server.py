@@ -2973,6 +2973,7 @@ def api_accuracy_review():
 def api_accuracy_review_x01_action():
     global _pending_turn_state, _awaiting_takeout, _takeout_hand_seen, _takeout_reason
     global _turn_continue_pending, _detection_paused
+    global _match_review_game_id
 
     data = request.get_json(silent=True) or {}
     session_id = str(data.get("session_id") or "")
@@ -3110,6 +3111,7 @@ def _emit_dart(label: str, score: int, x_mm: float, y_mm: float,
     global _last_score, _game_mode, _bullseye, _game
     global _awaiting_takeout, _takeout_hand_seen, _takeout_ready_at, _takeout_reason
     global _needs_takeout_init, _pending_turn_state
+    global _match_review_game_id
 
     # ── Foul-line check (TF-Luna oche sensor) ─────────────────────────
     if _cfg is not None and _cfg.tfluna_enabled:
