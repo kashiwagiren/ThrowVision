@@ -6429,20 +6429,46 @@ const _lightbox = {
 function buildLightboxSequence(data) {
     const seq = [];
     (data.players || []).forEach(p => {
+        const playerName = p.name || `Player ${p.player}`;
         (p.turns || []).forEach(t => {
-            (t.darts || []).forEach(d => {
+            const dartsInTurn = t.darts || [];
+            const turnTotal = dartsInTurn.reduce(
+                (sum, x) => sum + Number(x.score || 0), 0,
+            );
+            const turnSequenceLabels = dartsInTurn
+                .map(x => x.label || '—')
+                .join(' · ');
+            dartsInTurn.forEach(d => {
                 for (let cam = 0; cam < 3; cam++) {
                     seq.push({
-                        kind: 'per_dart', player: p.player, round: t.round,
-                        dart: d.dart_index, cam,
+                        kind: 'per_dart',
+                        player: p.player,
+                        playerName,
+                        round: t.round,
+                        dart: d.dart_index,
+                        cam,
+                        dartLabel: d.label || '',
+                        dartScore: Number(d.score || 0),
+                        xMm: (d.x_mm == null) ? null : Number(d.x_mm),
+                        yMm: (d.y_mm == null) ? null : Number(d.y_mm),
+                        agreement: d.agreement_bucket || '',
+                        bot: !!d.bot,
+                        turnTotal,
+                        turnSequenceLabels,
                     });
                 }
             });
             if (t.end_of_turn) {
                 for (let cam = 0; cam < 3; cam++) {
                     seq.push({
-                        kind: 'eot', player: p.player, round: t.round,
-                        dart: 0, cam,
+                        kind: 'eot',
+                        player: p.player,
+                        playerName,
+                        round: t.round,
+                        dart: 0,
+                        cam,
+                        turnTotal,
+                        turnSequenceLabels,
                     });
                 }
             }
@@ -6506,12 +6532,91 @@ function _applyLightbox() {
     const kindLabel = item.kind === 'per_dart' ? `Dart ${item.dart + 1}` : 'End-of-turn';
     const viewLabel = _lightbox.warped ? ' · Warped' : '';
     document.getElementById('mr-lightbox-caption').textContent =
-        `Player ${item.player} · Round ${item.round} · ${kindLabel} · Cam ${item.cam}${viewLabel}`;
+        `${item.playerName || ('Player ' + item.player)} · Round ${item.round} · ${kindLabel} · Cam ${item.cam}${viewLabel}`;
     document.getElementById('mr-lightbox-pos').textContent =
         `${_lightbox.position + 1} / ${_lightbox.sequence.length}`;
     document.getElementById('mr-lightbox-raw').classList.toggle('mr-btn--active', !_lightbox.warped);
     const warpBtn = document.getElementById('mr-lightbox-warp');
     if (warpBtn) warpBtn.classList.toggle('mr-btn--active', _lightbox.warped);
+
+    _renderLightboxScorecard(item);
+}
+
+function _renderLightboxScorecard(item) {
+    const host = document.getElementById('mr-lightbox-scorecard');
+    if (!host) return;
+    while (host.firstChild) host.removeChild(host.firstChild);
+
+    const card = document.createElement('div');
+    card.className = 'mr-sc';
+
+    // Kicker row: what we're looking at + player
+    const kicker = document.createElement('div');
+    kicker.className = 'mr-sc__kicker';
+    const kickerText = item.kind === 'per_dart'
+        ? `Dart ${item.dart + 1} · Round ${item.round}`
+        : `End of Turn · Round ${item.round}`;
+    kicker.textContent = kickerText;
+    card.appendChild(kicker);
+
+    const who = document.createElement('div');
+    who.className = 'mr-sc__who';
+    who.textContent = (item.playerName || ('Player ' + item.player))
+        + (item.bot ? ' · Bot' : '');
+    card.appendChild(who);
+
+    if (item.kind === 'per_dart') {
+        // Hero label + score for this dart
+        const hero = document.createElement('div');
+        hero.className = 'mr-sc__hero';
+        const heroLabel = document.createElement('strong');
+        heroLabel.textContent = item.dartLabel || '—';
+        const heroScore = document.createElement('em');
+        heroScore.textContent = String(item.dartScore || 0);
+        hero.appendChild(heroLabel);
+        hero.appendChild(heroScore);
+        card.appendChild(hero);
+
+        // Coord + agreement chips
+        const chips = document.createElement('div');
+        chips.className = 'mr-sc__chips';
+        if (item.xMm != null && item.yMm != null) {
+            const coord = document.createElement('span');
+            coord.className = 'mr-sc__chip';
+            coord.textContent = `${item.xMm.toFixed(1)}mm, ${item.yMm.toFixed(1)}mm`;
+            chips.appendChild(coord);
+        }
+        if (item.agreement) {
+            const agr = document.createElement('span');
+            agr.className = 'mr-sc__chip mr-sc__chip--agr';
+            agr.textContent = String(item.agreement);
+            chips.appendChild(agr);
+        }
+        if (chips.childElementCount > 0) card.appendChild(chips);
+    } else {
+        // End-of-turn: show the 3-dart sequence + total
+        const hero = document.createElement('div');
+        hero.className = 'mr-sc__hero';
+        const heroLabel = document.createElement('strong');
+        heroLabel.textContent = 'Turn';
+        const heroScore = document.createElement('em');
+        heroScore.textContent = String(item.turnTotal || 0);
+        hero.appendChild(heroLabel);
+        hero.appendChild(heroScore);
+        card.appendChild(hero);
+
+        if (item.turnSequenceLabels) {
+            const seq = document.createElement('div');
+            seq.className = 'mr-sc__chips';
+            const chip = document.createElement('span');
+            chip.className = 'mr-sc__chip';
+            chip.textContent = item.turnSequenceLabels;
+            seq.appendChild(chip);
+            card.appendChild(seq);
+        }
+    }
+
+    host.appendChild(card);
 }
 
 
