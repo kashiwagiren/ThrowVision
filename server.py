@@ -2931,6 +2931,47 @@ def api_get_match_frame_annotated(match_id: int, kind: str, p: int, r: int,
     return Response(blob, mimetype="image/jpeg")
 
 
+@app.route("/api/matches/<int:match_id>/frame/<kind>/<int:p>/<int:r>/<int:d>/<int:cam>/warped",
+           methods=["GET"])
+def api_get_match_frame_warped(match_id: int, kind: str, p: int, r: int,
+                                d: int, cam: int):
+    """Return the stored capture unwarped via the current per-camera homography.
+
+    Uses the live calibrator for the requested cam. If calibration has changed
+    since the match, this view reflects the current calibration, not the one
+    in use when the dart was thrown.
+    """
+    if kind not in _ALLOWED_KINDS:
+        return ("invalid kind", 400)
+    if not _mr_validate_coords(p, r, d, cam):
+        return ("out of range", 400)
+    fname = _mr_frame_filename(kind, p, r, d, cam)
+    if fname is None:
+        return ("invalid kind", 400)
+    folder = (match_review.DATA_ROOT / f"match_{match_id}" / "frames").resolve()
+    fpath = folder / fname
+    if not fpath.is_file():
+        return ("", 404)
+    if cam >= len(_calibrators) or _calibrators[cam] is None:
+        return ("calibrator unavailable", 503)
+    cal = _calibrators[cam]
+    if getattr(cal, "_M", None) is None:
+        return ("not calibrated", 503)
+    try:
+        img = cv2.imread(str(fpath), cv2.IMREAD_COLOR)
+        if img is None:
+            return ("decode failed", 500)
+        warped = cal.unwarp(img)
+        ok, buf = cv2.imencode(".jpg", warped,
+                               [int(cv2.IMWRITE_JPEG_QUALITY), 85])
+        if not ok:
+            return ("encode failed", 500)
+        return Response(bytes(buf), mimetype="image/jpeg")
+    except Exception as exc:  # noqa: BLE001
+        print(f"[match_review] warped render failed: {exc}", flush=True)
+        return ("render failed", 500)
+
+
 @app.route("/api/accuracy/summary")
 def api_accuracy_summary():
     limit = int(request.args.get("limit", 50))

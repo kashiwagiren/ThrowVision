@@ -7933,14 +7933,17 @@ body {
 }
 .mr-captures-label { margin-top: 8px; font-size: 12px; color: var(--muted, #889); }
 .mr-thumbrow {
-    display: flex; align-items: center; gap: 6px; margin: 4px 0;
+    display: grid;
+    grid-template-columns: 70px repeat(3, minmax(0, 1fr));
+    align-items: center; gap: 8px; margin: 6px 0;
 }
-.mr-thumb-label { width: 70px; font-size: 12px; color: var(--muted, #889); }
+.mr-thumb-label { font-size: 12px; color: var(--muted, #889); }
 .mr-thumb {
-    width: 160px; aspect-ratio: 16 / 9;
+    width: 100%; aspect-ratio: 16 / 9;
     object-fit: cover; border-radius: 4px;
     background: rgba(0,0,0,0.4); cursor: pointer;
     border: 1px solid rgba(255,255,255,0.08);
+    display: block;
 }
 .mr-thumb:hover { border-color: var(--accent, #8fdb8f); }
 .mr-thumb--missing {
@@ -7967,4 +7970,24 @@ body {
 .mr-lightbox__controls, .mr-lightbox__nav {
     display: flex; gap: 8px; align-items: center; color: #aaa;
 }
-.mr-btn--active { background: var(--accent, #3a7d3a); color: #fff; }
+.mr-lightbox__controls .btn,
+.mr-lightbox__nav .btn {
+    background: rgba(255,255,255,0.08);
+    color: #e8e8e8;
+    border: 1px solid rgba(255,255,255,0.22);
+    padding: 6px 14px; border-radius: 6px;
+    cursor: pointer;
+    transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+.mr-lightbox__controls .btn:hover,
+.mr-lightbox__nav .btn:hover {
+    background: rgba(255,255,255,0.16);
+    border-color: rgba(255,255,255,0.38);
+    color: #fff;
+}
+.mr-lightbox__controls .btn.mr-btn--active,
+.mr-btn--active {
+    background: var(--accent, #3a7d3a);
+    color: #fff;
+    border-color: var(--accent, #3a7d3a);
+}

@@ -6109,7 +6109,7 @@ const _lightbox = {
     matchId: null,
     sequence: [],  // list of {kind, player, round, dart, cam}
     position: 0,
-    annotated: false,
+    warped: false,
 };
 
 
@@ -6147,7 +6147,7 @@ function openLightbox(matchId, kind, player, round, dart, cam) {
         s.kind === kind && s.player === player && s.round === round
         && s.dart === dart && s.cam === cam);
     if (_lightbox.position < 0) _lightbox.position = 0;
-    _lightbox.annotated = false;
+    _lightbox.warped = false;
     _lightbox.matchId = matchId;
     _applyLightbox();
     document.getElementById('mr-lightbox').style.display = '';
@@ -6187,24 +6187,26 @@ function _lightboxKey(ev) {
 function _applyLightbox() {
     const item = _lightbox.sequence[_lightbox.position];
     if (!item) return;
-    const suffix = _lightbox.annotated ? '/annotated' : '';
+    const suffix = _lightbox.warped ? '/warped' : '';
     const url = `/api/matches/${_lightbox.matchId}/frame/${item.kind}/${item.player}/${item.round}/${item.dart}/${item.cam}${suffix}`;
     document.getElementById('mr-lightbox-img').src = url;
     const kindLabel = item.kind === 'per_dart' ? `Dart ${item.dart + 1}` : 'End-of-turn';
+    const viewLabel = _lightbox.warped ? ' · Warped' : '';
     document.getElementById('mr-lightbox-caption').textContent =
-        `Player ${item.player} · Round ${item.round} · ${kindLabel} · Cam ${item.cam}`;
+        `Player ${item.player} · Round ${item.round} · ${kindLabel} · Cam ${item.cam}${viewLabel}`;
     document.getElementById('mr-lightbox-pos').textContent =
         `${_lightbox.position + 1} / ${_lightbox.sequence.length}`;
-    document.getElementById('mr-lightbox-raw').classList.toggle('mr-btn--active', !_lightbox.annotated);
-    document.getElementById('mr-lightbox-ann').classList.toggle('mr-btn--active', _lightbox.annotated);
+    document.getElementById('mr-lightbox-raw').classList.toggle('mr-btn--active', !_lightbox.warped);
+    const warpBtn = document.getElementById('mr-lightbox-warp');
+    if (warpBtn) warpBtn.classList.toggle('mr-btn--active', _lightbox.warped);
 }
 
 
 document.addEventListener('DOMContentLoaded', () => {
     const raw = document.getElementById('mr-lightbox-raw');
-    const ann = document.getElementById('mr-lightbox-ann');
-    if (raw) raw.addEventListener('click', () => { _lightbox.annotated = false; _applyLightbox(); });
-    if (ann) ann.addEventListener('click', () => { _lightbox.annotated = true; _applyLightbox(); });
+    const warp = document.getElementById('mr-lightbox-warp');
+    if (raw) raw.addEventListener('click', () => { _lightbox.warped = false; _applyLightbox(); });
+    if (warp) warp.addEventListener('click', () => { _lightbox.warped = true; _applyLightbox(); });
 });
 
 window.openLightbox = openLightbox;
