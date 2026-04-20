@@ -364,7 +364,27 @@ _game = None                           # active GameX01 / GameCricket / GameCoun
 _match_review_game_id: Optional[int] = None
 _game_pending_mode: Optional[str] = None   # mode to launch after bullseye
 _game_pending_opts: dict = {}              # options for the pending game
+_pending_player_names: List[str] = ["Player 1", "Player 2"]
+_current_player_names: List[str] = ["Player 1", "Player 2"]
 _practice_dart_count: int = 0              # darts thrown in current practice turn
+
+
+def _sanitize_player_names(raw) -> List[str]:
+    """Normalize a client-supplied player_names payload.
+
+    Accepts list or None; returns exactly two non-empty names capped at 24
+    chars, falling back to "Player 1" / "Player 2".
+    """
+    defaults = ["Player 1", "Player 2"]
+    if not isinstance(raw, (list, tuple)):
+        return defaults
+    out = []
+    for i in range(2):
+        val = ""
+        if i < len(raw) and isinstance(raw[i], str):
+            val = raw[i].strip()[:24]
+        out.append(val or defaults[i])
+    return out
 
 # ── Static routes ────────────────────────────────────────────────────────────
 
@@ -2068,7 +2088,7 @@ def on_clear_tips():
 def on_start_bullseye(data=None):
     """Begin bullseye throw sequence to determine first player."""
     global _game_mode, _bullseye, _game, _detection_paused
-    global _game_pending_mode, _game_pending_opts
+    global _game_pending_mode, _game_pending_opts, _pending_player_names
     global _awaiting_takeout, _takeout_hand_seen
 
     if _game is not None and not _game.is_finished:
@@ -2077,6 +2097,9 @@ def on_start_bullseye(data=None):
 
     _game_pending_mode = data.get("mode", "x01") if data else "x01"
     _game_pending_opts = data.get("options", {}) if data else {}
+    _pending_player_names = _sanitize_player_names(
+        data.get("player_names") if data else None
+    )
     _bullseye = BullseyeThrow()
     _game = None
     _game_mode = "bullseye"
@@ -2107,7 +2130,7 @@ def on_start_bullseye(data=None):
 @socketio.on("start_game")
 def on_start_game(data):
     """Start a game directly (skip bullseye if desired)."""
-    global _game_mode, _game, _bullseye, _detection_paused
+    global _game_mode, _game, _bullseye, _detection_paused, _current_player_names
 
     if _game is not None and not _game.is_finished:
         _abandon_current_match("user_quit")
@@ -2116,6 +2139,8 @@ def on_start_game(data):
     mode = data.get("mode", "x01")
     options = data.get("options", {})
     first_player = data.get("first_player", 1)
+    player_names = _sanitize_player_names(data.get("player_names"))
+    _current_player_names = player_names
 
     _bullseye = None
     _game = _create_game(mode, options)
@@ -2138,13 +2163,15 @@ def on_start_game(data):
         match_review.start(
             game_id=_match_review_game_id,
             mode=mode,
-            players=[{"player": 1, "name": "Player 1"},
-                     {"player": 2, "name": "Player 2"}],
+            players=[{"player": 1, "name": player_names[0]},
+                     {"player": 2, "name": player_names[1]}],
             started_at=time.time(),
         )
     except Exception as exc:
         print(f"[MATCH_REVIEW] start failed: {exc}")
         _match_review_game_id = None
+
+    socketio.emit("player_names", {"names": list(player_names)})
 
     # Auto-open cameras and start detection
     if not _cameras_open:
@@ -2535,8 +2562,11 @@ def _start_pending_game(winner: int):
 def _do_start_pending_game():
     """Actually create and start the game after takeout confirmed."""
     global _game_mode, _game, _bullseye, _awaiting_takeout, _takeout_hand_seen
+    global _current_player_names
     mode = _game_pending_mode or "x01"
     opts = _game_pending_opts or {}
+    player_names = list(_pending_player_names) if _pending_player_names else ["Player 1", "Player 2"]
+    _current_player_names = player_names
     _game = _create_game(mode, opts)
     if _game is None:
         _game_mode = None
@@ -2559,13 +2589,14 @@ def _do_start_pending_game():
         match_review.start(
             game_id=_match_review_game_id,
             mode=mode,
-            players=[{"player": 1, "name": "Player 1"},
-                     {"player": 2, "name": "Player 2"}],
+            players=[{"player": 1, "name": player_names[0]},
+                     {"player": 2, "name": player_names[1]}],
             started_at=time.time(),
         )
     except Exception as exc:
         print(f"[MATCH_REVIEW] start failed (bullseye path): {exc}")
         _match_review_game_id = None
+    socketio.emit("player_names", {"names": list(player_names)})
     socketio.emit("game_state", _game.state())
     print(f"[GAME] {mode.upper()} game started (winner of bullseye: Player {_pending_game_winner})")
 

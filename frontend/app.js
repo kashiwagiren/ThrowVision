@@ -1878,6 +1878,9 @@ function connectSocket() {
   socket.on('game_over', onGameOver);
   socket.on('stats_data', onStatsData);
   socket.on('accuracy_session', (data) => applyPracticeAccuracySession(data));
+  socket.on('player_names', (data) => {
+    if (data && Array.isArray(data.names)) applyScoreboardPlayerNames(data.names);
+  });
 
   // Clear dart dots from board when turn takeout is confirmed
   socket.on('clear_board_dots', () => {
@@ -4651,6 +4654,35 @@ function _isBullOffEnabled() {
   return input ? input.checked : true;
 }
 
+function _resolvePlayerNames() {
+  // Read inputs and return [p1, p2] with "Player N" fallback when empty.
+  const raw1 = (document.getElementById('game-p1-name')?.value || '').trim();
+  const raw2 = (document.getElementById('game-p2-name')?.value || '').trim();
+  const p1 = raw1.slice(0, 24) || 'Player 1';
+  const p2 = raw2.slice(0, 24) || 'Player 2';
+  return [p1, p2];
+}
+
+function onPlayerNameInput() {
+  // Live-update the starting-player segment labels as the user types.
+  const [n1, n2] = _resolvePlayerNames();
+  const b1 = document.getElementById('game-first-player-1');
+  const b2 = document.getElementById('game-first-player-2');
+  if (b1) b1.textContent = n1;
+  if (b2) b2.textContent = n2;
+  updateGameConfigView?.();
+}
+
+function applyScoreboardPlayerNames(names) {
+  if (!Array.isArray(names) || names.length < 2) return;
+  document.querySelectorAll('#player-panel-1 .pp-name').forEach(el => {
+    el.textContent = names[0];
+  });
+  document.querySelectorAll('#player-panel-2 .pp-name').forEach(el => {
+    el.textContent = names[1];
+  });
+}
+
 function _selectedGameConfig() {
   if (!_selectedGameMode) return null;
 
@@ -4658,6 +4690,7 @@ function _selectedGameConfig() {
     mode: _selectedGameMode,
     bullOff: _isBullOffEnabled(),
     firstPlayer: _gameFirstPlayer,
+    playerNames: _resolvePlayerNames(),
     options: {},
   };
 
@@ -4791,8 +4824,10 @@ function startGame() {
     ...config.options,
     bull_off: config.bullOff,
     first_player: config.firstPlayer,
+    player_names: config.playerNames,
   };
   _prevGamePlayer = null;  // Reset turn tracking for new game
+  applyScoreboardPlayerNames(config.playerNames);
 
   // Clear any residual dots from previous sessions
   clearBoardDots();
@@ -4807,12 +4842,17 @@ function startGame() {
   setStatus('waiting', 'Opening cameras…');
 
   if (config.bullOff) {
-    socket.emit('start_bullseye', { mode: _gameMode, options: config.options });
+    socket.emit('start_bullseye', {
+      mode: _gameMode,
+      options: config.options,
+      player_names: config.playerNames,
+    });
   } else {
     socket.emit('start_game', {
       mode: _gameMode,
       options: config.options,
       first_player: config.firstPlayer,
+      player_names: config.playerNames,
     });
   }
 }
@@ -4828,18 +4868,28 @@ function restartGame() {
   showPage('game');
   const bullOff = !!_gameOpts.bull_off;
   const firstPlayer = Number(_gameOpts.first_player || 1);
+  const playerNames = Array.isArray(_gameOpts.player_names)
+    ? _gameOpts.player_names
+    : ['Player 1', 'Player 2'];
   const options = { ..._gameOpts };
   delete options.bull_off;
   delete options.first_player;
+  delete options.player_names;
   document.getElementById('bullseye-phase').style.display = bullOff ? '' : 'none';
   document.getElementById('game-active').style.display = 'none';
+  applyScoreboardPlayerNames(playerNames);
   if (bullOff) {
-    socket.emit('start_bullseye', { mode: _gameMode, options });
+    socket.emit('start_bullseye', {
+      mode: _gameMode,
+      options,
+      player_names: playerNames,
+    });
   } else {
     socket.emit('start_game', {
       mode: _gameMode,
       options,
       first_player: firstPlayer,
+      player_names: playerNames,
     });
   }
 }

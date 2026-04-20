@@ -154,6 +154,20 @@
                   onclick="setGameFirstPlayer(2)">Player 2</button>
               </div>
             </div>
+            <div class="game-form-grid" id="game-player-names-grid">
+              <label class="game-field">
+                <span>Player 1 name</span>
+                <input type="text" id="game-p1-name" maxlength="24"
+                  placeholder="Player 1" autocomplete="off"
+                  oninput="onPlayerNameInput()">
+              </label>
+              <label class="game-field">
+                <span>Player 2 name</span>
+                <input type="text" id="game-p2-name" maxlength="24"
+                  placeholder="Player 2" autocomplete="off"
+                  oninput="onPlayerNameInput()">
+              </label>
+            </div>
           </section>
 
           <section class="game-config-group" id="config-x01">
