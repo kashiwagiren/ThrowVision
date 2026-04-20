@@ -8123,12 +8123,16 @@ body {
 .mr-lightbox__caption { color: #ddd; font-size: 14px; }
 
 /* ── Lightbox scorecard (dart info overlay) ───────────────────────── */
+/* Lives in the top-left corner so it never collides with the close ✕
+   button (anchored top-right). `max-width` keeps it from spilling across
+   the image on smaller viewports. */
 .mr-lightbox__scorecard {
   position: absolute;
-  top: 24px;
-  right: 24px;
+  top: 20px;
+  left: 20px;
   pointer-events: none;
   z-index: 3;
+  max-width: min(280px, 34vw);
 }
 
 .mr-sc {
@@ -8258,16 +8262,43 @@ body {
 }
 
 /* ── Swatch picker (Game Setup) ────────────────────────────── */
+/* The whole "Flight: ●●●●●●●●" row, sitting directly under a
+   player-name input. Uses a fixed row of swatches with an inline
+   label so alignment is stable regardless of input width. */
+.flight-picker-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 12px;
+    padding: 6px 2px 2px;
+}
+.flight-picker-label {
+    /* Small, muted caption-style tag. `display:inline` so the
+       `.game-field span` block-level rule above doesn't turn it into
+       a full-width block and push the swatches to the next line. */
+    display: inline !important;
+    margin: 0 !important;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: rgba(255, 255, 255, 0.42);
+    flex: 0 0 auto;
+}
 .flight-picker {
     display: flex;
     flex-wrap: wrap;
-    gap: 6px;
-    margin-top: 8px;
+    align-items: center;
+    gap: 8px;
+    flex: 1 1 auto;
+    /* Give the selected-state glow a couple of px of breathing room so
+       it doesn't clip against the input above. */
+    padding: 2px 0;
 }
 .flight-swatch {
     appearance: none;
     -webkit-appearance: none;
-    border: 2px solid rgba(255,255,255,0.18);
+    border: 2px solid rgba(255,255,255,0.22);
     width: 22px;
     height: 22px;
     border-radius: 50%;
@@ -8277,6 +8308,7 @@ body {
     box-shadow: 0 1px 2px rgba(0,0,0,0.35);
     transition: transform 120ms ease, border-color 120ms ease,
                 box-shadow 120ms ease;
+    flex: 0 0 auto;
 }
 .flight-swatch[data-flight="blue"]   { --sw: var(--flight-blue);   }
 .flight-swatch[data-flight="red"]    { --sw: var(--flight-red);    }
