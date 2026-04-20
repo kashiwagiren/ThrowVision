@@ -1998,6 +1998,11 @@ function connectSocket() {
   });
 
   // ── TF-Luna hotplug auto-detection ─────────────────────────────────
+  // Track previous online state so we only toast on the OFFLINE→ONLINE
+  // transition (the server re-emits tfluna_status on every socket reconnect
+  // and on settings saves, which would otherwise spam the toast).
+  let _tflunaWasOnline = false;
+  let _tflunaLastPort = null;
   socket.on('tfluna_status', (data) => {
     // Auto-update settings UI when sensor is plugged or unplugged
     const enabledEl = document.getElementById('set-tfluna-enabled');
@@ -2005,12 +2010,24 @@ function connectSocket() {
     if (enabledEl) enabledEl.checked = !!data.enabled;
     if (portEl && data.port != null) portEl.textContent = data.port;
 
-    if (data.detected && data.connected) {
+    const online = !!(data.detected && data.connected);
+    if (online) {
       _setTFLunaStatus('tfluna-ok', `Auto-detected on ${data.port}`);
-      showToast(`TF-Luna sensor detected on ${data.port}`, 'ok');
+      // Only show the toast on the first transition to online, or if the
+      // sensor hopped to a different port.
+      if (!_tflunaWasOnline || _tflunaLastPort !== data.port) {
+        showToast(`TF-Luna sensor detected on ${data.port}`, 'ok');
+      }
+      _tflunaWasOnline = true;
+      _tflunaLastPort = data.port;
     } else if (!data.detected) {
       _setTFLunaStatus('tfluna-fail', 'Sensor removed');
       _updateTFLunaLive({ connected: false });
+      _tflunaWasOnline = false;
+      _tflunaLastPort = null;
+    } else {
+      // detected but not connected — don't toast, but clear online state
+      _tflunaWasOnline = false;
     }
   });
 
