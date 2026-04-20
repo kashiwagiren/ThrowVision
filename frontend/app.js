@@ -5256,38 +5256,242 @@ function _renderPlayerTurn(targetId, darts, mode) {
   `;
 }
 
-function _renderGameThrowStrip(darts, mode) {
+// ── Per-dart aim suggestions ────────────────────────────────────────
+//
+// Populates the empty dart cards with "Aim here next" hints:
+//   * X01    : standard double-out checkout path (table generated at load).
+//              Setup shot is T20 when the remaining score isn't on a
+//              3-dart finish.
+//   * Cricket: highest-value target the current player hasn't closed
+//              (prefers triple form for 15-20, "BULL" for 25).
+//   * Count Up: always T20 (max scoring shot).
+
+const X01_CHECKOUTS = (() => {
+  const doubles = {};
+  for (let n = 1; n <= 20; n++) doubles[n * 2] = `D${n}`;
+  doubles[50] = 'BULL';
+
+  // Setup shots (first dart in a 2- or 3-dart finish): triples high->low,
+  // BULL, outer bull, singles high->low.
+  const setupShots = [];
+  for (let n = 20; n >= 1; n--) setupShots.push({ score: n * 3, label: `T${n}` });
+  setupShots.push({ score: 50, label: 'BULL' });
+  setupShots.push({ score: 25, label: '25' });
+  for (let n = 20; n >= 1; n--) setupShots.push({ score: n, label: `S${n}` });
+
+  // Preferred finishing doubles (classic tournament order): D20 is safest
+  // (miss lands in D5/D1 lanes), then D16, D18, D17... Bull is last because
+  // it's a small target.
+  const preferredDoubleOrder = [40, 32, 36, 34, 28, 24, 20, 16, 12, 8, 4,
+                                 38, 30, 26, 22, 18, 14, 10, 6, 2, 50];
+
+  const one = {};
+  for (const s of Object.keys(doubles)) one[s] = [doubles[s]];
+
+  const two = {};
+  for (let r = 2; r <= 170; r++) {
+    if (one[r]) { two[r] = one[r]; continue; }
+    outer: for (const dScore of preferredDoubleOrder) {
+      const setupNeed = r - dScore;
+      if (setupNeed <= 0) continue;
+      for (const s of setupShots) {
+        if (s.score === setupNeed) {
+          two[r] = [s.label, doubles[dScore]];
+          break outer;
+        }
+      }
+    }
+  }
+
+  const three = {};
+  for (let r = 2; r <= 170; r++) {
+    if (two[r] && two[r].length <= 2) { three[r] = two[r].slice(); continue; }
+    for (const fc of setupShots) {
+      const rem = r - fc.score;
+      if (rem >= 2 && two[rem] && two[rem].length === 2) {
+        three[r] = [fc.label, ...two[rem]];
+        break;
+      }
+    }
+  }
+  return { one, two, three };
+})();
+
+function _x01LabelScore(label) {
+  if (!label) return 0;
+  if (label === 'BULL') return 50;
+  if (label === '25') return 25;
+  const m = String(label).match(/^([STD])(\d+)$/);
+  if (!m) return 0;
+  const n = Number(m[2]);
+  const mult = m[1] === 'T' ? 3 : m[1] === 'D' ? 2 : 1;
+  return n * mult;
+}
+
+function _x01ThrownSoFar(darts) {
+  return (darts || []).reduce(
+    (sum, d) => sum + (d && !d.bust ? Number(d.score || 0) : 0),
+    0,
+  );
+}
+
+function _suggestX01(state) {
+  const out = [null, null, null];
+  const playerIdx = Math.max(0, Number(state.current_player || 1) - 1);
+  const scores = Array.isArray(state.scores) ? state.scores : [];
+  const remainingAtTurnStart = Number(scores[playerIdx] || 0);
+  const darts = Array.isArray(state.darts_this_turn) ? state.darts_this_turn : [];
+  const thrown = _x01ThrownSoFar(darts);
+  const remaining = remainingAtTurnStart - thrown;
+  if (remaining <= 0) return out;
+  if (remaining === 1) return out;
+
+  const dartsLeft = 3 - darts.length;
+
+  if (dartsLeft >= 1 && X01_CHECKOUTS.one[remaining]) {
+    out[darts.length] = {
+      label: X01_CHECKOUTS.one[remaining][0],
+      hint: `Finish on ${remaining}`,
+    };
+    return out;
+  }
+  if (dartsLeft >= 2 && X01_CHECKOUTS.two[remaining]
+      && X01_CHECKOUTS.two[remaining].length === 2) {
+    const path = X01_CHECKOUTS.two[remaining];
+    const leave = remaining - _x01LabelScore(path[0]);
+    out[darts.length]     = { label: path[0], hint: `Checkout ${remaining}` };
+    out[darts.length + 1] = { label: path[1], hint: `Finish on ${leave}` };
+    return out;
+  }
+  if (dartsLeft >= 3 && X01_CHECKOUTS.three[remaining]
+      && X01_CHECKOUTS.three[remaining].length === 3) {
+    const path = X01_CHECKOUTS.three[remaining];
+    const s1 = _x01LabelScore(path[0]);
+    const s2 = _x01LabelScore(path[1]);
+    out[0] = { label: path[0], hint: `Checkout ${remaining}` };
+    out[1] = { label: path[1], hint: `Leave ${remaining - s1 - s2}` };
+    out[2] = { label: path[2], hint: `Finish on ${remaining - s1 - s2}` };
+    return out;
+  }
+
+  for (let i = darts.length; i < 3; i++) {
+    out[i] = { label: 'T20', hint: 'Max scoring shot' };
+  }
+  return out;
+}
+
+const CRICKET_TARGET_LABEL = {
+  15: 'T15', 16: 'T16', 17: 'T17', 18: 'T18', 19: 'T19', 20: 'T20', 25: 'BULL',
+};
+
+function _suggestCricket(state) {
+  const out = [null, null, null];
+  const playerIdx = Math.max(0, Number(state.current_player || 1) - 1);
+  const numbers = Array.isArray(state.numbers) ? state.numbers : [20, 19, 18, 17, 16, 15, 25];
+  const marks = Array.isArray(state.marks) ? state.marks : [];
+  const me = marks[playerIdx] || {};
+  const opp = marks[1 - playerIdx] || {};
+  const darts = Array.isArray(state.darts_this_turn) ? state.darts_this_turn : [];
+
+  const priority = [20, 19, 18, 17, 16, 15, 25].filter((n) => numbers.includes(n));
+  let target = null;
+  for (const n of priority) {
+    if (Number(me[String(n)] || 0) < 3) { target = n; break; }
+  }
+  if (target == null) {
+    for (const n of priority) {
+      if (Number(me[String(n)] || 0) >= 3 && Number(opp[String(n)] || 0) < 3) {
+        target = n; break;
+      }
+    }
+  }
+  if (target == null) return out;
+
+  const label = CRICKET_TARGET_LABEL[target] || `S${target}`;
+  const hint = Number(me[String(target)] || 0) < 3
+    ? `Close ${target === 25 ? 'bull' : target}`
+    : `Score on ${target === 25 ? 'bull' : target}`;
+  for (let i = darts.length; i < 3; i++) {
+    out[i] = { label, hint };
+  }
+  return out;
+}
+
+function _suggestCountUp(state) {
+  const out = [null, null, null];
+  const darts = Array.isArray(state.darts_this_turn) ? state.darts_this_turn : [];
+  for (let i = darts.length; i < 3; i++) {
+    out[i] = { label: 'T20', hint: 'Max scoring shot' };
+  }
+  return out;
+}
+
+function _computeAimSuggestions(state, mode) {
+  if (!state) return [null, null, null];
+  if (mode === 'x01') return _suggestX01(state);
+  if (mode === 'cricket') return _suggestCricket(state);
+  if (mode === 'countup') return _suggestCountUp(state);
+  return [null, null, null];
+}
+
+function _buildThrowCard(index, dart, mode, aim) {
+  const card = document.createElement('div');
+  card.className = 'game-throw-card';
+  if (!dart) card.classList.add('is-empty');
+  if (dart && dart.bust) card.classList.add('is-bust');
+
+  const kicker = document.createElement('span');
+  kicker.className = 'game-throw-kicker';
+  kicker.textContent = `Dart ${index + 1}`;
+  card.appendChild(kicker);
+
+  const strong = document.createElement('strong');
+  const small = document.createElement('small');
+  const em = document.createElement('em');
+
+  if (!dart) {
+    if (aim && aim.label) {
+      card.classList.add('is-suggest');
+      strong.textContent = aim.label;
+      small.textContent = aim.hint || 'Suggested aim';
+      em.className = 'game-throw-aim';
+      em.textContent = 'AIM';
+    } else {
+      strong.textContent = 'No dart';
+      small.textContent = 'Waiting for detection';
+      em.textContent = '';
+    }
+  } else {
+    const baseScore = Number(dart.score || 0);
+    let meta;
+    if (mode === 'countup' && Number(dart.multiplier || 1) > 1) {
+      meta = `Multiplier x${dart.multiplier}`;
+    } else if (dart.points_added) {
+      meta = `Points +${dart.points_added}`;
+    } else if (dart.marks_added) {
+      meta = `Marks ${dart.marks_added}`;
+    } else {
+      meta = 'Recorded';
+    }
+    strong.textContent = String(dart.label || '');
+    small.textContent = meta;
+    em.textContent = dart.bust ? 'BUST' : String(baseScore);
+  }
+
+  card.appendChild(strong);
+  card.appendChild(small);
+  card.appendChild(em);
+  return card;
+}
+
+function _renderGameThrowStrip(darts, mode, suggestions) {
   const el = document.getElementById('game-throw-strip');
   if (!el) return;
-  const slots = Array.from({ length: 3 }, (_, index) => {
-    const dart = darts[index];
-    if (!dart) {
-      return `
-        <div class="game-throw-card is-empty">
-          <span class="game-throw-kicker">Dart ${index + 1}</span>
-          <strong>No dart</strong>
-          <small>Waiting for detection</small>
-        </div>
-      `;
-    }
-
-    const baseScore = Number(dart.score || 0);
-    const meta = mode === 'countup' && Number(dart.multiplier || 1) > 1
-      ? `Multiplier x${dart.multiplier}`
-      : (dart.points_added
-        ? `Points +${dart.points_added}`
-        : (dart.marks_added ? `Marks ${dart.marks_added}` : 'Recorded'));
-
-    return `
-      <div class="game-throw-card ${dart.bust ? 'is-bust' : ''}">
-        <span class="game-throw-kicker">Dart ${index + 1}</span>
-        <strong>${dart.label}</strong>
-        <small>${meta}</small>
-        <em>${dart.bust ? 'BUST' : `${baseScore}`}</em>
-      </div>
-    `;
-  });
-  el.innerHTML = slots.join('');
+  const aims = Array.isArray(suggestions) ? suggestions : [null, null, null];
+  while (el.firstChild) el.removeChild(el.firstChild);
+  for (let i = 0; i < 3; i++) {
+    el.appendChild(_buildThrowCard(i, darts[i], mode, aims[i]));
+  }
 }
 
 function _renderModePanel(kicker, title, bodyHtml) {
@@ -5461,7 +5665,7 @@ function renderX01State(s) {
 
   _renderPlayerTurn('pp1-darts', s.current_player === 1 ? s.darts_this_turn : [], 'x01');
   _renderPlayerTurn('pp2-darts', s.current_player === 2 ? s.darts_this_turn : [], 'x01');
-  _renderGameThrowStrip(s.darts_this_turn || [], 'x01');
+  _renderGameThrowStrip(s.darts_this_turn || [], 'x01', _computeAimSuggestions(s, 'x01'));
 
   _renderGameTurnInfo(s, [
     `<span class="game-turn-chip">Player ${s.current_player} Throwing</span>`,
@@ -5518,7 +5722,7 @@ function renderCricketState(s) {
 
   _renderPlayerTurn('pp1-darts', s.current_player === 1 ? currentDarts : [], 'cricket');
   _renderPlayerTurn('pp2-darts', s.current_player === 2 ? currentDarts : [], 'cricket');
-  _renderGameThrowStrip(currentDarts, 'cricket');
+  _renderGameThrowStrip(currentDarts, 'cricket', _computeAimSuggestions(s, 'cricket'));
 
   const turnPoints = currentDarts.reduce((sum, dart) => sum + Number(dart.points_added || 0), 0);
   _renderGameTurnInfo(s, [
@@ -5584,7 +5788,7 @@ function renderCountUpState(s) {
 
   _renderPlayerTurn('pp1-darts', s.current_player === 1 ? turnDarts : [], 'countup');
   _renderPlayerTurn('pp2-darts', s.current_player === 2 ? turnDarts : [], 'countup');
-  _renderGameThrowStrip(turnDarts, 'countup');
+  _renderGameThrowStrip(turnDarts, 'countup', _computeAimSuggestions(s, 'countup'));
 
   _renderGameTurnInfo(s, [
     `<span class="game-turn-chip">Round ${s.current_round} / ${s.total_rounds}</span>`,

@@ -2632,6 +2632,29 @@ body {
   border-color: rgba(255, 255, 255, 0.06);
 }
 
+.game-throw-card.is-empty.is-suggest {
+  background:
+    linear-gradient(180deg, rgba(78, 142, 247, 0.12), rgba(78, 142, 247, 0.04)),
+    rgba(255, 255, 255, 0.02);
+  border-color: rgba(78, 142, 247, 0.32);
+  box-shadow: inset 0 0 0 1px rgba(78, 142, 247, 0.08);
+}
+
+.game-throw-card.is-empty.is-suggest strong {
+  color: #cfe0ff;
+}
+
+.game-throw-card.is-empty.is-suggest small {
+  color: rgba(207, 224, 255, 0.7);
+}
+
+.game-throw-card em.game-throw-aim {
+  color: var(--accent);
+  font-size: 14px;
+  font-weight: 800;
+  letter-spacing: 0.18em;
+}
+
 .game-throw-card.is-bust {
   border-color: rgba(224, 82, 82, 0.52);
 }
