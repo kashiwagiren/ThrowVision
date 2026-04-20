@@ -4654,12 +4654,56 @@ function _isBullOffEnabled() {
   return input ? input.checked : true;
 }
 
+function _isBotEnabled() {
+  return !!document.getElementById('match-use-bot')?.checked;
+}
+
+function _resolveBotConfig() {
+  // Returns null when bot is disabled.
+  if (!_isBotEnabled()) return null;
+  const modeEl = document.getElementById('bot-mode');
+  const skillEl = document.getElementById('bot-skill');
+  const mode = modeEl?.value === 'auto_advance' ? 'auto_advance' : 'simulated';
+  const skillRaw = (skillEl?.value || 'medium').toLowerCase();
+  const skill = ['easy', 'medium', 'hard'].includes(skillRaw) ? skillRaw : 'medium';
+  return { enabled: true, mode, skill, seat: 2, name: 'Bot' };
+}
+
+function onBotToggleChanged() {
+  const on = _isBotEnabled();
+  const panel = document.getElementById('bot-config-grid');
+  if (panel) panel.style.display = on ? '' : 'none';
+  const p2Input = document.getElementById('game-p2-name');
+  if (p2Input) {
+    if (on) {
+      p2Input.value = 'Bot';
+      p2Input.readOnly = true;
+      p2Input.classList.add('input-locked');
+    } else {
+      if (p2Input.value === 'Bot') p2Input.value = '';
+      p2Input.readOnly = false;
+      p2Input.classList.remove('input-locked');
+    }
+  }
+  // Reflect bot skill field visibility based on bot mode.
+  _syncBotSkillVisibility();
+  onPlayerNameInput();
+}
+
+function _syncBotSkillVisibility() {
+  const modeEl = document.getElementById('bot-mode');
+  const skillField = document.getElementById('bot-skill-field');
+  if (!modeEl || !skillField) return;
+  skillField.style.display = modeEl.value === 'simulated' ? '' : 'none';
+}
+
 function _resolvePlayerNames() {
   // Read inputs and return [p1, p2] with "Player N" fallback when empty.
   const raw1 = (document.getElementById('game-p1-name')?.value || '').trim();
   const raw2 = (document.getElementById('game-p2-name')?.value || '').trim();
   const p1 = raw1.slice(0, 24) || 'Player 1';
-  const p2 = raw2.slice(0, 24) || 'Player 2';
+  let p2 = raw2.slice(0, 24) || 'Player 2';
+  if (_isBotEnabled()) p2 = 'Bot';
   return [p1, p2];
 }
 
@@ -4691,6 +4735,7 @@ function _selectedGameConfig() {
     bullOff: _isBullOffEnabled(),
     firstPlayer: _gameFirstPlayer,
     playerNames: _resolvePlayerNames(),
+    botConfig: _resolveBotConfig(),
     options: {},
   };
 
@@ -4825,6 +4870,7 @@ function startGame() {
     bull_off: config.bullOff,
     first_player: config.firstPlayer,
     player_names: config.playerNames,
+    bot_config: config.botConfig,
   };
   _prevGamePlayer = null;  // Reset turn tracking for new game
   applyScoreboardPlayerNames(config.playerNames);
@@ -4846,6 +4892,7 @@ function startGame() {
       mode: _gameMode,
       options: config.options,
       player_names: config.playerNames,
+      bot_config: config.botConfig,
     });
   } else {
     socket.emit('start_game', {
@@ -4853,6 +4900,7 @@ function startGame() {
       options: config.options,
       first_player: config.firstPlayer,
       player_names: config.playerNames,
+      bot_config: config.botConfig,
     });
   }
 }
@@ -4871,10 +4919,12 @@ function restartGame() {
   const playerNames = Array.isArray(_gameOpts.player_names)
     ? _gameOpts.player_names
     : ['Player 1', 'Player 2'];
+  const botConfig = _gameOpts.bot_config || null;
   const options = { ..._gameOpts };
   delete options.bull_off;
   delete options.first_player;
   delete options.player_names;
+  delete options.bot_config;
   document.getElementById('bullseye-phase').style.display = bullOff ? '' : 'none';
   document.getElementById('game-active').style.display = 'none';
   applyScoreboardPlayerNames(playerNames);
@@ -4883,6 +4933,7 @@ function restartGame() {
       mode: _gameMode,
       options,
       player_names: playerNames,
+      bot_config: botConfig,
     });
   } else {
     socket.emit('start_game', {
@@ -4890,6 +4941,7 @@ function restartGame() {
       options,
       first_player: firstPlayer,
       player_names: playerNames,
+      bot_config: botConfig,
     });
   }
 }

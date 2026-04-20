@@ -168,6 +168,35 @@
                   oninput="onPlayerNameInput()">
               </label>
             </div>
+
+            <label class="game-switch-row" for="match-use-bot">
+              <span>
+                <strong>Play against Bot</strong>
+                <small>Replaces Player 2 with a simulated opponent. No camera capture for bot turns.</small>
+              </span>
+              <span class="game-switch">
+                <input id="match-use-bot" type="checkbox" onchange="onBotToggleChanged()">
+                <span class="game-switch-slider"></span>
+              </span>
+            </label>
+
+            <div class="game-form-grid" id="bot-config-grid" style="display:none;">
+              <label class="game-field">
+                <span>Bot mode</span>
+                <select id="bot-mode" onchange="updateGameConfigView()">
+                  <option value="simulated" selected>Simulated — throws virtual darts</option>
+                  <option value="auto_advance">Auto-advance — always MISS (solo scoring)</option>
+                </select>
+              </label>
+              <label class="game-field" id="bot-skill-field">
+                <span>Bot skill</span>
+                <select id="bot-skill" onchange="updateGameConfigView()">
+                  <option value="easy">Easy — sprays wide</option>
+                  <option value="medium" selected>Medium — usually scores</option>
+                  <option value="hard">Hard — often hits triples</option>
+                </select>
+              </label>
+            </div>
           </section>
 
           <section class="game-config-group" id="config-x01">

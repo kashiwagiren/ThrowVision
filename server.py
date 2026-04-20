@@ -77,6 +77,7 @@ from board_profile import BoardProfile
 from game_mode import BullseyeThrow, GameX01, GameCricket, GameCountUp
 import accuracy_stats
 import match_review
+import bot_player
 import stats as game_stats
 from lens_calibrator import LensCalibrator
 from anchor_refine import auto_calibrate_from_anchors, refine_anchor_points
@@ -366,6 +367,8 @@ _game_pending_mode: Optional[str] = None   # mode to launch after bullseye
 _game_pending_opts: dict = {}              # options for the pending game
 _pending_player_names: List[str] = ["Player 1", "Player 2"]
 _current_player_names: List[str] = ["Player 1", "Player 2"]
+_pending_bot_config: Optional[dict] = None
+_current_bot_config: Optional[dict] = None
 _practice_dart_count: int = 0              # darts thrown in current practice turn
 
 
@@ -2100,6 +2103,17 @@ def on_start_bullseye(data=None):
     _pending_player_names = _sanitize_player_names(
         data.get("player_names") if data else None
     )
+    global _pending_bot_config
+    _pending_bot_config = bot_player.sanitize_bot_config(
+        data.get("bot_config") if data else None
+    )
+    if _pending_bot_config is not None:
+        # Reflect bot name on the pending names list so scoreboard + review
+        # show "Bot" (or custom bot name) for the bot's seat.
+        seat = _pending_bot_config.get("seat", 2)
+        bot_name = _pending_bot_config.get("name") or "Bot"
+        if 1 <= seat <= 2:
+            _pending_player_names[seat - 1] = bot_name
     _bullseye = BullseyeThrow()
     _game = None
     _game_mode = "bullseye"
@@ -2140,7 +2154,15 @@ def on_start_game(data):
     options = data.get("options", {})
     first_player = data.get("first_player", 1)
     player_names = _sanitize_player_names(data.get("player_names"))
+    bot_config = bot_player.sanitize_bot_config(data.get("bot_config"))
+    if bot_config is not None:
+        seat = bot_config.get("seat", 2)
+        bot_name = bot_config.get("name") or "Bot"
+        if 1 <= seat <= 2:
+            player_names[seat - 1] = bot_name
     _current_player_names = player_names
+    global _current_bot_config
+    _current_bot_config = bot_config
 
     _bullseye = None
     _game = _create_game(mode, options)
@@ -2562,11 +2584,12 @@ def _start_pending_game(winner: int):
 def _do_start_pending_game():
     """Actually create and start the game after takeout confirmed."""
     global _game_mode, _game, _bullseye, _awaiting_takeout, _takeout_hand_seen
-    global _current_player_names
+    global _current_player_names, _current_bot_config
     mode = _game_pending_mode or "x01"
     opts = _game_pending_opts or {}
     player_names = list(_pending_player_names) if _pending_player_names else ["Player 1", "Player 2"]
     _current_player_names = player_names
+    _current_bot_config = _pending_bot_config
     _game = _create_game(mode, opts)
     if _game is None:
         _game_mode = None
