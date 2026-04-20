@@ -372,6 +372,144 @@ _current_bot_config: Optional[dict] = None
 _practice_dart_count: int = 0              # darts thrown in current practice turn
 
 
+def _is_bot_turn() -> bool:
+    """Return True when a bot is configured and it's the bot's seat to throw."""
+    cfg = _current_bot_config
+    if not cfg or not cfg.get("enabled"):
+        return False
+    if _game is None or getattr(_game, "is_finished", False):
+        return False
+    seat = cfg.get("seat", 2)
+    current_1based = int(getattr(_game, "current_player", 0)) + 1
+    return current_1based == seat
+
+
+def _maybe_run_bot_turn():
+    """If it's currently the bot's turn, spawn the bot-turn runner."""
+    if not _is_bot_turn():
+        return
+    try:
+        socketio.start_background_task(_run_bot_turn_body)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[BOT] start_background_task failed: {exc}", flush=True)
+
+
+def _run_bot_turn_body():
+    """Emit up to 3 bot darts, recording them into game + match_review.
+
+    Bot turns bypass the physical takeout logic since no darts actually
+    land on the board. Camera detection is paused for the duration so
+    a human wave/hand doesn't trigger a spurious score.
+    """
+    global _detection_paused, _awaiting_takeout, _takeout_hand_seen
+    global _takeout_reason, _turn_continue_pending, _pending_turn_state
+
+    cfg = _current_bot_config
+    if not cfg or not cfg.get("enabled") or _game is None:
+        return
+    mode = cfg.get("mode", "simulated")
+    skill = cfg.get("skill", "medium")
+    bot_seat = int(cfg.get("seat", 2))
+
+    _detection_paused = True
+    try:
+        socketio.emit("detection_state", {"paused": True})
+    except Exception:
+        pass
+
+    try:
+        for dart_idx in range(3):
+            socketio.sleep(0.9)
+            if _game is None or getattr(_game, "is_finished", False):
+                break
+            if int(getattr(_game, "current_player", -1)) + 1 != bot_seat:
+                # Turn flipped (bust/win/human interruption) — stop throwing.
+                break
+            dart_idx_snapshot = len(getattr(_game, "darts_this_turn", []) or [])
+            turn_idx_snapshot = len(getattr(_game, "turn_history", []) or []) // 2
+            dart = bot_player.generate_dart(mode, skill)
+            coord = (dart["x_mm"], dart["y_mm"])
+            game_state = _game.record_dart(dart["label"], dart["score"], coord)
+            socketio.emit("game_state", game_state)
+
+            # Persist to match review WITHOUT any frames (bot has no camera).
+            if _match_review_game_id is not None:
+                try:
+                    prediction = {
+                        "label": dart["label"],
+                        "score": int(dart["score"]),
+                        "x_mm": float(dart["x_mm"]),
+                        "y_mm": float(dart["y_mm"]),
+                        "agreement_bucket": "bot",
+                        "cam_details": [],
+                        "ts": time.time(),
+                        "bot": True,
+                        "bot_mode": dart.get("mode"),
+                        "bot_skill": dart.get("skill"),
+                    }
+                    match_review.record_dart(
+                        game_id=_match_review_game_id,
+                        player=bot_seat,
+                        turn_idx=turn_idx_snapshot,
+                        round_num=turn_idx_snapshot + 1,
+                        dart_idx=dart_idx_snapshot,
+                        prediction=prediction,
+                        frames_bgr={},  # no camera frames for bot turns
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    print(f"[BOT] match_review.record_dart failed: {exc}", flush=True)
+
+            if getattr(_game, "is_finished", False):
+                # End-of-game bookkeeping mirrors _emit_dart's finish path.
+                try:
+                    summary = _game.stats_summary()
+                    if _match_review_game_id is not None:
+                        summary["id"] = _match_review_game_id
+                    game_stats.save_game(summary)
+                    match_review.finalize(
+                        game_id=_match_review_game_id,
+                        summary=summary,
+                        abandoned=False,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    print(f"[BOT] finalize failed: {exc}", flush=True)
+                socketio.emit("game_over", game_state)
+                break
+
+        # Emit an end-of-turn marker into match review (no frames).
+        if _match_review_game_id is not None and not getattr(_game, "is_finished", False):
+            try:
+                last_turn_idx = max(
+                    (len(getattr(_game, "turn_history", []) or []) // 2) - 1, 0
+                )
+                match_review.record_turn_end(
+                    game_id=_match_review_game_id,
+                    player=bot_seat,
+                    turn_idx=last_turn_idx,
+                    round_num=last_turn_idx + 1,
+                    frames_bgr={},
+                    ts=time.time(),
+                )
+            except Exception as exc:  # noqa: BLE001
+                print(f"[BOT] record_turn_end failed: {exc}", flush=True)
+    finally:
+        # Bot leaves no physical darts — skip the takeout wait entirely.
+        _awaiting_takeout = False
+        _takeout_hand_seen = False
+        _takeout_reason = ""
+        _turn_continue_pending = False
+        _pending_turn_state = None
+        _detection_paused = False
+        try:
+            socketio.emit("detection_state", {"paused": False})
+            socketio.emit("clear_board_dots", {})
+            if _game is not None and not getattr(_game, "is_finished", False):
+                socketio.emit("game_state", _game.state())
+        except Exception:
+            pass
+        print(f"[BOT] turn complete (mode={mode}, skill={skill})", flush=True)
+
+
 def _sanitize_player_names(raw) -> List[str]:
     """Normalize a client-supplied player_names payload.
 
@@ -2204,6 +2342,7 @@ def on_start_game(data):
 
     socketio.emit("game_state", _game.state())
     print(f"[GAME] {mode.upper()} game started (first player: {first_player})")
+    _maybe_run_bot_turn()
 
 
 @socketio.on("undo_dart")
@@ -2299,6 +2438,7 @@ def on_skip_takeout():
         socketio.emit("detection_state", {"paused": False})
         socketio.emit('state', {'state': 'WAIT'})
         print("[GAME] Turn review completed — switched to next player")
+        _maybe_run_bot_turn()
     else:
         # Between-turn takeout — just resume scoring
         print("[GAME] Turn takeout completed by user — resuming")
@@ -2622,6 +2762,7 @@ def _do_start_pending_game():
     socketio.emit("player_names", {"names": list(player_names)})
     socketio.emit("game_state", _game.state())
     print(f"[GAME] {mode.upper()} game started (winner of bullseye: Player {_pending_game_winner})")
+    _maybe_run_bot_turn()
 
 
 def _current_pose_model_name() -> str:
