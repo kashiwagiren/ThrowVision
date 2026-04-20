@@ -1998,13 +1998,18 @@ function connectSocket() {
   });
 
   // ── TF-Luna hotplug auto-detection ─────────────────────────────────
-  // Track previous online state so we only toast on the OFFLINE→ONLINE
-  // transition (the server re-emits tfluna_status on every socket reconnect
-  // and on settings saves, which would otherwise spam the toast).
+  // Toast policy:
+  //   * NEVER toast on the very first tfluna_status event — that's the
+  //     initial sync when the page loads / reconnects, and the sensor's
+  //     status is already visible in the settings panel.
+  //   * Only toast on a genuine OFFLINE -> ONLINE transition AFTER we've
+  //     seen at least one prior event (i.e. a real plug-in during the
+  //     session), or if the sensor hops to a different COM port.
+  //   * Unplug events update the UI silently.
   let _tflunaWasOnline = false;
   let _tflunaLastPort = null;
+  let _tflunaStatusSeen = false;
   socket.on('tfluna_status', (data) => {
-    // Auto-update settings UI when sensor is plugged or unplugged
     const enabledEl = document.getElementById('set-tfluna-enabled');
     const portEl = document.getElementById('set-tfluna-port');
     if (enabledEl) enabledEl.checked = !!data.enabled;
@@ -2013,9 +2018,9 @@ function connectSocket() {
     const online = !!(data.detected && data.connected);
     if (online) {
       _setTFLunaStatus('tfluna-ok', `Auto-detected on ${data.port}`);
-      // Only show the toast on the first transition to online, or if the
-      // sensor hopped to a different port.
-      if (!_tflunaWasOnline || _tflunaLastPort !== data.port) {
+      const isGenuineTransition =
+        _tflunaStatusSeen && (!_tflunaWasOnline || _tflunaLastPort !== data.port);
+      if (isGenuineTransition) {
         showToast(`TF-Luna sensor detected on ${data.port}`, 'ok');
       }
       _tflunaWasOnline = true;
@@ -2026,9 +2031,10 @@ function connectSocket() {
       _tflunaWasOnline = false;
       _tflunaLastPort = null;
     } else {
-      // detected but not connected — don't toast, but clear online state
+      // detected but not connected
       _tflunaWasOnline = false;
     }
+    _tflunaStatusSeen = true;
   });
 
   socket.on('practice_awaiting_takeout', (data) => {
