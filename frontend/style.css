@@ -2216,6 +2216,44 @@ body {
   font-weight: 700;
 }
 
+.game-field input[type="text"] {
+  width: 100%;
+  min-height: 44px;
+  padding: 0 14px;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(10, 13, 18, 0.76);
+  color: var(--fg);
+  font-size: 15px;
+  font-weight: 600;
+  font-family: inherit;
+  outline: none;
+  box-sizing: border-box;
+  transition: border-color 0.18s ease, background 0.18s ease;
+}
+.game-field input[type="text"]::placeholder {
+  color: rgba(255, 255, 255, 0.25);
+  font-weight: 400;
+}
+.game-field input[type="text"]:focus {
+  border-color: rgba(78, 142, 247, 0.55);
+  background: rgba(10, 13, 18, 0.90);
+  box-shadow: 0 0 0 3px rgba(78, 142, 247, 0.12);
+}
+.game-field input[type="text"].input-locked {
+  color: rgba(255, 255, 255, 0.35);
+  border-color: rgba(255, 255, 255, 0.05);
+  cursor: not-allowed;
+}
+
+/* Player names grid sits inside the Match Start section — needs
+   breathing room from the starting-player segment above it */
+#game-player-names-grid {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
 .game-notes-list {
   display: flex;
   flex-direction: column;
