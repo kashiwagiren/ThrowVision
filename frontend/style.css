@@ -7931,13 +7931,13 @@ body {
 
 /* ===== Match Review ===== */
 
-/* Page shell — override .page's overflow-y:auto so the whole page
-   never scrolls. Instead we use flex column and let only #mr-turns
-   scroll internally. height is inherited from .page. */
-#page-match-review {
-    display: flex !important;
+/* Page shell — only apply flex when ACTIVE so display:none from
+   .page is not overridden (that was making the header bleed onto
+   every other page). height is inherited from .page. */
+#page-match-review.active {
+    display: flex;
     flex-direction: column;
-    overflow: hidden !important;
+    overflow: hidden;
     padding-bottom: 0;
 }
 
