@@ -4732,6 +4732,8 @@ function applyScoreboardPlayerNames(names) {
   document.querySelectorAll('#player-panel-2 .pp-name').forEach(el => {
     el.textContent = names[1];
   });
+  // Re-apply flight colors — panels may have just been re-shown.
+  if (typeof _applyPlayerFlights === 'function') _applyPlayerFlights();
 }
 
 function _selectedGameConfig() {
@@ -6287,6 +6289,12 @@ function renderMatchReview(data) {
         const btn = document.createElement('button');
         btn.className = 'mr-tab' + (idx === 0 ? ' mr-tab--active' : '');
         btn.textContent = p.name || `Player ${p.player}`;
+        btn.dataset.seat = String(p.player);
+        // Tint the tab with the player's flight color when available.
+        if (typeof _playerFlights !== 'undefined'
+            && (p.player === 1 || p.player === 2)) {
+            btn.setAttribute('data-flight', _playerFlights[p.player - 1]);
+        }
         btn.addEventListener('click', () => {
             tabs.querySelectorAll('.mr-tab').forEach(b => b.classList.remove('mr-tab--active'));
             btn.classList.add('mr-tab--active');
@@ -6625,10 +6633,120 @@ document.addEventListener('DOMContentLoaded', () => {
     const warp = document.getElementById('mr-lightbox-warp');
     if (raw) raw.addEventListener('click', () => { _lightbox.warped = false; _applyLightbox(); });
     if (warp) warp.addEventListener('click', () => { _lightbox.warped = true; _applyLightbox(); });
+    _initPlayerFlights();
 });
 
 window.openLightbox = openLightbox;
 window.closeLightbox = closeLightbox;
 window.lightboxPrev = lightboxPrev;
 window.lightboxNext = lightboxNext;
+
+/* ─────────────────────────────────────────────────────────────
+ * Player flight colors (cosmetic personalization)
+ *
+ * Each player picks a flight color on the Game Setup page; the
+ * chosen color themes their scoreboard panel, turn cards, and
+ * match-review tab via a `data-flight` attribute. Persisted in
+ * localStorage so a player's color sticks between sessions.
+ * ───────────────────────────────────────────────────────────── */
+const FLIGHT_PALETTE = [
+    { id: 'blue',   label: 'Blue'   },
+    { id: 'red',    label: 'Red'    },
+    { id: 'green',  label: 'Green'  },
+    { id: 'gold',   label: 'Gold'   },
+    { id: 'purple', label: 'Purple' },
+    { id: 'orange', label: 'Orange' },
+    { id: 'pink',   label: 'Pink'   },
+    { id: 'teal',   label: 'Teal'   },
+];
+const _FLIGHT_DEFAULTS = ['blue', 'red'];
+let _playerFlights = _FLIGHT_DEFAULTS.slice();
+
+function _loadStoredFlights() {
+    try {
+        const raw = localStorage.getItem('throwvision.playerFlights');
+        if (!raw) return _FLIGHT_DEFAULTS.slice();
+        const parsed = JSON.parse(raw);
+        if (!Array.isArray(parsed)) return _FLIGHT_DEFAULTS.slice();
+        const ids = FLIGHT_PALETTE.map(f => f.id);
+        return [0, 1].map(i => (ids.indexOf(parsed[i]) >= 0
+            ? parsed[i] : _FLIGHT_DEFAULTS[i]));
+    } catch (_e) {
+        return _FLIGHT_DEFAULTS.slice();
+    }
+}
+
+function _saveStoredFlights() {
+    try {
+        localStorage.setItem('throwvision.playerFlights',
+            JSON.stringify(_playerFlights));
+    } catch (_e) { /* quota / private mode – ignore */ }
+}
+
+function _buildFlightPicker(containerId, seat) {
+    const root = document.getElementById(containerId);
+    if (!root) return;
+    root.textContent = '';
+    FLIGHT_PALETTE.forEach(flight => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'flight-swatch';
+        btn.dataset.flight = flight.id;
+        btn.title = flight.label + ' flight';
+        btn.setAttribute('aria-label', flight.label + ' flight');
+        btn.addEventListener('click', (ev) => {
+            ev.preventDefault();
+            setPlayerFlight(seat, flight.id);
+        });
+        root.appendChild(btn);
+    });
+    _syncFlightPickerSelection(seat);
+}
+
+function _syncFlightPickerSelection(seat) {
+    const picker = document.getElementById('flight-picker-' + seat);
+    if (!picker) return;
+    const current = _playerFlights[seat - 1];
+    picker.querySelectorAll('.flight-swatch').forEach(sw => {
+        sw.classList.toggle('is-selected', sw.dataset.flight === current);
+    });
+}
+
+function setPlayerFlight(seat, flightId) {
+    const idx = seat - 1;
+    if (idx < 0 || idx > 1) return;
+    if (!FLIGHT_PALETTE.some(f => f.id === flightId)) return;
+    _playerFlights[idx] = flightId;
+    _saveStoredFlights();
+    _syncFlightPickerSelection(seat);
+    _applyPlayerFlights();
+}
+
+function _applyPlayerFlights() {
+    const p1 = document.getElementById('player-panel-1');
+    const p2 = document.getElementById('player-panel-2');
+    if (p1) p1.setAttribute('data-flight', _playerFlights[0]);
+    if (p2) p2.setAttribute('data-flight', _playerFlights[1]);
+    // Expose as CSS custom properties on the page root so match review
+    // turn cards can pick the right tint even after the scoreboard is gone.
+    const root = document.documentElement;
+    root.style.setProperty('--player1-flight', 'var(--flight-' + _playerFlights[0] + ')');
+    root.style.setProperty('--player2-flight', 'var(--flight-' + _playerFlights[1] + ')');
+    // Tag any existing match-review tabs so their accents match.
+    document.querySelectorAll('.mr-tab').forEach(tab => {
+        const seat = parseInt(tab.dataset.seat || '0', 10);
+        if (seat === 1 || seat === 2) {
+            tab.setAttribute('data-flight', _playerFlights[seat - 1]);
+        }
+    });
+}
+
+function _initPlayerFlights() {
+    _playerFlights = _loadStoredFlights();
+    _buildFlightPicker('flight-picker-1', 1);
+    _buildFlightPicker('flight-picker-2', 2);
+    _applyPlayerFlights();
+}
+
+window.setPlayerFlight = setPlayerFlight;
 
