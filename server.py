@@ -510,6 +510,99 @@ def _run_bot_turn_body():
         print(f"[BOT] turn complete (mode={mode}, skill={skill})", flush=True)
 
 
+def _bullseye_current_seat() -> int:
+    """Map current BullseyePhase to 1-based seat (1 or 2), or 0 if unknown."""
+    if _bullseye is None or getattr(_bullseye, "is_finished", False):
+        return 0
+    phase = getattr(_bullseye, "phase", None)
+    phase_val = getattr(phase, "value", str(phase or ""))
+    if phase_val in ("player1_throw", "tiebreak_p1"):
+        return 1
+    if phase_val in ("player2_throw", "tiebreak_p2"):
+        return 2
+    return 0
+
+
+def _bot_pending_seat() -> int:
+    """Return bot's configured seat during bullseye (pre-game), else 0."""
+    cfg = _pending_bot_config
+    if not cfg or not cfg.get("enabled"):
+        return 0
+    return int(cfg.get("seat", 2))
+
+
+def _is_bot_bullseye_turn() -> bool:
+    """True when a bot is configured and it's the bot's phase in bullseye."""
+    seat = _bot_pending_seat()
+    if seat == 0:
+        return False
+    if _game_mode != "bullseye":
+        return False
+    return _bullseye_current_seat() == seat
+
+
+def _maybe_run_bot_bullseye():
+    """If it's the bot's phase in bullseye, spawn the bullseye-bot runner."""
+    if not _is_bot_bullseye_turn():
+        return
+    try:
+        socketio.start_background_task(_run_bot_bullseye_body)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[BOT] start_background_task (bullseye) failed: {exc}", flush=True)
+
+
+def _run_bot_bullseye_body():
+    """Emit a single bot bullseye throw after a short delay."""
+    global _detection_paused
+    cfg = _pending_bot_config
+    if not cfg or not cfg.get("enabled") or _bullseye is None:
+        return
+    if _bullseye.is_finished:
+        return
+    mode = cfg.get("mode", "simulated")
+    skill = cfg.get("skill", "medium")
+    bot_seat = int(cfg.get("seat", 2))
+
+    _detection_paused = True
+    try:
+        socketio.emit("detection_state", {"paused": True})
+    except Exception:
+        pass
+
+    try:
+        socketio.sleep(1.0)
+        if _bullseye is None or _bullseye.is_finished:
+            return
+        # Sanity: is it still the bot's phase?
+        if _bullseye_current_seat() != bot_seat:
+            return
+        dart = bot_player.generate_bullseye_dart(mode, skill)
+        state = _bullseye.record_dart(
+            dart["label"], int(dart["score"]),
+            (dart["x_mm"], dart["y_mm"]),
+            float(dart["distance_mm"]),
+        )
+        socketio.emit("bullseye_state", state)
+        print(f"[BOT] bullseye throw: {dart['label']} dist={dart['distance_mm']:.1f}mm", flush=True)
+
+        if _bullseye.is_finished:
+            socketio.emit("bullseye_result", state)
+            # Winner determined — proceed to pending-game takeout flow.
+            _start_pending_game(state.get("winner", 1))
+            return
+
+        # Phase advanced to the other player. If the bot is STILL the current
+        # phase (shouldn't happen normally, only on a malformed advance), retry.
+        if _bullseye_current_seat() == bot_seat:
+            _maybe_run_bot_bullseye()
+    finally:
+        _detection_paused = False
+        try:
+            socketio.emit("detection_state", {"paused": False})
+        except Exception:
+            pass
+
+
 def _sanitize_player_names(raw) -> List[str]:
     """Normalize a client-supplied player_names payload.
 
@@ -2277,6 +2370,7 @@ def on_start_bullseye(data=None):
     state = _bullseye.start()
     socketio.emit("bullseye_state", state)
     print(f"[GAME] Bullseye throw started (pending mode: {_game_pending_mode})")
+    _maybe_run_bot_bullseye()
 
 
 @socketio.on("start_game")
@@ -3405,6 +3499,10 @@ def _emit_dart(label: str, score: int, x_mm: float, y_mm: float,
         if _bullseye.is_finished:
             socketio.emit('bullseye_result', state)
             _start_pending_game(state.get('winner', 1))
+        else:
+            # Phase may have advanced to the bot's turn (or to a tiebreak seat
+            # the bot occupies). Fire the bullseye bot runner if so.
+            _maybe_run_bot_bullseye()
         return  # don't emit dart_scored during bullseye
 
     if _game is not None and not _game.is_finished:
@@ -4768,6 +4866,7 @@ def _run_detection(cam_ids: List[int], cfg) -> None:
                             _takeout_reason = ''
                             socketio.emit('state', {'state': 'WAIT'})
                             print("[GAME] Turn takeout done — switched to next player")
+                            _maybe_run_bot_turn()
                     else:
                         # Bullseye path — show Continue button
                         print("[GAME] Takeout completed — darts removed, waiting for user to click Continue")

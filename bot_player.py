@@ -68,6 +68,54 @@ def simulated_dart(skill: str = "medium") -> Dict:
     }
 
 
+def simulated_bullseye_dart(skill: str = "medium") -> Dict:
+    """Return a virtual bullseye-aimed dart dict for the given skill level.
+
+    Same Gaussian aim model as :func:`simulated_dart`, but the aim point is
+    the board centre (0, 0) instead of T20. Includes a ``distance_mm`` field
+    (distance from centre) so callers can feed it into BullseyeThrow.
+    """
+    s = _clamp_skill(skill)
+    sigma = SKILL_SIGMA_MM[s]
+    ox, oy = _gaussian_offset(sigma)
+    x = float(ox)
+    y = float(oy)
+    r, theta = ScoreMapper.to_polar(x, y)
+    label, score = ScoreMapper.score_from_polar(r, theta)
+    return {
+        "label": label,
+        "score": int(score),
+        "x_mm": x,
+        "y_mm": y,
+        "distance_mm": float((x * x + y * y) ** 0.5),
+        "bot": True,
+        "skill": s,
+        "mode": "simulated",
+    }
+
+
+def auto_advance_bullseye_dart() -> Dict:
+    """Return a guaranteed-miss bullseye dart (distance forced high)."""
+    return {
+        "label": "MISS",
+        "score": 0,
+        "x_mm": 0.0,
+        "y_mm": 0.0,
+        "distance_mm": 170.0,  # well outside the bull; will lose every time
+        "bot": True,
+        "skill": None,
+        "mode": "auto_advance",
+    }
+
+
+def generate_bullseye_dart(mode: str = "simulated", skill: str = "medium") -> Dict:
+    """Dispatch helper for the pre-game bullseye shootout."""
+    m = (mode or "simulated").strip().lower()
+    if m == "auto_advance":
+        return auto_advance_bullseye_dart()
+    return simulated_bullseye_dart(skill)
+
+
 def auto_advance_dart() -> Dict:
     """Return a guaranteed-miss dart dict (score 0)."""
     return {

@@ -103,6 +103,52 @@ def test_sanitize_bot_config_normalizes_mode_skill_seat_name():
     assert cfg["name"] == "x" * 24
 
 
+def test_simulated_bullseye_dart_returns_labeled_result_with_distance():
+    random.seed(0)
+    d = bot_player.simulated_bullseye_dart("medium")
+    for key in ("label", "score", "x_mm", "y_mm", "distance_mm",
+                "bot", "skill", "mode"):
+        assert key in d
+    assert d["bot"] is True
+    assert d["mode"] == "simulated"
+    assert d["skill"] == "medium"
+    # distance_mm must equal sqrt(x^2 + y^2)
+    expected = (d["x_mm"] ** 2 + d["y_mm"] ** 2) ** 0.5
+    assert abs(d["distance_mm"] - expected) < 1e-6
+
+
+def test_simulated_bullseye_accuracy_improves_with_skill():
+    trials = 200
+
+    def avg_distance(skill: str) -> float:
+        random.seed(42)
+        total = 0.0
+        for _ in range(trials):
+            total += bot_player.simulated_bullseye_dart(skill)["distance_mm"]
+        return total / trials
+
+    assert avg_distance("hard") < avg_distance("medium") < avg_distance("easy")
+
+
+def test_auto_advance_bullseye_dart_loses_every_time():
+    d = bot_player.auto_advance_bullseye_dart()
+    assert d["label"] == "MISS"
+    assert d["score"] == 0
+    assert d["mode"] == "auto_advance"
+    # Distance must be outside the bull so a realistic human wins.
+    assert d["distance_mm"] > 100.0
+
+
+def test_generate_bullseye_dart_dispatches_by_mode():
+    random.seed(1)
+    sim = bot_player.generate_bullseye_dart("simulated", "hard")
+    adv = bot_player.generate_bullseye_dart("auto_advance", "hard")
+    assert sim["mode"] == "simulated"
+    assert adv["mode"] == "auto_advance"
+    assert adv["label"] == "MISS"
+    assert "distance_mm" in sim and "distance_mm" in adv
+
+
 def test_sanitize_bot_config_rejects_invalid_seat_and_name():
     cfg = bot_player.sanitize_bot_config({
         "enabled": True,
