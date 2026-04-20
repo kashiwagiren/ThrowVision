@@ -4724,16 +4724,34 @@ function onPlayerNameInput() {
   updateGameConfigView?.();
 }
 
+// Module-level cache of the current match's player names so pre-game
+// UI (bullseye throw-off) and server events that arrive before a full
+// re-render can still show the custom names the user typed.
+let _currentPlayerNames = ['Player 1', 'Player 2'];
+
 function applyScoreboardPlayerNames(names) {
   if (!Array.isArray(names) || names.length < 2) return;
+  _currentPlayerNames = [String(names[0] || 'Player 1'),
+                        String(names[1] || 'Player 2')];
   document.querySelectorAll('#player-panel-1 .pp-name').forEach(el => {
-    el.textContent = names[0];
+    el.textContent = _currentPlayerNames[0];
   });
   document.querySelectorAll('#player-panel-2 .pp-name').forEach(el => {
-    el.textContent = names[1];
+    el.textContent = _currentPlayerNames[1];
   });
+  // Propagate to the bullseye (pre-game) screen so P1/P2 cards + prompts
+  // reflect the typed names and the bot's configured name.
+  applyBullseyePlayerNames(_currentPlayerNames);
   // Re-apply flight colors — panels may have just been re-shown.
   if (typeof _applyPlayerFlights === 'function') _applyPlayerFlights();
+}
+
+function applyBullseyePlayerNames(names) {
+  if (!Array.isArray(names) || names.length < 2) return;
+  const bp1Label = document.querySelector('#bullseye-p1 .bp-label');
+  const bp2Label = document.querySelector('#bullseye-p2 .bp-label');
+  if (bp1Label) bp1Label.textContent = names[0];
+  if (bp2Label) bp2Label.textContent = names[1];
 }
 
 function _selectedGameConfig() {
@@ -5065,28 +5083,41 @@ function onBullseyeState(state) {
     tiebreak.style.display = 'none';
   }
 
+  // Pull names from the server state when provided, else fall back to
+  // the module-level cache set at game-start. This keeps the bullseye
+  // UI in sync with the custom names the user typed (or "Bot" when a
+  // bot is seated).
+  const names = (Array.isArray(state.player_names) && state.player_names.length >= 2)
+    ? state.player_names
+    : _currentPlayerNames;
+  const n1 = names[0] || 'Player 1';
+  const n2 = names[1] || 'Player 2';
+  // Keep the bullseye cards' labels in sync too (belt-and-suspenders
+  // in case start_bullseye arrived before applyScoreboardPlayerNames).
+  applyBullseyePlayerNames([n1, n2]);
+
   switch (state.phase) {
     case 'player1_throw':
     case 'tiebreak_p1':
-      prompt.textContent = 'Player 1: Throw at the bullseye!';
+      prompt.textContent = `${n1}: Throw at the bullseye!`;
       prompt.className = 'bullseye-prompt p1-active';
       bp1.classList.add('active');
-      setStatus('detecting', 'Player 1 Throwing');
+      setStatus('detecting', `${n1} Throwing`);
       break;
     case 'player2_throw':
     case 'tiebreak_p2':
-      prompt.textContent = 'Player 2: Throw at the bullseye!';
+      prompt.textContent = `${n2}: Throw at the bullseye!`;
       prompt.className = 'bullseye-prompt p2-active';
       bp2.classList.add('active');
-      setStatus('detecting', 'Player 2 Throwing');
+      setStatus('detecting', `${n2} Throwing`);
       break;
     case 'result':
       if (state.winner === 1) {
-        prompt.textContent = 'Player 1 goes first!';
+        prompt.textContent = `${n1} goes first!`;
         prompt.className = 'bullseye-prompt p1-winner';
         bp1.classList.add('winner');
       } else {
-        prompt.textContent = 'Player 2 goes first!';
+        prompt.textContent = `${n2} goes first!`;
         prompt.className = 'bullseye-prompt p2-winner';
         bp2.classList.add('winner');
       }

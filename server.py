@@ -582,7 +582,7 @@ def _run_bot_bullseye_body():
             (dart["x_mm"], dart["y_mm"]),
             float(dart["distance_mm"]),
         )
-        socketio.emit("bullseye_state", state)
+        _emit_bullseye_state(state)
         print(f"[BOT] bullseye throw: {dart['label']} dist={dart['distance_mm']:.1f}mm", flush=True)
 
         if _bullseye.is_finished:
@@ -619,6 +619,26 @@ def _sanitize_player_names(raw) -> List[str]:
             val = raw[i].strip()[:24]
         out.append(val or defaults[i])
     return out
+
+
+def _emit_bullseye_state(state: dict) -> None:
+    """Emit a bullseye_state event with the current player_names attached.
+
+    Clients rely on `state.player_names` to render the pre-game bullseye UI
+    with the user-typed names (or the bot's configured name). We inject here
+    so every emit site stays consistent — state() on BullseyeThrow doesn't
+    track names itself.
+    """
+    try:
+        names = list(_pending_player_names) if _pending_player_names \
+            else ["Player 1", "Player 2"]
+        if len(names) < 2:
+            names = (names + ["Player 1", "Player 2"])[:2]
+        state = dict(state) if isinstance(state, dict) else {}
+        state["player_names"] = names
+    except Exception:
+        pass
+    socketio.emit("bullseye_state", state)
 
 # ── Static routes ────────────────────────────────────────────────────────────
 
@@ -2368,7 +2388,7 @@ def on_start_bullseye(data=None):
     socketio.emit("detection_state", {"paused": False})
 
     state = _bullseye.start()
-    socketio.emit("bullseye_state", state)
+    _emit_bullseye_state(state)
     print(f"[GAME] Bullseye throw started (pending mode: {_game_pending_mode})")
     _maybe_run_bot_bullseye()
 
@@ -3498,7 +3518,7 @@ def _emit_dart(label: str, score: int, x_mm: float, y_mm: float,
         import math
         dist = math.sqrt(x_mm ** 2 + y_mm ** 2)
         state = _bullseye.record_dart(label, score, (x_mm, y_mm), dist)
-        socketio.emit('bullseye_state', state)
+        _emit_bullseye_state(state)
         if _bullseye.is_finished:
             socketio.emit('bullseye_result', state)
             _start_pending_game(state.get('winner', 1))
