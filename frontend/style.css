@@ -8270,7 +8270,7 @@ body {
     align-items: center;
     gap: 10px;
     margin-top: 12px;
-    padding: 6px 2px 2px;
+    padding: 6px 2px 10px;
 }
 .flight-picker-label {
     /* Small, muted caption-style tag. `display:inline` so the
@@ -8382,6 +8382,37 @@ body {
 .player-panel[data-flight].active-turn .pp-indicator {
     background: var(--flight);
     box-shadow: 0 0 10px var(--flight);
+}
+
+/* ── Bullseye pre-game card theming ────────────────────────── */
+/* Override the hard-coded red/blue inline `background:` on .bp-color
+   with the player's chosen flight hue, and wrap the active/winner
+   states in a flight-tinted glow so the pre-game screen matches the
+   in-match scoreboard. */
+.bullseye-player[data-flight] {
+    --flight: var(--flight-blue);
+}
+.bullseye-player[data-flight="blue"]   { --flight: var(--flight-blue);   }
+.bullseye-player[data-flight="red"]    { --flight: var(--flight-red);    }
+.bullseye-player[data-flight="green"]  { --flight: var(--flight-green);  }
+.bullseye-player[data-flight="gold"]   { --flight: var(--flight-gold);   }
+.bullseye-player[data-flight="purple"] { --flight: var(--flight-purple); }
+.bullseye-player[data-flight="orange"] { --flight: var(--flight-orange); }
+.bullseye-player[data-flight="pink"]   { --flight: var(--flight-pink);   }
+.bullseye-player[data-flight="teal"]   { --flight: var(--flight-teal);   }
+.bullseye-player[data-flight] .bp-color {
+    background: var(--flight) !important;
+    box-shadow: 0 0 12px color-mix(in srgb, var(--flight) 55%, transparent);
+}
+.bullseye-player[data-flight].active .bp-label,
+.bullseye-player[data-flight].winner .bp-label {
+    color: color-mix(in srgb, var(--flight) 75%, #fff);
+    text-shadow: 0 0 10px color-mix(in srgb, var(--flight) 50%, transparent);
+}
+.bullseye-player[data-flight].active {
+    box-shadow:
+        inset 0 0 0 1px color-mix(in srgb, var(--flight) 55%, transparent),
+        0 12px 36px -18px var(--flight);
 }
 
 /* ── Match Review tab theming ──────────────────────────────── */

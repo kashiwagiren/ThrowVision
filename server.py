@@ -2387,6 +2387,12 @@ def on_start_bullseye(data=None):
     _detection_paused = False
     socketio.emit("detection_state", {"paused": False})
 
+    # Camera-open + tfluna-start can take a moment; if a concurrent
+    # handler (e.g. end_game from a quick Quit click) nulled _bullseye
+    # in the meantime, bail cleanly instead of crashing on None.start().
+    if _bullseye is None:
+        print("[GAME] start_bullseye aborted — state cleared during init")
+        return
     state = _bullseye.start()
     _emit_bullseye_state(state)
     print(f"[GAME] Bullseye throw started (pending mode: {_game_pending_mode})")

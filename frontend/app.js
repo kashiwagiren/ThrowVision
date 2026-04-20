@@ -5054,8 +5054,8 @@ function onBullseyeState(state) {
     dotsG.innerHTML = '';  // Clear previous dots
     const scale = TOTAL_R / 170;
     const playerDots = [
-      { coord: state.p1_coord, color: '#ff4444' },  // P1 = red
-      { coord: state.p2_coord, color: '#4488ff' },  // P2 = blue
+      { coord: state.p1_coord, color: _flightHexFor(1) },  // P1 = chosen flight
+      { coord: state.p2_coord, color: _flightHexFor(2) },  // P2 = chosen flight
     ];
     playerDots.forEach(({ coord, color }) => {
       if (coord) {
@@ -6763,6 +6763,13 @@ function _applyPlayerFlights() {
     const root = document.documentElement;
     root.style.setProperty('--player1-flight', 'var(--flight-' + _playerFlights[0] + ')');
     root.style.setProperty('--player2-flight', 'var(--flight-' + _playerFlights[1] + ')');
+    // Also tag the bullseye pre-game cards so their color dots + accent
+    // ring reflect the chosen flight color instead of the hard-coded
+    // red/blue defaults.
+    const bp1 = document.getElementById('bullseye-p1');
+    const bp2 = document.getElementById('bullseye-p2');
+    if (bp1) bp1.setAttribute('data-flight', _playerFlights[0]);
+    if (bp2) bp2.setAttribute('data-flight', _playerFlights[1]);
     // Tag any existing match-review tabs so their accents match.
     document.querySelectorAll('.mr-tab').forEach(tab => {
         const seat = parseInt(tab.dataset.seat || '0', 10);
@@ -6770,6 +6777,17 @@ function _applyPlayerFlights() {
             tab.setAttribute('data-flight', _playerFlights[seat - 1]);
         }
     });
+}
+
+// Resolve a flight id (e.g. "blue") into its concrete CSS hex so canvas
+// / SVG dots drawn from JS can match the CSS theming. Falls back to the
+// :root default if the var is unset.
+function _flightHexFor(seat) {
+    const id = _playerFlights[seat - 1] || (seat === 1 ? 'blue' : 'red');
+    const cssVar = '--flight-' + id;
+    const val = getComputedStyle(document.documentElement)
+        .getPropertyValue(cssVar).trim();
+    return val || (seat === 1 ? '#4ea7ff' : '#ff5260');
 }
 
 function _initPlayerFlights() {
