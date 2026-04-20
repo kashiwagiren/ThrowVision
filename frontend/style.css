@@ -7931,11 +7931,14 @@ body {
 
 /* ===== Match Review ===== */
 
-/* Page shell — constrain width so content doesn't stretch across 1440px */
+/* Page shell — override .page's overflow-y:auto so the whole page
+   never scrolls. Instead we use flex column and let only #mr-turns
+   scroll internally. height is inherited from .page. */
 #page-match-review {
-    max-width: 1320px;
-    margin: 0 auto;
-    padding-bottom: 48px;
+    display: flex !important;
+    flex-direction: column;
+    overflow: hidden !important;
+    padding-bottom: 0;
 }
 
 /* ── Header bar ─────────────────────────────────────────────────────── */
@@ -7943,9 +7946,8 @@ body {
     display: flex; align-items: center; gap: 12px;
     padding: 12px 24px;
     border-bottom: 1px solid rgba(255,255,255,0.07);
-    position: sticky; top: 0; z-index: 20;
+    flex-shrink: 0;
     background: rgba(10,14,22,0.96);
-    backdrop-filter: blur(10px);
 }
 .mr-title {
     flex: 1; margin: 0;
@@ -7991,18 +7993,20 @@ body {
 .mr-abandoned-banner {
     padding: 8px 24px; background: rgba(230,160,0,0.12);
     color: #f0b450; border-bottom: 1px solid rgba(230,160,0,0.28);
-    font-size: 13px;
+    font-size: 13px; flex-shrink: 0;
 }
 .mr-meta {
     padding: 7px 24px; color: var(--muted, #9aa);
     font-size: 12px; letter-spacing: 0.01em;
     border-bottom: 1px solid rgba(255,255,255,0.05);
+    flex-shrink: 0;
 }
 
 /* ── Player tabs ────────────────────────────────────────────────────── */
 .mr-tabs {
     display: flex; gap: 6px; padding: 10px 24px;
     border-bottom: 1px solid rgba(255,255,255,0.05);
+    flex-shrink: 0;
 }
 .mr-tab {
     padding: 6px 22px; font-size: 13px; font-weight: 600;
@@ -8018,10 +8022,14 @@ body {
     color: #cfe2ff;
 }
 
-/* ── Turn list ──────────────────────────────────────────────────────── */
+/* ── Turn list — fills remaining height and scrolls internally ────── */
 .mr-turns {
+    flex: 1; min-height: 0;   /* flex: 1 + min-height: 0 lets it shrink */
+    overflow-y: auto;
     padding: 14px 24px;
     display: flex; flex-direction: column; gap: 10px;
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255,255,255,0.12) transparent;
 }
 .mr-turn-card {
     background: rgba(255,255,255,0.03);
