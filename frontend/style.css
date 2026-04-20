@@ -7930,68 +7930,153 @@ body {
 }
 
 /* ===== Match Review ===== */
+
+/* Page shell — constrain width so content doesn't stretch across 1440px */
+#page-match-review {
+    max-width: 1320px;
+    margin: 0 auto;
+    padding-bottom: 48px;
+}
+
+/* ── Header bar ─────────────────────────────────────────────────────── */
 .mr-header {
     display: flex; align-items: center; gap: 12px;
-    padding: 12px 16px; border-bottom: 1px solid rgba(255,255,255,0.08);
+    padding: 12px 24px;
+    border-bottom: 1px solid rgba(255,255,255,0.07);
+    position: sticky; top: 0; z-index: 20;
+    background: rgba(10,14,22,0.96);
+    backdrop-filter: blur(10px);
 }
-.mr-title { flex: 1; margin: 0; font-size: 20px; }
+.mr-title {
+    flex: 1; margin: 0;
+    font-size: 18px; font-weight: 700; letter-spacing: -0.01em;
+}
+
+/* Back button — blue ghost */
+.mr-header .page-back-btn {
+    background: transparent;
+    border: 1px solid rgba(78,142,247,0.38);
+    color: var(--accent, #4e8ef7);
+    padding: 7px 14px; font-size: 13px; font-weight: 600;
+    border-radius: 8px;
+    transition: background 140ms ease, border-color 140ms ease;
+    opacity: 1;
+}
+.mr-header .page-back-btn:hover {
+    background: rgba(78,142,247,0.12);
+    border-color: var(--accent, #4e8ef7);
+    opacity: 1;
+}
+
+/* Delete button — red danger */
+.btn--danger,
+#mr-delete-btn {
+    background: rgba(224,82,82,0.10);
+    border: 1px solid rgba(224,82,82,0.45);
+    color: var(--red, #e05252);
+    padding: 7px 14px; font-size: 13px; font-weight: 600;
+    border-radius: 8px;
+    transition: background 140ms ease, border-color 140ms ease, color 140ms ease;
+    opacity: 1;
+}
+.btn--danger:hover,
+#mr-delete-btn:hover {
+    background: var(--red, #e05252);
+    border-color: var(--red, #e05252);
+    color: #fff;
+    opacity: 1;
+}
+
+/* ── Info strip ─────────────────────────────────────────────────────── */
 .mr-abandoned-banner {
-    padding: 10px 16px; background: rgba(230,160,0,0.15);
-    color: #f0b450; border-bottom: 1px solid rgba(230,160,0,0.35);
+    padding: 8px 24px; background: rgba(230,160,0,0.12);
+    color: #f0b450; border-bottom: 1px solid rgba(230,160,0,0.28);
+    font-size: 13px;
 }
 .mr-meta {
-    padding: 10px 16px; color: var(--muted, #9aa);
-    font-size: 13px; border-bottom: 1px solid rgba(255,255,255,0.06);
+    padding: 7px 24px; color: var(--muted, #9aa);
+    font-size: 12px; letter-spacing: 0.01em;
+    border-bottom: 1px solid rgba(255,255,255,0.05);
 }
+
+/* ── Player tabs ────────────────────────────────────────────────────── */
 .mr-tabs {
-    display: flex; gap: 4px; padding: 8px 16px;
-    border-bottom: 1px solid rgba(255,255,255,0.06);
+    display: flex; gap: 6px; padding: 10px 24px;
+    border-bottom: 1px solid rgba(255,255,255,0.05);
 }
 .mr-tab {
-    padding: 8px 16px; background: transparent; color: var(--fg);
-    border: 1px solid rgba(255,255,255,0.12); border-radius: 6px;
+    padding: 6px 22px; font-size: 13px; font-weight: 600;
+    background: transparent; color: var(--fg-dim, #7a849a);
+    border: 1px solid rgba(255,255,255,0.10); border-radius: 20px;
     cursor: pointer;
+    transition: background 140ms ease, border-color 140ms ease, color 140ms ease;
 }
-.mr-tab--active { background: rgba(255,255,255,0.08); border-color: rgba(255,255,255,0.25); }
+.mr-tab:hover { color: var(--fg); border-color: rgba(255,255,255,0.22); }
+.mr-tab--active {
+    background: var(--accent-subtle, rgba(78,142,247,0.12));
+    border-color: rgba(78,142,247,0.50);
+    color: #cfe2ff;
+}
 
-.mr-turns { padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+/* ── Turn list ──────────────────────────────────────────────────────── */
+.mr-turns {
+    padding: 14px 24px;
+    display: flex; flex-direction: column; gap: 10px;
+}
 .mr-turn-card {
-    background: rgba(255,255,255,0.04);
-    border: 1px solid rgba(255,255,255,0.08);
-    border-radius: 8px; padding: 12px 16px;
+    background: rgba(255,255,255,0.03);
+    border: 1px solid rgba(255,255,255,0.07);
+    border-radius: 10px; padding: 10px 14px;
 }
 .mr-turn-card__head {
     display: flex; align-items: center; justify-content: space-between;
-    font-weight: 600; margin-bottom: 8px;
+    font-size: 13px; font-weight: 700;
+    color: rgba(255,255,255,0.75);
+    margin-bottom: 6px;
 }
-.mr-turn-card__total { color: var(--accent, #8fdb8f); font-variant-numeric: tabular-nums; }
+.mr-turn-card__total {
+    color: var(--accent, #4e8ef7);
+    font-variant-numeric: tabular-nums;
+    font-size: 13px;
+}
+
+/* Dart score rows */
 .mr-dart-row {
-    display: grid; grid-template-columns: 70px 110px 180px 1fr;
-    gap: 8px; padding: 2px 0; font-size: 13px; color: var(--muted, #bbc);
+    display: grid; grid-template-columns: 56px 88px 156px 1fr;
+    gap: 6px; padding: 2px 0; font-size: 12px; color: var(--muted, #bbc);
+    align-items: center;
 }
-.mr-captures-label { margin-top: 8px; font-size: 12px; color: var(--muted, #889); }
+
+/* ── Captures ───────────────────────────────────────────────────────── */
+.mr-captures-label {
+    margin-top: 10px; margin-bottom: 2px;
+    font-size: 11px; font-weight: 700; letter-spacing: 0.05em;
+    text-transform: uppercase; color: rgba(255,255,255,0.28);
+}
 .mr-thumbrow {
     display: grid;
-    grid-template-columns: 70px repeat(3, minmax(0, 1fr));
-    align-items: center; gap: 8px; margin: 6px 0;
+    grid-template-columns: 56px repeat(3, minmax(0, 1fr));
+    align-items: center; gap: 6px; margin: 4px 0;
 }
-.mr-thumb-label { font-size: 12px; color: var(--muted, #889); }
+.mr-thumb-label { font-size: 11px; color: var(--muted, #889); }
 .mr-thumb {
     width: 100%; aspect-ratio: 16 / 9;
-    object-fit: cover; border-radius: 4px;
+    object-fit: cover; border-radius: 5px;
     background: rgba(0,0,0,0.4); cursor: pointer;
-    border: 1px solid rgba(255,255,255,0.08);
+    border: 1px solid rgba(255,255,255,0.07);
     display: block;
+    transition: border-color 120ms ease, transform 120ms ease;
 }
-.mr-thumb:hover { border-color: var(--accent, #8fdb8f); }
-.mr-thumb--missing {
-    visibility: hidden; position: relative;
+.mr-thumb:hover {
+    border-color: var(--accent, #4e8ef7);
+    transform: scale(1.02);
 }
+.mr-thumb--missing { visibility: hidden; position: relative; }
 .mr-thumb--missing::after {
     content: "Capture unavailable"; visibility: visible;
     position: absolute; inset: 0; display: flex; align-items: center;
-    justify-content: center; font-size: 11px; color: #666;
-    background: rgba(0,0,0,0.3); border-radius: 4px;
+    justify-content: center; font-size: 10px; color: #555;
+    background: rgba(0,0,0,0.25); border-radius: 5px;
 }
 
 .mr-lightbox {
