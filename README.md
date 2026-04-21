@@ -12,6 +12,15 @@
 
 ---
 
+## What's New in v1.4.1
+
+### Windows Release Build
+- Bumped the desktop release to `v1.4.1`.
+- Added this patch release to ship built Windows executable artifacts with the GitHub release.
+- Kept the v1.4.0 match-review, calibration, scoring, and README flowchart updates intact.
+
+---
+
 ## What's New in v1.4.0
 
 ### Match Review & Game Traceability
@@ -230,6 +239,8 @@ python server.py --cameras 0,1,2  # custom indices
 
 ## Project Structure
 
+For the deeper engineering map, see [System Architecture](ARCHITECTURE.md).
+
 ```
 ThrowVision/
 ├── server.py          # Flask + Socket.IO server, detection loop
@@ -268,7 +279,7 @@ ThrowVision/
 
 ```bash
 npm run pyinstaller   # → dist/server/server.exe
-npm run build:win     # → dist-electron/ThrowVision Setup 1.4.0.exe
+npm run build:win     # → dist-electron/ThrowVision Setup 1.4.1.exe
 ```
 
 ---
@@ -477,6 +488,10 @@ flowchart TD
 ---
 
 ## Changelog
+
+### v1.4.1 — 2026-04-21
+- **RELEASE** Bumped package metadata, README badge, build notes, and footer version to `v1.4.1`.
+- **BUILD** Added this patch release for publishing Windows executable artifacts alongside the GitHub release.
 
 ### v1.4.0 — 2026-04-21
 - **NEW** Match Review page for X01, Cricket, and Count Up with per-dart and end-of-turn camera captures.
