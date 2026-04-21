@@ -10,6 +10,8 @@
 
 **ThrowVision** is an open-source, camera-based automatic dart scoring system. Three USB webcams at 120° intervals detect dart tips with millimetre accuracy using frame differencing, perspective homography, and multi-camera consensus fusion.
 
+**Docs:** [System Architecture](ARCHITECTURE.md)
+
 ---
 
 ## What's New in v1.4.1
