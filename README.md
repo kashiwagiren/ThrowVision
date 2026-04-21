@@ -6,9 +6,33 @@
 ![License](https://img.shields.io/badge/License-MIT-yellow)
 ![Cameras](https://img.shields.io/badge/Cameras-3×_USB-orange)
 ![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux-lightgrey)
-![Version](https://img.shields.io/badge/Version-1.3.5-brightgreen)
+![Version](https://img.shields.io/badge/Version-1.4.0-brightgreen)
 
 **ThrowVision** is an open-source, camera-based automatic dart scoring system. Three USB webcams at 120° intervals detect dart tips with millimetre accuracy using frame differencing, perspective homography, and multi-camera consensus fusion.
+
+---
+
+## What's New in v1.4.0
+
+### Match Review & Game Traceability
+- Added a full Match Review page for completed and abandoned X01, Cricket, and Count Up games.
+- Captures per-dart camera frames plus end-of-turn frames, then stores them in `data/match_reviews/`.
+- Match History rows now show review availability and open the review bundle directly.
+- Added raw, annotated, and warped frame review endpoints for per-camera inspection.
+- Added lightbox navigation for review captures, with Escape/back handling and focused per-dart camera paging.
+
+### Release, Calibration & Scoring
+- Bumped the desktop release to `v1.4.0` across npm metadata, the package lock, UI footer, README badge, build notes, and changelog.
+- Fixed the 8-point calibration anchor order so manual handles, frontend hints, and backend homography anchors agree.
+- Saved the millimetre homography in calibration cache files for more reliable reloads.
+- Added a Settings toggle for startup auto-calibration when cameras are active.
+- Expanded the outside-board tolerance so near-edge throws remain reviewable as `MISS` instead of disappearing as `OFF`.
+
+### Match Flow & Training Tools
+- Added Player 1 / Player 2 names and persisted flight-color selection for the game UI.
+- Added bot opponent support, including simulated skill levels and auto-advance mode for hands-free testing.
+- Added match abandonment handling so user quit and server shutdown paths still save a reviewable match record.
+- Added tests for bot simulation, stats id reservation, match-review storage, and match-review HTTP endpoints.
 
 ---
 
@@ -100,8 +124,10 @@
 - 🎯 **Auto-refine calibration** — HSV ring detector auto-snaps points to exact positions
 - 🤖 **OpenVINO inference support** — YOLO11 detection/pose runtime with CPU/GPU/AUTO device selection
 - 📊 **Accuracy review system** — practice and X01 turn review, manual corrections, and accuracy session storage
+- 🧾 **Match review system** — per-match raw, annotated, and warped camera captures for post-game inspection
 - 📝 **Manual event capture** — add undetected bounce, miss, and fall events directly from practice mode
 - 📈 **Split stats dashboards** — dedicated game stats and accuracy stats views with reset/delete actions
+- 🤖 **Bot opponent support** — simulated skill levels and auto-advance mode for testing game flow
 - 📏 **TF-Luna foul-line sensor support** — optional oche distance monitoring over serial
 - 🎮 **Game modes** — X01 (301/501/701/901), Cricket, Count Up, Bullseye throw-off
 - 🌐 **Live web dashboard** — real-time scoring at `http://localhost:5000`
@@ -212,11 +238,13 @@ ThrowVision/
 ├── scorer.py          # ScoreMapper — multi-camera consensus & scoring
 ├── config.py          # ConfigManager — all tuneable parameters
 ├── game_mode.py       # X01, Cricket, CountUp, BullseyeThrow engines
+├── bot_player.py      # Simulated and auto-advance bot opponent helpers
 ├── board_profile.py   # Save/load board position profiles
 ├── lens_calibrator.py # LensCalibrator — checkerboard undistortion + coverage
 ├── auto_ellipse.py    # HSV ring detector for auto-refine calibration
 ├── stats.py           # Game statistics + history management
 ├── accuracy_stats.py  # Practice/X01 accuracy session storage + aggregation
+├── match_review.py    # Per-match review bundles, frame capture, annotated overlays
 ├── openvino_inference.py # OpenVINO YOLO runtime wrapper for detect/pose models
 ├── ml_calibration.py  # ML-assisted calibration from detected ring landmarks
 ├── anchor_refine.py   # Anchor-based calibration refinement helpers
@@ -229,7 +257,9 @@ ThrowVision/
 │   ├── splash.html    # Branded loading screen
 │   └── preload.js     # Security preload (contextIsolation)
 ├── frontend/          # Dashboard (HTML + JS + CSS)
-└── calibration/       # Per-camera .npz files (gitignored)
+├── tests/             # Bot, stats, match-review unit/integration tests
+├── calibration/       # Per-camera .npz files (gitignored)
+└── data/              # Stats, accuracy sessions, and match reviews (runtime)
 ```
 
 ---
@@ -238,76 +268,142 @@ ThrowVision/
 
 ```bash
 npm run pyinstaller   # → dist/server/server.exe
-npm run build:win     # → dist-electron/ThrowVision Setup 1.3.0.exe
+npm run build:win     # → dist-electron/ThrowVision Setup 1.4.0.exe
 ```
 
 ---
 
 ## How the System Works
 
+ThrowVision is built as one continuous loop: calibration creates camera-to-board geometry, detection finds dart tips, scoring fuses the cameras into one board result, game mode logic consumes that result, and stats/review layers persist what happened.
+
 ### 1. Calibration
 
-**Lens undistortion:** `cv2.calibrateCamera()` → K + distortion coefficients d → `cv2.undistort(frame, K, d)`
-
-**Perspective homography (8-pt):**
+**Lens calibration** removes per-camera distortion first:
 ```
-cv2.findHomography(src_8pts, dst_8pts, RANSAC) → 3×3 matrix H
+checkerboard frames -> cv2.calibrateCamera() -> K + distortion -> cv2.undistort()
 ```
-4 outer anchors (double ring, 170 mm) + 4 inner anchors (triple ring, 107 mm).
 
-**Auto-refine:** Rough H warps frame → HSV detects red/green rings as circles → 50–200 correspondences → refined H.
+**Board calibration** maps camera pixels to dartboard millimetres:
+```
+4 or 8 board anchors -> cv2.findHomography(..., RANSAC) -> H_px + H_mm
+```
+
+The current 8-point model uses 4 outer double-ring anchors plus 4 inner triple-ring anchors in this order:
+`D20/D1`, `D11/D14`, `D3/D19`, `D6/D10`, then the matching triple-ring anchors.
+
+**Auto calibration/refine** can seed or improve those anchors through three paths:
+- OpenVINO calibration model (`ml_calibration.py`) when model detections are available.
+- Saved board profile matching (`board_profile.py`) for known board/camera positions.
+- Anchor or HSV ring refinement (`anchor_refine.py`, `auto_ellipse.py`) from rough handles.
 
 ### 2. Detection
 
-Each camera runs an independent state machine: **WAIT → MOTION → STABLE → DART → TAKEOUT**
+Each active camera owns a `DartDetector` state machine:
+`WAIT -> MOTION -> STABLE -> DART -> TAKEOUT`
 
-Detection steps per dart:
-1. Frame differencing vs stored reference
-2. Blob size filter (dart vs hand vs noise)
-3. Aspect ratio filter (≥ 2.5 = dart shaft shape)
-4. PCA line fit → dart axis
-5. Two-stage tip refinement (25% zone → 5% extremum)
-6. Tip disambiguation (warped-space distance fallback)
-7. Dark-segment correction (+18% extrapolation on black segments)
-8. Raw px → mm via direct homography
+Per camera, a dart goes through frame differencing, contour filtering, hand rejection, pose/tip validation, PCA line fitting, tip refinement, and homography conversion into board millimetres. Detection can use OpenVINO pose inference when configured, then cross-check it against classic line-fit geometry.
 
 ### 3. Scoring
 
-```
-Priority 1: Cross-camera mask intersection  ← most accurate
-Priority 2: Majority vote (2/3 agree)
-Priority 3: Outlier rejection (drop if >40mm from others)
-Priority 4: Quality-weighted average
-Priority 5: Near-boundary → best single camera wins
-```
+`ScoreMapper` converts each camera's millimetre tip into a label and fuses camera results. The priority order is:
+
+1. Cross-camera mask intersection.
+2. 2-of-3 majority agreement.
+3. Outlier rejection for spread-out tips.
+4. Quality-weighted average.
+5. Near-boundary best-camera fallback.
+6. Single-camera fallback for low-confidence but usable throws.
+
+The final result includes the label, score, fused coordinates, agreement bucket, per-camera details, and timing data. That same prediction feeds Practice, X01 review, match review, and game stats.
+
+### 4. Game, Review & Stats
+
+Practice mode starts an accuracy session, records every prediction, lets the user confirm or correct actual darts, and aggregates precision/recall, misses, false positives, corrections, camera agreement, and latency.
+
+Game mode starts with an optional bullseye throw-off, then runs X01, Cricket, or Count Up. Human darts come from detection; bot darts can come from the simulated or auto-advance bot helper. At game start, stats reserve a match id so `match_review.py` can create a review bundle immediately.
+
+Every confirmed in-game dart can write per-camera frames to `data/match_reviews/`, and every completed turn can write end-of-turn frames. Finished games are saved to `data/stats.json`; completed or abandoned match reviews remain available from Match History.
 
 ---
 
-## Detection Pipeline
+## Full System Flowchart
 
 ```mermaid
 flowchart TD
-    A[📷 Camera Frame] --> U[Lens undistort]
-    U --> B[Frame diff vs reference]
-    B --> C[Motion / stability check]
-    C --> D{Blob size?}
-    D --> |too small| A
-    D --> |hand-sized| E[HAND state — wait]
-    D --> |dart-sized| F[Aspect ratio filter ≥ 2.5]
-    F --> H[PCA line fit]
-    H --> I[Two-stage tip refinement]
-    I --> J[Tip disambiguation]
-    J --> K{Dark segment?}
-    K --> |yes| L[Extrapolate +18%]
-    K --> |no| M[Fine-tune +5%]
-    L --> N[Raw px → mm]
-    M --> N
-    N --> O[Cross-camera 2-of-3 vote]
-    O --> P[Consensus scoring]
-    P --> Q{3rd dart?}
-    Q --> |Yes| R[Takeout — wait for hand]
-    Q --> |No| S[🎯 Score via Socket.IO]
-    R --> S
+    A["Launch ThrowVision"] --> B["Electron main starts Flask/Socket.IO server"]
+    B --> C["Frontend connects and requests /api/status"]
+    C --> D{"Settings and cameras ready?"}
+
+    D -->|Settings| E["Load settings.json into ConfigManager"]
+    D -->|Cameras| F["Open USB cameras through DartDetector"]
+    E --> G["Load OpenVINO pose/calibration models if configured"]
+    F --> H["Load lens .npz and board calibration .npz"]
+    H --> I{"Calibration complete?"}
+
+    I -->|No| J["Lens Calibration"]
+    J --> J1["Checkerboard detection"]
+    J1 --> J2["Coverage heatmap reaches target"]
+    J2 --> J3["Compute K/distortion and save per camera"]
+    J3 --> K["Board Calibration"]
+
+    I -->|Yes| L["Ready for Practice or Game"]
+    K --> K1["Manual 4/8-point handles"]
+    K --> K2["Auto calibration: ML, board profile, or anchor refine"]
+    K1 --> K3["RANSAC homography to board pixels and millimetres"]
+    K2 --> K3
+    K3 --> K4["Save calibration cache with H_mm and masks"]
+    K4 --> L
+
+    L --> M{"User mode"}
+    M -->|Practice| N["Start detection and accuracy session"]
+    M -->|Game| O["Optional bullseye throw-off"]
+    M -->|Stats| P["Load game stats and accuracy stats"]
+
+    O --> O1["Create X01, Cricket, or Count Up engine"]
+    O1 --> O2["Reserve stats id and start match_review bundle"]
+    O2 --> Q["Start detection loop"]
+    N --> Q
+
+    Q --> R["Per-camera frame capture"]
+    R --> S["Lens undistort and board warp"]
+    S --> T["Frame diff, motion stability, contour filtering"]
+    T --> U{"Hand, noise, or dart?"}
+    U -->|Hand| U1["Wait for takeout / stable board"]
+    U -->|Noise| R
+    U -->|Dart| V["Pose model or line-fit tip extraction"]
+    V --> W["Tip refine, dark-segment correction, raw px -> mm"]
+    W --> X["ScoreMapper camera consensus"]
+    X --> Y["Emit dart_scored over Socket.IO"]
+
+    Y --> Z{"Practice or Game?"}
+    Z -->|Practice| AA["Update practice board, log, and accuracy prediction"]
+    AA --> AB["User confirms, edits, marks false positive, or adds missed event"]
+    AB --> AC["Save accuracy_stats session and summary"]
+
+    Z -->|Game| AD["record_dart() in game engine"]
+    AD --> AE["match_review records per-dart frames"]
+    AE --> AF{"Third dart / turn over?"}
+    AF -->|No| Q
+    AF -->|Yes| AG["Wait for takeout or skip_takeout"]
+    AG --> AH["match_review records end-of-turn frames"]
+    AH --> AI{"Game finished?"}
+    AI -->|No| Q
+    AI -->|Yes| AJ["Finalize game stats and match review"]
+
+    AJ --> P
+    AC --> P
+    P --> AK["Stats dashboard"]
+    AK --> AL["Game Stats: totals, averages, wins, history"]
+    AK --> AM["Accuracy Stats: precision, recall, misses, false positives"]
+    AL --> AN{"History row has review bundle?"}
+    AN -->|Yes| AO["Open Match Review"]
+    AO --> AP["Review raw, annotated, and warped camera captures"]
+    AN -->|No| AQ["Show non-clickable legacy row"]
+
+    AD --> AR{"Quit, shutdown, or abandon?"}
+    AR -->|Yes| AS["Save abandoned stats row and finalize review as abandoned"]
+    AS --> P
 ```
 
 ---
@@ -329,10 +425,26 @@ flowchart TD
 |---|---|
 | `GET /api/status` | Camera states, last score |
 | `GET /api/settings` | Current config |
+| `POST /api/settings` | Save runtime settings, detection profile, OpenVINO, and TF-Luna options |
+| `GET /api/cameras/probe` | Verify physical camera availability |
+| `GET /api/cameras/resolutions` | List supported camera resolutions |
 | `GET /api/lens/autoframe/<cam_id>` | Live lens cal JPEG with heatmap |
 | `GET /api/lens/status/<cam_id>` | Lens calibration RMS + status |
 | `POST /api/cal/refine/<cam_id>` | Auto-refine via HSV ring detection |
 | `GET /api/cal/auto/<cam_id>` | Feature-match auto board calibration |
+| `GET /api/stats` | Aggregated game stats and recent match history |
+| `GET /api/stats/recent` | Recent match rows with `has_review` flags |
+| `DELETE /api/stats/game/<game_id>` | Delete one match and its review bundle |
+| `GET /api/accuracy/summary` | Aggregated accuracy-review metrics |
+| `GET /api/accuracy/sessions` | Accuracy-review session list |
+| `POST /api/accuracy/review` | Save Practice accuracy review corrections |
+| `POST /api/accuracy/review/x01-action` | Apply or continue an X01 turn review |
+| `GET /api/matches/<id>/review` | Fetch a completed/abandoned match-review bundle |
+| `GET /api/matches/<id>/frame/<kind>/<p>/<r>/<d>/<cam>` | Fetch a raw match-review frame |
+| `GET /api/matches/<id>/frame/<kind>/<p>/<r>/<d>/<cam>/annotated` | Fetch an annotated match-review frame |
+| `GET /api/matches/<id>/frame/<kind>/<p>/<r>/<d>/<cam>/warped` | Fetch a warped match-review frame using current calibration |
+| `GET /api/tfluna/scan` | Auto-detect a TF-Luna serial port |
+| `POST /api/tfluna/probe` | Probe a TF-Luna sensor on a selected port |
 
 ---
 
@@ -345,6 +457,11 @@ flowchart TD
 | `dart_size_min` | `800` | Minimum contour area (px²) |
 | `binary_thresh` | `30` | Frame-diff threshold |
 | `detection_speed` | `DEFAULT` | `VERY_LOW` / `LOW` / `DEFAULT` / `HIGH` / `VERY_HIGH` |
+| `calibrate_on_startup` | `false` | Run auto-calibration once after active cameras open |
+| `openvino_device` | `CPU` | Preferred OpenVINO device (`CPU`, `GPU`, or `AUTO`) |
+| `pose_enabled` | `true` | Enable OpenVINO pose-based dart-tip detection when a model is available |
+| `cal_enabled` | `true` | Enable OpenVINO ML-assisted board calibration when a model is available |
+| `tfluna_enabled` | `false` | Enable optional foul-line distance monitoring |
 
 ---
 
@@ -360,6 +477,18 @@ flowchart TD
 ---
 
 ## Changelog
+
+### v1.4.0 — 2026-04-21
+- **NEW** Match Review page for X01, Cricket, and Count Up with per-dart and end-of-turn camera captures.
+- **NEW** Review bundles under `data/match_reviews/`, including raw frame serving, annotated overlays, warped frame views, and orphan-folder recovery.
+- **NEW** Clickable Match History rows when `has_review` is available; deleting a game also deletes its review bundle.
+- **NEW** Bot opponent support with simulated skill levels and auto-advance mode for game-flow testing.
+- **NEW** Player names and flight-color selection in the game setup and scoreboard flow.
+- **NEW** Startup auto-calibration setting for running the auto-calibration pipeline after cameras open.
+- **IMPROVE** Full README system flowchart now documents calibration, detection, scoring, games, match review, accuracy review, and stats.
+- **FIX** 8-point calibration anchor order now matches frontend handles, hints, wireframe preview, and backend homography anchors.
+- **FIX** Calibration caches include the millimetre homography for more reliable reload behavior.
+- **FIX** Wider near-edge board tolerance keeps more outside-board darts as reviewable `MISS` events.
 
 ### v1.3.0 — 2026-04-16
 - **NEW** Practice accuracy-review workflow with confirm, edit, false-positive, and missed-dart handling.

@@ -2008,6 +2008,7 @@ body {
   line-height: 1;
   letter-spacing: -0.04em;
   margin: 0;
+  color: white;
 }
 
 .game-card p {
@@ -2214,6 +2215,44 @@ body {
   color: var(--fg);
   font-size: 15px;
   font-weight: 700;
+}
+
+.game-field input[type="text"] {
+  width: 100%;
+  min-height: 44px;
+  padding: 0 14px;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(10, 13, 18, 0.76);
+  color: var(--fg);
+  font-size: 15px;
+  font-weight: 600;
+  font-family: inherit;
+  outline: none;
+  box-sizing: border-box;
+  transition: border-color 0.18s ease, background 0.18s ease;
+}
+.game-field input[type="text"]::placeholder {
+  color: rgba(255, 255, 255, 0.25);
+  font-weight: 400;
+}
+.game-field input[type="text"]:focus {
+  border-color: rgba(78, 142, 247, 0.55);
+  background: rgba(10, 13, 18, 0.90);
+  box-shadow: 0 0 0 3px rgba(78, 142, 247, 0.12);
+}
+.game-field input[type="text"].input-locked {
+  color: rgba(255, 255, 255, 0.35);
+  border-color: rgba(255, 255, 255, 0.05);
+  cursor: not-allowed;
+}
+
+/* Player names grid sits inside the Match Start section — needs
+   breathing room from the starting-player segment above it */
+#game-player-names-grid {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
 }
 
 .game-notes-list {
@@ -2592,6 +2631,29 @@ body {
 .game-throw-card.is-empty {
   background: rgba(255, 255, 255, 0.03);
   border-color: rgba(255, 255, 255, 0.06);
+}
+
+.game-throw-card.is-empty.is-suggest {
+  background:
+    linear-gradient(180deg, rgba(78, 142, 247, 0.12), rgba(78, 142, 247, 0.04)),
+    rgba(255, 255, 255, 0.02);
+  border-color: rgba(78, 142, 247, 0.32);
+  box-shadow: inset 0 0 0 1px rgba(78, 142, 247, 0.08);
+}
+
+.game-throw-card.is-empty.is-suggest strong {
+  color: #cfe0ff;
+}
+
+.game-throw-card.is-empty.is-suggest small {
+  color: rgba(207, 224, 255, 0.7);
+}
+
+.game-throw-card em.game-throw-aim {
+  color: var(--accent);
+  font-size: 14px;
+  font-weight: 800;
+  letter-spacing: 0.18em;
 }
 
 .game-throw-card.is-bust {
@@ -4510,6 +4572,22 @@ body {
   gap: 10px;
   margin-top: 20px;
   justify-content: center;
+  align-items: center;
+  width: 100%;
+}
+
+.profile-modal-actions .profile-modal-btn:only-child {
+  margin-left: auto;
+  margin-right: auto;
+}
+
+#offline-modal .profile-modal-actions {
+  display: grid;
+  place-items: center;
+}
+
+#offline-modal .profile-modal-actions > .profile-modal-btn {
+  justify-self: center;
 }
 
 .profile-modal-btn {
@@ -4518,6 +4596,8 @@ body {
   border-radius: 8px;
   font-size: 14px;
   font-weight: 600;
+  justify-content: center;
+  text-align: center;
 }
 
 /* ── Profile List Items ───────────────────────────────────── */
@@ -7867,4 +7947,667 @@ body {
     max-height: none;
     grid-template-columns: 1fr;
   }
+}
+
+.sr-row--clickable { cursor: pointer; }
+.sr-row--clickable:hover {
+    background: rgba(255, 255, 255, 0.04);
+    box-shadow: 0 0 0 1px rgba(255,255,255,0.08) inset;
+}
+.sr-row__hint {
+    margin-left: auto;
+    color: var(--accent, #8fdb8f);
+    font-size: 13px;
+}
+.mr-abandoned-badge {
+    display: inline-block;
+    padding: 2px 8px;
+    margin-left: 8px;
+    border-radius: 10px;
+    font-size: 11px;
+    font-weight: 600;
+    background: rgba(230, 160, 0, 0.2);
+    color: #f0b450;
+    border: 1px solid rgba(230, 160, 0, 0.4);
+}
+
+/* ===== Match Review ===== */
+
+/* Page shell — only apply flex when ACTIVE so display:none from
+   .page is not overridden (that was making the header bleed onto
+   every other page). height is inherited from .page. */
+#page-match-review.active {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    padding-bottom: 0;
+}
+
+/* ── Header bar ─────────────────────────────────────────────────────── */
+.mr-header {
+    display: flex; align-items: center; gap: 12px;
+    padding: 12px 24px;
+    border-bottom: 1px solid rgba(255,255,255,0.07);
+    flex-shrink: 0;
+    background: rgba(10,14,22,0.96);
+}
+.mr-title {
+    flex: 1; margin: 0;
+    font-size: 18px; font-weight: 700; letter-spacing: -0.01em;
+}
+
+/* Back button — blue ghost */
+.mr-header .page-back-btn {
+    background: transparent;
+    border: 1px solid rgba(78,142,247,0.38);
+    color: var(--accent, #4e8ef7);
+    padding: 7px 14px; font-size: 13px; font-weight: 600;
+    border-radius: 8px;
+    transition: background 140ms ease, border-color 140ms ease;
+    opacity: 1;
+}
+.mr-header .page-back-btn:hover {
+    background: rgba(78,142,247,0.12);
+    border-color: var(--accent, #4e8ef7);
+    opacity: 1;
+}
+
+/* Delete button — red danger */
+.btn--danger,
+#mr-delete-btn {
+    background: rgba(224,82,82,0.10);
+    border: 1px solid rgba(224,82,82,0.45);
+    color: var(--red, #e05252);
+    padding: 7px 14px; font-size: 13px; font-weight: 600;
+    border-radius: 8px;
+    transition: background 140ms ease, border-color 140ms ease, color 140ms ease;
+    opacity: 1;
+}
+.btn--danger:hover,
+#mr-delete-btn:hover {
+    background: var(--red, #e05252);
+    border-color: var(--red, #e05252);
+    color: #fff;
+    opacity: 1;
+}
+
+/* ── Info strip ─────────────────────────────────────────────────────── */
+.mr-abandoned-banner {
+    padding: 8px 24px; background: rgba(230,160,0,0.12);
+    color: #f0b450; border-bottom: 1px solid rgba(230,160,0,0.28);
+    font-size: 13px; flex-shrink: 0;
+}
+.mr-meta {
+    padding: 7px 24px; color: var(--muted, #9aa);
+    font-size: 12px; letter-spacing: 0.01em;
+    border-bottom: 1px solid rgba(255,255,255,0.05);
+    flex-shrink: 0;
+}
+
+/* ── Player tabs ────────────────────────────────────────────────────── */
+.mr-tabs {
+    display: flex; gap: 6px; padding: 10px 24px;
+    border-bottom: 1px solid rgba(255,255,255,0.05);
+    flex-shrink: 0;
+}
+.mr-tab {
+    padding: 6px 22px; font-size: 13px; font-weight: 600;
+    background: transparent; color: var(--fg-dim, #7a849a);
+    border: 1px solid rgba(255,255,255,0.10); border-radius: 20px;
+    cursor: pointer;
+    transition: background 140ms ease, border-color 140ms ease, color 140ms ease;
+}
+.mr-tab:hover { color: var(--fg); border-color: rgba(255,255,255,0.22); }
+.mr-tab--active {
+    background: var(--accent-subtle, rgba(78,142,247,0.12));
+    border-color: rgba(78,142,247,0.50);
+    color: #cfe2ff;
+}
+
+/* ── Turn list — fills remaining height and scrolls internally ──────
+   Auto-fill grid so multiple compact turn cards tile horizontally on
+   wide displays (no dead zones). Scrollbar hidden but scroll still
+   works (wheel / trackpad / keyboard). */
+.mr-turns {
+    flex: 1; min-height: 0;
+    overflow-y: auto;
+    padding: 14px 24px 20px;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(560px, 1fr));
+    gap: 14px;
+    align-content: start;
+    scrollbar-width: none;          /* Firefox */
+    -ms-overflow-style: none;       /* IE / old Edge */
+}
+.mr-turns::-webkit-scrollbar { width: 0; height: 0; display: none; }
+/* ── Turn card ───────────────────────────────────────────────────────
+   Compact single-column card sized to fit an auto-fill grid cell
+   (~560–720px wide). Dart scoring rides up top as a tabular strip,
+   captures sit below. Many cards tile side-by-side on wide displays
+   so the pane has no dead zones. Head is sticky against .mr-turns. */
+.mr-turn-card {
+    background:
+        linear-gradient(180deg, rgba(255,255,255,0.040) 0%, rgba(255,255,255,0.012) 100%),
+        #0f1320;
+    border: 1px solid rgba(255,255,255,0.07);
+    border-radius: 12px;
+    display: flex;
+    flex-direction: column;
+    overflow: visible;           /* keep sticky head working inside grid cell */
+    box-shadow: 0 1px 0 rgba(255,255,255,0.02) inset;
+    transition: border-color 180ms ease, transform 180ms ease, box-shadow 180ms ease;
+}
+.mr-turn-card:hover {
+    border-color: rgba(78,142,247,0.22);
+    box-shadow:
+        0 1px 0 rgba(255,255,255,0.03) inset,
+        0 8px 24px rgba(0,0,0,0.35);
+}
+
+/* Sticky header bar */
+.mr-turn-card__head {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 14px;
+    font-size: 11px; font-weight: 700; letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: rgba(255,255,255,0.75);
+    background: rgba(18, 24, 36, 0.94);
+    border-bottom: 1px solid rgba(255,255,255,0.06);
+    border-radius: 12px 12px 0 0;
+    position: sticky;
+    top: -14px;   /* cancels .mr-turns top padding so head hugs viewport */
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    z-index: 2;
+}
+.mr-turn-card__head > span:first-child {
+    display: inline-flex; align-items: center; gap: 8px;
+}
+.mr-turn-card__head > span:first-child::before {
+    content: "";
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: var(--accent, #4e8ef7);
+    box-shadow: 0 0 8px rgba(78,142,247,0.55);
+}
+.mr-turn-card__total {
+    color: #cfe2ff;
+    font-variant-numeric: tabular-nums;
+    font-weight: 700;
+    font-size: 12px;
+    letter-spacing: 0;
+    text-transform: none;
+    padding: 2px 10px;
+    background: rgba(78,142,247,0.15);
+    border: 1px solid rgba(78,142,247,0.35);
+    border-radius: 999px;
+}
+
+/* ── Dart info — inline tabular strip ─────────────────────────────── */
+.mr-turn-card__darts {
+    padding: 8px 14px 10px;
+    display: flex; flex-direction: column;
+    border-bottom: 1px solid rgba(255,255,255,0.05);
+}
+.mr-dart-row {
+    display: grid;
+    grid-template-columns: 48px 68px minmax(0, 1fr) minmax(0, auto);
+    gap: 10px;
+    padding: 5px 0;
+    align-items: baseline;
+    white-space: nowrap;
+    border-bottom: 1px dashed rgba(255,255,255,0.05);
+}
+.mr-dart-row:last-child { border-bottom: none; }
+.mr-dart-row > span:nth-child(1) {
+    font-size: 10px; font-weight: 700; letter-spacing: 0.10em;
+    text-transform: uppercase;
+    color: rgba(255,255,255,0.42);
+}
+.mr-dart-row > span:nth-child(2) {
+    font-size: 13px; font-weight: 700;
+    color: rgba(255,255,255,0.95);
+    font-variant-numeric: tabular-nums;
+}
+.mr-dart-row > span:nth-child(3) {
+    font-size: 11px;
+    color: rgba(255,255,255,0.60);
+    font-variant-numeric: tabular-nums;
+    overflow: hidden; text-overflow: ellipsis;
+}
+.mr-dart-row > span:nth-child(4) {
+    font-size: 10px;
+    color: rgba(255,255,255,0.36);
+    font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+    letter-spacing: 0.02em;
+    overflow: hidden; text-overflow: ellipsis;
+    justify-self: end;
+}
+
+/* ── Captures ─────────────────────────────────────────────────────── */
+.mr-turn-card__captures {
+    padding: 8px 14px 12px;
+    display: flex; flex-direction: column; gap: 4px;
+    min-width: 0;
+}
+.mr-captures-label {
+    margin: 0; padding-top: 9px; padding-bottom: 9px;
+    font-size: 9.5px; font-weight: 700; letter-spacing: 0.10em;
+    text-transform: uppercase; color: rgba(255,255,255,0.32);
+}
+.mr-captures-label + .mr-captures-label { margin-top: 4px; }
+.mr-thumbrow {
+    display: grid;
+    grid-template-columns: 48px repeat(3, minmax(0, 1fr));
+    align-items: center; gap: 6px;
+    margin: 0;
+}
+.mr-thumb-label {
+    font-size: 10px; font-weight: 700; letter-spacing: 0.10em;
+    text-transform: uppercase;
+    color: rgba(255,255,255,0.42);
+}
+.mr-thumb {
+    width: 100%; aspect-ratio: 16 / 9;
+    object-fit: cover; border-radius: 6px;
+    background: rgba(0,0,0,0.5); cursor: pointer;
+    border: 1px solid rgba(255,255,255,0.08);
+    display: block;
+    transition: border-color 140ms ease, transform 140ms ease, box-shadow 140ms ease;
+}
+.mr-thumb:hover {
+    border-color: var(--accent, #4e8ef7);
+    transform: scale(1.04);
+    box-shadow: 0 8px 22px rgba(0,0,0,0.55);
+}
+.mr-thumb--missing { visibility: hidden; position: relative; }
+.mr-thumb--missing::after {
+    content: "No capture"; visibility: visible;
+    position: absolute; inset: 0; display: flex; align-items: center;
+    justify-content: center; font-size: 10px; letter-spacing: 0.04em;
+    text-transform: uppercase; color: rgba(255,255,255,0.25);
+    background: rgba(255,255,255,0.02);
+    border: 1px dashed rgba(255,255,255,0.08);
+    border-radius: 6px;
+}
+
+.mr-lightbox {
+    position: fixed;
+    inset: 0;
+    z-index: 1000;
+    background: rgba(0, 0, 0, 0.86);
+    backdrop-filter: blur(8px);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    padding: clamp(14px, 3vw, 28px);
+}
+.mr-lightbox__close {
+    position: absolute;
+    top: 14px;
+    right: 16px;
+    width: 38px;
+    height: 38px;
+    border-radius: 999px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 18px;
+    background: rgba(255, 255, 255, 0.08);
+    border: 1px solid rgba(255, 255, 255, 0.16);
+    color: #fff;
+    cursor: pointer;
+    transition: background 120ms ease, border-color 120ms ease, transform 120ms ease;
+}
+.mr-lightbox__close:hover {
+    background: rgba(255, 255, 255, 0.14);
+    border-color: rgba(255, 255, 255, 0.26);
+    transform: scale(1.04);
+}
+.mr-lightbox__img {
+    width: min(1120px, 96vw);
+    max-height: min(74vh, 780px);
+    object-fit: contain;
+    border-radius: 16px;
+    background: rgba(255, 255, 255, 0.02);
+    border: 1px solid rgba(255, 255, 255, 0.10);
+    box-shadow: 0 20px 80px rgba(0, 0, 0, 0.55);
+}
+.mr-lightbox__caption {
+    width: min(1120px, 96vw);
+    text-align: center;
+    color: rgba(232, 238, 249, 0.88);
+    font-size: 13px;
+    line-height: 1.35;
+}
+
+/* ── Lightbox scorecard (dart info overlay) ───────────────────────── */
+/* Lives in the top-left corner so it never collides with the close ✕
+   button (anchored top-right). `max-width` keeps it from spilling across
+   the image on smaller viewports. */
+.mr-lightbox__scorecard {
+  position: absolute;
+  top: 20px;
+  left: 20px;
+  pointer-events: none;
+  z-index: 3;
+  max-width: min(280px, 34vw);
+}
+
+.mr-sc {
+  min-width: 180px;
+  padding: 14px 16px;
+  border-radius: 14px;
+  background: linear-gradient(180deg, rgba(10, 14, 24, 0.82), rgba(10, 14, 24, 0.66));
+  border: 1px solid rgba(78, 142, 247, 0.32);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  color: #e8eef9;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  backdrop-filter: blur(6px);
+}
+
+.mr-sc__kicker {
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: rgba(207, 224, 255, 0.72);
+}
+
+.mr-sc__who {
+  font-size: 13px;
+  font-weight: 700;
+  color: #cfe0ff;
+}
+
+.mr-sc__hero {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-top: 2px;
+}
+
+.mr-sc__hero strong {
+  font-size: 28px;
+  font-weight: 900;
+  letter-spacing: -0.04em;
+  color: #ffffff;
+}
+
+.mr-sc__hero em {
+  margin-left: auto;
+  font-style: normal;
+  font-size: 32px;
+  font-weight: 900;
+  letter-spacing: -0.04em;
+  color: #1fe0a6;
+}
+
+.mr-sc__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.mr-sc__chip {
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: rgba(232, 238, 249, 0.88);
+  letter-spacing: 0.02em;
+}
+
+.mr-sc__chip--agr {
+  background: rgba(31, 224, 166, 0.1);
+  border-color: rgba(31, 224, 166, 0.28);
+  color: #8ff2cd;
+  text-transform: uppercase;
+  font-weight: 700;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+}
+.mr-lightbox__controls, .mr-lightbox__nav {
+    width: min(1120px, 96vw);
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    justify-content: center;
+    color: rgba(232, 238, 249, 0.75);
+    background: rgba(10, 14, 24, 0.55);
+    border: 1px solid rgba(255, 255, 255, 0.10);
+    padding: 10px 12px;
+    border-radius: 14px;
+    backdrop-filter: blur(6px);
+}
+.mr-lightbox__nav #mr-lightbox-pos {
+    min-width: 84px;
+    text-align: center;
+    font-variant-numeric: tabular-nums;
+}
+.mr-lightbox__controls .btn,
+.mr-lightbox__nav .btn {
+    background: rgba(255,255,255,0.08);
+    color: #e8e8e8;
+    border: 1px solid rgba(255,255,255,0.22);
+    padding: 6px 14px; border-radius: 6px;
+    cursor: pointer;
+    transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+.mr-lightbox__controls .btn:hover,
+.mr-lightbox__nav .btn:hover {
+    background: rgba(255,255,255,0.16);
+    border-color: rgba(255,255,255,0.38);
+    color: #fff;
+}
+.mr-lightbox__controls .btn.mr-btn--active,
+.mr-btn--active {
+    background: var(--accent, #3a7d3a);
+    color: #fff;
+    border-color: var(--accent, #3a7d3a);
+}
+
+/* ═══════════════════════════════════════════════════════════════
+ * Player Flight Colors
+ *
+ * Each player picks a "flight color" on the Game Setup page, and it
+ * tints that player's scoreboard panel, match-review tab, and a few
+ * other accent bits. Purely cosmetic — a bit of personalization.
+ *
+ * Selected color is held on the player panel / mr-tab as
+ *   data-flight="blue" | "red" | "green" | "gold" | "purple"
+ *                | "orange" | "pink" | "teal"
+ * ═══════════════════════════════════════════════════════════════ */
+:root {
+    --flight-blue:   #4ea7ff;
+    --flight-red:    #ff5260;
+    --flight-green:  #3fd28b;
+    --flight-gold:   #ffcf4a;
+    --flight-purple: #b57bff;
+    --flight-orange: #ff9247;
+    --flight-pink:   #ff7ac2;
+    --flight-teal:   #4ae0d0;
+    --player1-flight: var(--flight-blue);
+    --player2-flight: var(--flight-red);
+}
+
+/* ── Swatch picker (Game Setup) ────────────────────────────── */
+/* The whole "Flight: ●●●●●●●●" row, sitting directly under a
+   player-name input. Uses a fixed row of swatches with an inline
+   label so alignment is stable regardless of input width. */
+.flight-picker-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 12px;
+    padding: 6px 2px 10px;
+}
+.flight-picker-label {
+    /* Small, muted caption-style tag. `display:inline` so the
+       `.game-field span` block-level rule above doesn't turn it into
+       a full-width block and push the swatches to the next line. */
+    display: inline !important;
+    margin: 0 !important;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: rgba(255, 255, 255, 0.42);
+    flex: 0 0 auto;
+}
+.flight-picker {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    flex: 1 1 auto;
+    /* Give the selected-state glow a couple of px of breathing room so
+       it doesn't clip against the input above. */
+    padding: 2px 0;
+}
+.flight-swatch {
+    appearance: none;
+    -webkit-appearance: none;
+    border: 2px solid rgba(255,255,255,0.22);
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    padding: 0;
+    cursor: pointer;
+    background: var(--sw, #888);
+    box-shadow: 0 1px 2px rgba(0,0,0,0.35);
+    transition: transform 120ms ease, border-color 120ms ease,
+                box-shadow 120ms ease;
+    flex: 0 0 auto;
+}
+.flight-swatch[data-flight="blue"]   { --sw: var(--flight-blue);   }
+.flight-swatch[data-flight="red"]    { --sw: var(--flight-red);    }
+.flight-swatch[data-flight="green"]  { --sw: var(--flight-green);  }
+.flight-swatch[data-flight="gold"]   { --sw: var(--flight-gold);   }
+.flight-swatch[data-flight="purple"] { --sw: var(--flight-purple); }
+.flight-swatch[data-flight="orange"] { --sw: var(--flight-orange); }
+.flight-swatch[data-flight="pink"]   { --sw: var(--flight-pink);   }
+.flight-swatch[data-flight="teal"]   { --sw: var(--flight-teal);   }
+.flight-swatch:hover {
+    transform: scale(1.12);
+    border-color: rgba(255,255,255,0.55);
+}
+.flight-swatch.is-selected {
+    border-color: #fff;
+    box-shadow: 0 0 0 2px rgba(0,0,0,0.45),
+                0 0 10px var(--sw),
+                0 1px 3px rgba(0,0,0,0.4);
+    transform: scale(1.08);
+}
+
+/* ── Scoreboard panel theming ──────────────────────────────── */
+.player-panel[data-flight] {
+    /* Per-panel flight color; resolved from data attr. */
+    --flight: var(--flight-blue);
+    box-shadow:
+        inset 0 0 0 1px color-mix(in srgb, var(--flight) 35%, transparent),
+        0 10px 28px -20px color-mix(in srgb, var(--flight) 70%, transparent);
+}
+.player-panel[data-flight="blue"]   { --flight: var(--flight-blue);   }
+.player-panel[data-flight="red"]    { --flight: var(--flight-red);    }
+.player-panel[data-flight="green"]  { --flight: var(--flight-green);  }
+.player-panel[data-flight="gold"]   { --flight: var(--flight-gold);   }
+.player-panel[data-flight="purple"] { --flight: var(--flight-purple); }
+.player-panel[data-flight="orange"] { --flight: var(--flight-orange); }
+.player-panel[data-flight="pink"]   { --flight: var(--flight-pink);   }
+.player-panel[data-flight="teal"]   { --flight: var(--flight-teal);   }
+
+/* Flight-tinted header stripe + name glow. */
+.player-panel[data-flight] .pp-header {
+    position: relative;
+}
+.player-panel[data-flight] .pp-header::after {
+    content: "";
+    position: absolute;
+    left: 10px;
+    right: 10px;
+    bottom: 0;
+    height: 2px;
+    border-radius: 2px;
+    background: linear-gradient(
+        90deg,
+        transparent,
+        var(--flight) 20%,
+        var(--flight) 80%,
+        transparent);
+    opacity: 0.85;
+    pointer-events: none;
+}
+.player-panel[data-flight] .pp-name {
+    text-shadow: 0 0 12px color-mix(in srgb, var(--flight) 60%, transparent);
+}
+
+/* When it's that player's turn, crank the flight glow up. */
+.player-panel[data-flight].active-turn {
+    box-shadow:
+        inset 0 0 0 1px color-mix(in srgb, var(--flight) 65%, transparent),
+        0 0 0 1px color-mix(in srgb, var(--flight) 40%, transparent),
+        0 14px 40px -18px var(--flight);
+}
+.player-panel[data-flight].active-turn .pp-indicator {
+    background: var(--flight);
+    box-shadow: 0 0 10px var(--flight);
+}
+
+/* ── Bullseye pre-game card theming ────────────────────────── */
+/* Override the hard-coded red/blue inline `background:` on .bp-color
+   with the player's chosen flight hue, and wrap the active/winner
+   states in a flight-tinted glow so the pre-game screen matches the
+   in-match scoreboard. */
+.bullseye-player[data-flight] {
+    --flight: var(--flight-blue);
+}
+.bullseye-player[data-flight="blue"]   { --flight: var(--flight-blue);   }
+.bullseye-player[data-flight="red"]    { --flight: var(--flight-red);    }
+.bullseye-player[data-flight="green"]  { --flight: var(--flight-green);  }
+.bullseye-player[data-flight="gold"]   { --flight: var(--flight-gold);   }
+.bullseye-player[data-flight="purple"] { --flight: var(--flight-purple); }
+.bullseye-player[data-flight="orange"] { --flight: var(--flight-orange); }
+.bullseye-player[data-flight="pink"]   { --flight: var(--flight-pink);   }
+.bullseye-player[data-flight="teal"]   { --flight: var(--flight-teal);   }
+.bullseye-player[data-flight] .bp-color {
+    background: var(--flight) !important;
+    box-shadow: 0 0 12px color-mix(in srgb, var(--flight) 55%, transparent);
+}
+.bullseye-player[data-flight].active .bp-label,
+.bullseye-player[data-flight].winner .bp-label {
+    color: color-mix(in srgb, var(--flight) 75%, #fff);
+    text-shadow: 0 0 10px color-mix(in srgb, var(--flight) 50%, transparent);
+}
+.bullseye-player[data-flight].active {
+    box-shadow:
+        inset 0 0 0 1px color-mix(in srgb, var(--flight) 55%, transparent),
+        0 12px 36px -18px var(--flight);
+}
+
+/* ── Match Review tab theming ──────────────────────────────── */
+.mr-tab[data-flight] {
+    --flight: var(--flight-blue);
+    border-bottom: 2px solid transparent;
+}
+.mr-tab[data-flight="blue"]   { --flight: var(--flight-blue);   }
+.mr-tab[data-flight="red"]    { --flight: var(--flight-red);    }
+.mr-tab[data-flight="green"]  { --flight: var(--flight-green);  }
+.mr-tab[data-flight="gold"]   { --flight: var(--flight-gold);   }
+.mr-tab[data-flight="purple"] { --flight: var(--flight-purple); }
+.mr-tab[data-flight="orange"] { --flight: var(--flight-orange); }
+.mr-tab[data-flight="pink"]   { --flight: var(--flight-pink);   }
+.mr-tab[data-flight="teal"]   { --flight: var(--flight-teal);   }
+.mr-tab[data-flight].mr-tab--active {
+    border-bottom-color: var(--flight);
+    color: color-mix(in srgb, var(--flight) 80%, #fff);
+}
+.mr-tab[data-flight]:hover {
+    border-bottom-color: color-mix(in srgb, var(--flight) 55%, transparent);
 }

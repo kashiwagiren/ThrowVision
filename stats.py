@@ -69,6 +69,13 @@ def _next_id(records: List[dict]) -> int:
     return (max(ids) if ids else 0) + 1
 
 
+def reserve_id() -> int:
+    """Peek the next id without allocating. Used by match_review to know
+    the filename prefix at game start."""
+    records = _load_all()
+    return _next_id(records)
+
+
 # ======================================================================
 # Public API
 # ======================================================================
@@ -76,7 +83,15 @@ def _next_id(records: List[dict]) -> int:
 def save_game(summary: dict) -> None:
     """Append a game summary (from ``game.stats_summary()``)."""
     records = _load_all()
-    summary["id"] = _next_id(records)
+    used_ids = {int(r.get("id", 0) or 0) for r in records}
+
+    preset = int(summary.get("id", 0) or 0)
+    if preset > 0 and preset not in used_ids:
+        # Caller reserved this id (e.g. via reserve_id()) — honor it.
+        pass
+    else:
+        summary["id"] = _next_id(records)
+
     records.append(summary)
     _save_all(records)
     print(f"[STATS] Saved game #{summary['id']} ({summary.get('mode', '?')})")

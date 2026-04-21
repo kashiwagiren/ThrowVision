@@ -12,11 +12,13 @@ Usage:
 """
 
 import argparse
+import atexit
 import base64
 import json
 import math
 import os
 import random
+import signal
 import threading
 import time
 import traceback
@@ -74,6 +76,8 @@ _confirm_thread_lock  = threading.Lock()
 from board_profile import BoardProfile
 from game_mode import BullseyeThrow, GameX01, GameCricket, GameCountUp
 import accuracy_stats
+import match_review
+import bot_player
 import stats as game_stats
 from lens_calibrator import LensCalibrator
 from anchor_refine import auto_calibrate_from_anchors, refine_anchor_points
@@ -110,6 +114,234 @@ def _profile_calibration_points(frame: np.ndarray) -> Optional[np.ndarray]:
         return None
 
 
+def _run_auto_calibration(cam_id: int) -> Tuple[dict, int]:
+    """Run the full auto-calibration pipeline for one active camera."""
+    try:
+        if cam_id < 0 or cam_id >= len(_detectors):
+            return {"success": False, "reason": "invalid_cam_id"}, 400
+
+        det = _detectors[cam_id]
+        if not det.active:
+            return {"success": False, "reason": "camera_not_active"}, 400
+
+        frame = det.last_frame
+        if frame is None or np.mean(frame) <= 5:
+            frame = det._grab() if det.active else None
+        if frame is None:
+            return {"success": False, "reason": "no_frame"}, 503
+        frame = _apply_undistort(cam_id, frame)
+
+        cal = _calibrators[cam_id]
+
+        result = None
+        ml_result_raw = None
+        if _cal_model is not None:
+            try:
+                from ml_calibration import ml_calibrate
+                print(f"[CAL] Auto Cam {cam_id}: trying ML calibration…")
+                ml_result_raw = ml_calibrate(frame, _cal_model, cal)
+                if ml_result_raw["success"]:
+                    result = ml_result_raw
+                    print(f"[CAL] Auto Cam {cam_id}: ML calibration succeeded "
+                          f"({result.get('rings_found', 0)} correspondences, "
+                          f"err={result.get('reprojection_error', 0):.2f}px)")
+                else:
+                    print(f"[CAL] Auto Cam {cam_id}: ML calibration failed "
+                          f"({ml_result_raw.get('reason')}), falling back…")
+            except Exception as e:
+                print(f"[CAL] Auto Cam {cam_id}: ML calibration crashed: {e}")
+
+        if (result is not None
+                and result.get("points") is not None
+                and result.get("H") is None):
+            try:
+                ml_pts = np.asarray(result["points"], dtype=np.float32)
+                if len(ml_pts) in (4, 8):
+                    refined = refine_anchor_points(
+                        frame, ml_pts, cal,
+                        search_radius_px=max(16, int(cal.board_size * 0.05)),
+                        iters=2,
+                    )
+                    if refined is not None:
+                        refined_pts, _vis, metrics = refined
+                        shift = metrics["mean_shift_px"]
+                        if shift < cal.board_size * 0.15:
+                            result["points"] = refined_pts.tolist()
+                            result["reprojection_error"] = round(shift, 3)
+                            print(f"[CAL] Auto Cam {cam_id}: ML anchors refined "
+                                  f"(mean_shift={shift:.1f}px)")
+                        else:
+                            print(f"[CAL] Auto Cam {cam_id}: anchor refine shift "
+                                  f"too large ({shift:.1f}px), keeping ML points")
+                    else:
+                        print(f"[CAL] Auto Cam {cam_id}: anchor refine returned "
+                              f"None, keeping ML points")
+            except Exception as e:
+                print(f"[CAL] Auto Cam {cam_id}: anchor refine crashed: {e}")
+
+        if result is None and ml_result_raw is not None and ml_result_raw.get("H") is not None:
+            try:
+                from auto_ellipse import refine_calibration
+                H_seed = np.asarray(ml_result_raw["H"], dtype=np.float64)
+                seed_pts = cal._anchor_src_points_from_homography(H_seed, n_points=8)
+                ell_result = refine_calibration(frame, seed_pts, cal)
+                if ell_result is not None:
+                    refined_src, refined_dst_mm, _vis = ell_result
+                    H_ell, _mask = cv2.findHomography(
+                        refined_src, refined_dst_mm, cv2.RANSAC, 5.0)
+                    if H_ell is not None:
+                        anchor_pts = cal._anchor_src_points_from_homography(
+                            H_ell, n_points=8)
+                        result = {
+                            "success": True,
+                            "reason": "ml_seeded_ellipse",
+                            "rings_found": 8,
+                            "reprojection_error": 0.0,
+                            "points": anchor_pts.tolist(),
+                            "n_points": 8,
+                            "preview_b64": ml_result_raw.get("preview_b64", ""),
+                        }
+                        print(f"[CAL] Auto Cam {cam_id}: ML-seeded ellipse "
+                              f"refinement succeeded")
+            except Exception as e:
+                print(f"[CAL] Auto Cam {cam_id}: ML-seeded ellipse crashed: {e}")
+
+        if result is None:
+            profile_pts = _profile_calibration_points(frame)
+            if profile_pts is not None:
+                print(f"[CAL] Auto Cam {cam_id}: using board profile '{_board_profile.name}'")
+                result = {
+                    "success": True,
+                    "rings_found": int(len(profile_pts)),
+                    "reprojection_error": 0.0,
+                    "points": profile_pts.tolist(),
+                    "n_points": int(len(profile_pts)),
+                    "preview_b64": base64.b64encode(
+                        cv2.imencode('.jpg', cal.draw_anchor_points(frame, profile_pts),
+                                     [cv2.IMWRITE_JPEG_QUALITY, 82])[1].tobytes()
+                    ).decode("ascii"),
+                }
+
+        if result is None:
+            result = auto_calibrate_from_anchors(frame, cal)
+
+        if not result["success"]:
+            print(f"[CAL] Auto Cam {cam_id}: failed — "
+                  f"{result.get('reason')} (rings={result.get('rings_found', 0)})")
+            return result, 422
+
+        try:
+            committed_via_h = False
+            if result.get("reason") == "ml_calibration" and result.get("H") is not None:
+                H_mm = np.asarray(result["H"], dtype=np.float64)
+                committed_src = cal.commit_homography(H_mm, n_points=8)
+                result["points"] = committed_src.tolist()
+                result["n_points"] = int(len(committed_src))
+                committed_via_h = True
+                print(f"[CAL] Auto Cam {cam_id}: committed direct ML homography "
+                      f"as {len(committed_src)} canonical anchors")
+            else:
+                src_points = np.asarray(result["points"], dtype=np.float32)
+                cal.calibrate(src_points)
+
+            if (ml_result_raw is not None
+                    and ml_result_raw.get("success")
+                    and ml_result_raw.get("H") is not None):
+                try:
+                    import math as _m
+                    from ml_calibration import _CLASS_RADIUS
+                    detections = _cal_model.predict(frame) if _cal_model else []
+                    ml_src, ml_dst = [], []
+                    for det_obj in detections:
+                        r_mm = _CLASS_RADIUS.get(det_obj.class_name)
+                        if r_mm is None:
+                            continue
+                        cx_d, cy_d = det_obj.cx, det_obj.cy
+                        ml_src.append([cx_d, cy_d])
+                        pt_mm = cal.transform_to_mm(cx_d, cy_d)
+                        angle = _m.atan2(pt_mm[1], pt_mm[0])
+                        ml_dst.append([r_mm * _m.cos(angle),
+                                       r_mm * _m.sin(angle)])
+                    if len(ml_src) >= 8:
+                        cal.build_radial_bias_from_correspondences(
+                            np.array(ml_src, dtype=np.float32),
+                            np.array(ml_dst, dtype=np.float32),
+                        )
+                        print(f"[CAL] Auto Cam {cam_id}: enhanced radial bias "
+                              f"from {len(ml_src)} ML correspondences")
+                except Exception as e:
+                    print(f"[CAL] Auto Cam {cam_id}: enhanced radial bias "
+                          f"failed: {e}")
+
+            det.cal = cal
+            det.capture_reference()
+            det.reset_to_wait()
+
+            quality = cal.calibration_quality()
+            n_rings = result["rings_found"]
+            err = result["reprojection_error"]
+            result["calibration_quality"] = quality
+            metric_name = "reproj" if committed_via_h else "mean_shift"
+            print(f"[CAL] Auto Cam {cam_id}: committed — "
+                  f"{n_rings} anchors, {metric_name}={err:.2f}px, "
+                  f"quality={quality:.1%}")
+        except Exception as e:
+            print(f"[CAL] Auto Cam {cam_id}: commit failed: {e}")
+            traceback.print_exc()
+            return {"success": False, "reason": f"commit_error: {e}"}, 500
+
+        return result, 200
+    except Exception as e:
+        print(f"[CAL] Auto Cam {cam_id}: route crashed: {e}")
+        traceback.print_exc()
+        return {
+            "success": False,
+            "reason": f"auto_route_crashed: {type(e).__name__}: {e}",
+        }, 500
+
+
+def _run_startup_auto_calibration() -> None:
+    """Auto-calibrate active cameras once during startup when enabled."""
+    if _cfg is None or not getattr(_cfg, "calibrate_on_startup", False):
+        return
+
+    active_ids = [det.cam_id for det in _detectors if det.active]
+    if not active_ids:
+        print("[CAL] Startup auto calibration skipped — no active cameras")
+        return
+
+    print(f"[CAL] Startup auto calibration enabled — calibrating {len(active_ids)} camera(s)")
+    socketio.emit("srv_status", {
+        "message": "Auto-calibrating cameras on startup…",
+        "type": "loading",
+    })
+
+    failures = []
+    success_count = 0
+    for cam_id in active_ids:
+        result, status = _run_auto_calibration(cam_id)
+        if status == 200 and result.get("success"):
+            success_count += 1
+        else:
+            failures.append(f"Cam {cam_id + 1}: {result.get('reason', 'failed')}")
+
+    if success_count:
+        _refresh_detection_reference()
+
+    if failures:
+        print("[CAL] Startup auto calibration finished with issues: " + "; ".join(failures))
+    else:
+        print("[CAL] Startup auto calibration finished successfully")
+
+    socketio.emit("srv_status", {
+        "message": (
+            f"Startup auto calibration complete ({success_count}/{len(active_ids)})"
+            if not failures else
+            f"Startup auto calibration finished with issues ({success_count}/{len(active_ids)})"
+        ),
+        "type": "ready",
+    })
+
 
 def _apply_undistort(cam_id: int, frame):
     """Apply lens undistortion if K+dist were previously computed for cam_id."""
@@ -130,9 +362,283 @@ def _apply_undistort(cam_id: int, frame):
 _game_mode: Optional[str] = None       # 'bullseye' | 'x01' | 'cricket' | 'countup' | None
 _bullseye: Optional[BullseyeThrow] = None
 _game = None                           # active GameX01 / GameCricket / GameCountUp
+_match_review_game_id: Optional[int] = None
 _game_pending_mode: Optional[str] = None   # mode to launch after bullseye
 _game_pending_opts: dict = {}              # options for the pending game
+_pending_player_names: List[str] = ["Player 1", "Player 2"]
+_current_player_names: List[str] = ["Player 1", "Player 2"]
+_pending_bot_config: Optional[dict] = None
+_current_bot_config: Optional[dict] = None
 _practice_dart_count: int = 0              # darts thrown in current practice turn
+
+
+def _is_bot_turn() -> bool:
+    """Return True when a bot is configured and it's the bot's seat to throw."""
+    cfg = _current_bot_config
+    if not cfg or not cfg.get("enabled"):
+        return False
+    if _game is None or getattr(_game, "is_finished", False):
+        return False
+    seat = cfg.get("seat", 2)
+    current_1based = int(getattr(_game, "current_player", 0)) + 1
+    return current_1based == seat
+
+
+def _maybe_run_bot_turn():
+    """If it's currently the bot's turn, spawn the bot-turn runner."""
+    if not _is_bot_turn():
+        return
+    try:
+        socketio.start_background_task(_run_bot_turn_body)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[BOT] start_background_task failed: {exc}", flush=True)
+
+
+def _run_bot_turn_body():
+    """Emit up to 3 bot darts, recording them into game + match_review.
+
+    Bot turns bypass the physical takeout logic since no darts actually
+    land on the board. Camera detection is paused for the duration so
+    a human wave/hand doesn't trigger a spurious score.
+    """
+    global _detection_paused, _awaiting_takeout, _takeout_hand_seen
+    global _takeout_reason, _turn_continue_pending, _pending_turn_state
+
+    cfg = _current_bot_config
+    if not cfg or not cfg.get("enabled") or _game is None:
+        return
+    mode = cfg.get("mode", "simulated")
+    skill = cfg.get("skill", "medium")
+    bot_seat = int(cfg.get("seat", 2))
+
+    _detection_paused = True
+    try:
+        socketio.emit("detection_state", {"paused": True})
+    except Exception:
+        pass
+
+    try:
+        for dart_idx in range(3):
+            socketio.sleep(0.9)
+            if _game is None or getattr(_game, "is_finished", False):
+                break
+            if int(getattr(_game, "current_player", -1)) + 1 != bot_seat:
+                # Turn flipped (bust/win/human interruption) — stop throwing.
+                break
+            dart_idx_snapshot = len(getattr(_game, "darts_this_turn", []) or [])
+            turn_idx_snapshot = len(getattr(_game, "turn_history", []) or []) // 2
+            dart = bot_player.generate_dart(mode, skill)
+            coord = (dart["x_mm"], dart["y_mm"])
+            game_state = _game.record_dart(dart["label"], dart["score"], coord)
+            socketio.emit("game_state", game_state)
+
+            # Persist to match review WITHOUT any frames (bot has no camera).
+            if _match_review_game_id is not None:
+                try:
+                    prediction = {
+                        "label": dart["label"],
+                        "score": int(dart["score"]),
+                        "x_mm": float(dart["x_mm"]),
+                        "y_mm": float(dart["y_mm"]),
+                        "agreement_bucket": "bot",
+                        "cam_details": [],
+                        "ts": time.time(),
+                        "bot": True,
+                        "bot_mode": dart.get("mode"),
+                        "bot_skill": dart.get("skill"),
+                    }
+                    match_review.record_dart(
+                        game_id=_match_review_game_id,
+                        player=bot_seat,
+                        turn_idx=turn_idx_snapshot,
+                        round_num=turn_idx_snapshot + 1,
+                        dart_idx=dart_idx_snapshot,
+                        prediction=prediction,
+                        frames_bgr={},  # no camera frames for bot turns
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    print(f"[BOT] match_review.record_dart failed: {exc}", flush=True)
+
+            if getattr(_game, "is_finished", False):
+                # End-of-game bookkeeping mirrors _emit_dart's finish path.
+                try:
+                    summary = _game.stats_summary()
+                    if _match_review_game_id is not None:
+                        summary["id"] = _match_review_game_id
+                    game_stats.save_game(summary)
+                    match_review.finalize(
+                        game_id=_match_review_game_id,
+                        summary=summary,
+                        abandoned=False,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    print(f"[BOT] finalize failed: {exc}", flush=True)
+                socketio.emit("game_over", game_state)
+                break
+
+        # Emit an end-of-turn marker into match review (no frames).
+        if _match_review_game_id is not None and not getattr(_game, "is_finished", False):
+            try:
+                last_turn_idx = max(
+                    (len(getattr(_game, "turn_history", []) or []) // 2) - 1, 0
+                )
+                match_review.record_turn_end(
+                    game_id=_match_review_game_id,
+                    player=bot_seat,
+                    turn_idx=last_turn_idx,
+                    round_num=last_turn_idx + 1,
+                    frames_bgr={},
+                    ts=time.time(),
+                )
+            except Exception as exc:  # noqa: BLE001
+                print(f"[BOT] record_turn_end failed: {exc}", flush=True)
+    finally:
+        # Bot leaves no physical darts — skip the takeout wait entirely.
+        _awaiting_takeout = False
+        _takeout_hand_seen = False
+        _takeout_reason = ""
+        _turn_continue_pending = False
+        _pending_turn_state = None
+        _detection_paused = False
+        try:
+            socketio.emit("detection_state", {"paused": False})
+            socketio.emit("clear_board_dots", {})
+            if _game is not None and not getattr(_game, "is_finished", False):
+                socketio.emit("game_state", _game.state())
+        except Exception:
+            pass
+        print(f"[BOT] turn complete (mode={mode}, skill={skill})", flush=True)
+
+
+def _bullseye_current_seat() -> int:
+    """Map current BullseyePhase to 1-based seat (1 or 2), or 0 if unknown."""
+    if _bullseye is None or getattr(_bullseye, "is_finished", False):
+        return 0
+    phase = getattr(_bullseye, "phase", None)
+    phase_val = getattr(phase, "value", str(phase or ""))
+    if phase_val in ("player1_throw", "tiebreak_p1"):
+        return 1
+    if phase_val in ("player2_throw", "tiebreak_p2"):
+        return 2
+    return 0
+
+
+def _bot_pending_seat() -> int:
+    """Return bot's configured seat during bullseye (pre-game), else 0."""
+    cfg = _pending_bot_config
+    if not cfg or not cfg.get("enabled"):
+        return 0
+    return int(cfg.get("seat", 2))
+
+
+def _is_bot_bullseye_turn() -> bool:
+    """True when a bot is configured and it's the bot's phase in bullseye."""
+    seat = _bot_pending_seat()
+    if seat == 0:
+        return False
+    if _game_mode != "bullseye":
+        return False
+    return _bullseye_current_seat() == seat
+
+
+def _maybe_run_bot_bullseye():
+    """If it's the bot's phase in bullseye, spawn the bullseye-bot runner."""
+    if not _is_bot_bullseye_turn():
+        return
+    try:
+        socketio.start_background_task(_run_bot_bullseye_body)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[BOT] start_background_task (bullseye) failed: {exc}", flush=True)
+
+
+def _run_bot_bullseye_body():
+    """Emit a single bot bullseye throw after a short delay."""
+    global _detection_paused
+    cfg = _pending_bot_config
+    if not cfg or not cfg.get("enabled") or _bullseye is None:
+        return
+    if _bullseye.is_finished:
+        return
+    mode = cfg.get("mode", "simulated")
+    skill = cfg.get("skill", "medium")
+    bot_seat = int(cfg.get("seat", 2))
+
+    _detection_paused = True
+    try:
+        socketio.emit("detection_state", {"paused": True})
+    except Exception:
+        pass
+
+    try:
+        socketio.sleep(1.0)
+        if _bullseye is None or _bullseye.is_finished:
+            return
+        # Sanity: is it still the bot's phase?
+        if _bullseye_current_seat() != bot_seat:
+            return
+        dart = bot_player.generate_bullseye_dart(mode, skill)
+        state = _bullseye.record_dart(
+            dart["label"], int(dart["score"]),
+            (dart["x_mm"], dart["y_mm"]),
+            float(dart["distance_mm"]),
+        )
+        _emit_bullseye_state(state)
+        print(f"[BOT] bullseye throw: {dart['label']} dist={dart['distance_mm']:.1f}mm", flush=True)
+
+        if _bullseye.is_finished:
+            socketio.emit("bullseye_result", state)
+            # Winner determined — proceed to pending-game takeout flow.
+            _start_pending_game(state.get("winner", 1))
+            return
+
+        # Phase advanced to the other player. If the bot is STILL the current
+        # phase (shouldn't happen normally, only on a malformed advance), retry.
+        if _bullseye_current_seat() == bot_seat:
+            _maybe_run_bot_bullseye()
+    finally:
+        _detection_paused = False
+        try:
+            socketio.emit("detection_state", {"paused": False})
+        except Exception:
+            pass
+
+
+def _sanitize_player_names(raw) -> List[str]:
+    """Normalize a client-supplied player_names payload.
+
+    Accepts list or None; returns exactly two non-empty names capped at 24
+    chars, falling back to "Player 1" / "Player 2".
+    """
+    defaults = ["Player 1", "Player 2"]
+    if not isinstance(raw, (list, tuple)):
+        return defaults
+    out = []
+    for i in range(2):
+        val = ""
+        if i < len(raw) and isinstance(raw[i], str):
+            val = raw[i].strip()[:24]
+        out.append(val or defaults[i])
+    return out
+
+
+def _emit_bullseye_state(state: dict) -> None:
+    """Emit a bullseye_state event with the current player_names attached.
+
+    Clients rely on `state.player_names` to render the pre-game bullseye UI
+    with the user-typed names (or the bot's configured name). We inject here
+    so every emit site stays consistent — state() on BullseyeThrow doesn't
+    track names itself.
+    """
+    try:
+        names = list(_pending_player_names) if _pending_player_names \
+            else ["Player 1", "Player 2"]
+        if len(names) < 2:
+            names = (names + ["Player 1", "Player 2"])[:2]
+        state = dict(state) if isinstance(state, dict) else {}
+        state["player_names"] = names
+    except Exception:
+        pass
+    socketio.emit("bullseye_state", state)
 
 # ── Static routes ────────────────────────────────────────────────────────────
 
@@ -385,6 +891,8 @@ def _apply_settings_to_cfg(cfg, data: dict):
         cfg.standby_time = str(data["standby_time"])
     if "approximate_distortion" in data:
         cfg.approximate_distortion = bool(data["approximate_distortion"])
+    if "calibrate_on_startup" in data:
+        cfg.calibrate_on_startup = bool(data["calibrate_on_startup"])
     if "blur_kernel" in data:
         try:
             k = int(data["blur_kernel"])
@@ -563,6 +1071,7 @@ def api_settings():
         "tip_offset_px": _cfg.tip_offset_px,
         "triangle_k_factor": _cfg.triangle_k_factor,
         "approximate_distortion": _cfg.approximate_distortion,
+        "calibrate_on_startup": _cfg.calibrate_on_startup,
         "blur_kernel": _cfg.blur_kernel[0],
         "detection_speed": _cfg.detection_speed.name.lower(),
         "stable_frames": _cfg.stable_frames,
@@ -603,6 +1112,40 @@ def api_settings_save():
     reload_info = None
     if any(key in data for key in ov_related_keys):
         reload_info = _reload_openvino_models(_cfg, reason="settings save")
+    tfluna_related_keys = {
+        "tfluna_enabled",
+        "tfluna_port",
+        "tfluna_baud",
+        "tfluna_foul_distance_cm",
+        "tfluna_tolerance_cm",
+    }
+    if any(key in data for key in tfluna_related_keys):
+        if not _cfg.tfluna_enabled or not _cfg.tfluna_port:
+            _stop_tfluna_reader(clear_auto_port=not _cfg.tfluna_enabled)
+            socketio.emit("tfluna_status", {
+                "detected": bool(_cfg.tfluna_port),
+                "port": _cfg.tfluna_port,
+                "connected": False,
+                "enabled": _cfg.tfluna_enabled,
+            })
+            socketio.emit("distance_update", {
+                "distance_cm": 0,
+                "strength": 0,
+                "connected": False,
+                "foul_threshold_cm": _cfg.tfluna_foul_distance_cm,
+                "is_trespassing": False,
+            })
+        else:
+            should_restart = any(
+                key in data for key in {"tfluna_enabled", "tfluna_port", "tfluna_baud"}
+            )
+            connected = _ensure_tfluna_running(force_restart=should_restart)
+            socketio.emit("tfluna_status", {
+                "detected": bool(_cfg.tfluna_port),
+                "port": _cfg.tfluna_port,
+                "connected": connected and _tfluna is not None and _tfluna.connected,
+                "enabled": _cfg.tfluna_enabled,
+            })
     merged = _load_settings_from_disk()
     merged.update(data)
     # Persist the effective runtime values too so speed presets save the
@@ -652,6 +1195,48 @@ def _scan_tfluna_port() -> str | None:
     return None
 
 
+def _stop_tfluna_reader(*, clear_auto_port: bool = False) -> None:
+    """Stop the active TF-Luna reader, if any."""
+    global _tfluna, _tfluna_auto_port
+    if _tfluna is not None:
+        try:
+            _tfluna.stop()
+        except Exception:
+            pass
+        _tfluna = None
+    if clear_auto_port:
+        _tfluna_auto_port = ""
+
+
+def _ensure_tfluna_running(*, port: str | None = None, force_restart: bool = False) -> bool:
+    """Ensure the TF-Luna reader is alive for the configured or supplied port."""
+    global _tfluna, _tfluna_auto_port
+    if _cfg is None:
+        return False
+
+    target_port = str(port or _cfg.tfluna_port or "").strip()
+    if not _cfg.tfluna_enabled or not target_port:
+        return False
+
+    if _tfluna is not None:
+        same_port = _tfluna.port == target_port
+        if not force_restart and same_port and _tfluna.connected:
+            return True
+        _stop_tfluna_reader()
+
+    from tfluna import TFLunaReader
+
+    reader = TFLunaReader(target_port, _cfg.tfluna_baud)
+    if not reader.start():
+        return False
+
+    _tfluna = reader
+    _cfg.tfluna_port = target_port
+    _tfluna_auto_port = target_port
+    print(f"[TF-LUNA] Reader ready on {target_port}")
+    return True
+
+
 def _tfluna_hotplug_check():
     """Check if sensor was plugged/unplugged and auto-configure."""
     global _tfluna, _tfluna_auto_port
@@ -661,14 +1246,16 @@ def _tfluna_hotplug_check():
     detected_port = _scan_tfluna_port()
 
     # Sensor just plugged in
-    if detected_port and _tfluna is None:
+    if detected_port and (
+        _tfluna is None
+        or not _tfluna.connected
+        or _tfluna.port != detected_port
+    ):
         print(f"[TF-LUNA] Auto-detected sensor on {detected_port}")
         _cfg.tfluna_port = detected_port
         _cfg.tfluna_enabled = True
         _tfluna_auto_port = detected_port
-        from tfluna import TFLunaReader
-        _tfluna = TFLunaReader(detected_port, _cfg.tfluna_baud)
-        if not _tfluna.start():
+        if not _ensure_tfluna_running(port=detected_port, force_restart=True):
             print(f"[TF-LUNA] Auto-start failed on {detected_port}")
             _tfluna = None
         _existing = _load_settings_from_disk()
@@ -686,10 +1273,7 @@ def _tfluna_hotplug_check():
     # Sensor unplugged
     if not detected_port and _tfluna_auto_port:
         print(f"[TF-LUNA] Sensor removed (was on {_tfluna_auto_port})")
-        if _tfluna is not None:
-            _tfluna.stop()
-            _tfluna = None
-        _tfluna_auto_port = ""
+        _stop_tfluna_reader(clear_auto_port=True)
         _cfg.tfluna_enabled = False
         _cfg.tfluna_port = ""
         _existing = _load_settings_from_disk()
@@ -1076,207 +1660,8 @@ def api_cal_auto(cam_id):
        "H": [[...3×3...]], "preview_b64": "..."}
       {"success": false, "reason": "insufficient_rings", "rings_found": N, ...}
     """
-    try:
-        if cam_id < 0 or cam_id >= len(_detectors):
-            return jsonify({"success": False, "reason": "invalid_cam_id"}), 400
-
-        det = _detectors[cam_id]
-        if not det.active:
-            return jsonify({"success": False, "reason": "camera_not_active"}), 400
-
-        # Grab a fresh frame (undistorted)
-        frame = det.last_frame
-        if frame is None or np.mean(frame) <= 5:
-            frame = det._grab() if det.active else None
-        if frame is None:
-            return jsonify({"success": False, "reason": "no_frame"}), 503
-        frame = _apply_undistort(cam_id, frame)
-
-        cal = _calibrators[cam_id]
-
-        # ── Layer 0: ML-based calibration (tried first) ──────────────
-        result = None
-        ml_result_raw = None  # preserve raw ML result for seeded refinement
-        if _cal_model is not None:
-            try:
-                from ml_calibration import ml_calibrate
-                print(f"[CAL] Auto Cam {cam_id}: trying ML calibration…")
-                ml_result_raw = ml_calibrate(frame, _cal_model, cal)
-                if ml_result_raw["success"]:
-                    result = ml_result_raw
-                    print(f"[CAL] Auto Cam {cam_id}: ML calibration succeeded "
-                          f"({result.get('rings_found', 0)} correspondences, "
-                          f"err={result.get('reprojection_error', 0):.2f}px)")
-                else:
-                    print(f"[CAL] Auto Cam {cam_id}: ML calibration failed "
-                          f"({ml_result_raw.get('reason')}), falling back…")
-            except Exception as e:
-                print(f"[CAL] Auto Cam {cam_id}: ML calibration crashed: {e}")
-
-        # ── Layer 0b: Post-ML anchor refinement ─────────────────────
-        # Only run the anchor refiner for anchor-based results.  A dense ML
-        # homography already uses many ring correspondences and is more
-        # reliable than a second pass that only nudges 8 synthesized anchors.
-        if (result is not None
-                and result.get("points") is not None
-                and result.get("H") is None):
-            try:
-                ml_pts = np.asarray(result["points"], dtype=np.float32)
-                if len(ml_pts) in (4, 8):
-                    refined = refine_anchor_points(
-                        frame, ml_pts, cal,
-                        search_radius_px=max(16, int(cal.board_size * 0.05)),
-                        iters=2,
-                    )
-                    if refined is not None:
-                        refined_pts, _vis, metrics = refined
-                        shift = metrics["mean_shift_px"]
-                        if shift < cal.board_size * 0.15:
-                            result["points"] = refined_pts.tolist()
-                            result["reprojection_error"] = round(shift, 3)
-                            print(f"[CAL] Auto Cam {cam_id}: ML anchors refined "
-                                  f"(mean_shift={shift:.1f}px)")
-                        else:
-                            print(f"[CAL] Auto Cam {cam_id}: anchor refine shift "
-                                  f"too large ({shift:.1f}px), keeping ML points")
-                    else:
-                        print(f"[CAL] Auto Cam {cam_id}: anchor refine returned "
-                              f"None, keeping ML points")
-            except Exception as e:
-                print(f"[CAL] Auto Cam {cam_id}: anchor refine crashed: {e}")
-
-        # ── Layer 1: ML-seeded ellipse refinement ───────────────────
-        # If ML failed but produced an H matrix, use it as a seed for
-        # the ellipse-based ring detector which can succeed where ML
-        # had too few correspondences.
-        if result is None and ml_result_raw is not None and ml_result_raw.get("H") is not None:
-            try:
-                from auto_ellipse import refine_calibration
-                H_seed = np.asarray(ml_result_raw["H"], dtype=np.float64)
-                # Synthesise rough anchor points from the partial ML homography
-                seed_pts = cal._anchor_src_points_from_homography(H_seed, n_points=8)
-                ell_result = refine_calibration(frame, seed_pts, cal)
-                if ell_result is not None:
-                    refined_src, refined_dst_mm, _vis = ell_result
-                    # Recompute homography from the ellipse correspondences
-                    H_ell, _mask = cv2.findHomography(
-                        refined_src, refined_dst_mm, cv2.RANSAC, 5.0)
-                    if H_ell is not None:
-                        anchor_pts = cal._anchor_src_points_from_homography(
-                            H_ell, n_points=8)
-                        result = {
-                            "success": True,
-                            "reason": "ml_seeded_ellipse",
-                            "rings_found": 8,
-                            "reprojection_error": 0.0,
-                            "points": anchor_pts.tolist(),
-                            "n_points": 8,
-                            "preview_b64": ml_result_raw.get("preview_b64", ""),
-                        }
-                        print(f"[CAL] Auto Cam {cam_id}: ML-seeded ellipse "
-                              f"refinement succeeded")
-            except Exception as e:
-                print(f"[CAL] Auto Cam {cam_id}: ML-seeded ellipse crashed: {e}")
-
-        # ── Layer 2: Board profile (if registered) ───────────────────
-        if result is None:
-            profile_pts = _profile_calibration_points(frame)
-            if profile_pts is not None:
-                print(f"[CAL] Auto Cam {cam_id}: using board profile '{_board_profile.name}'")
-                result = {
-                    "success": True,
-                    "rings_found": int(len(profile_pts)),
-                    "reprojection_error": 0.0,
-                    "points": profile_pts.tolist(),
-                    "n_points": int(len(profile_pts)),
-                    "preview_b64": base64.b64encode(
-                        cv2.imencode('.jpg', cal.draw_anchor_points(frame, profile_pts),
-                                     [cv2.IMWRITE_JPEG_QUALITY, 82])[1].tobytes()
-                    ).decode("ascii"),
-                }
-
-        # ── Layer 3: Anchor-based auto-calibration (fallback) ─────────
-        if result is None:
-            result = auto_calibrate_from_anchors(frame, cal)
-
-        if not result["success"]:
-            print(f"[CAL] Auto Cam {cam_id}: failed — "
-                  f"{result.get('reason')} (rings={result.get('rings_found', 0)})")
-            return jsonify(result), 422
-
-        try:
-            committed_via_h = False
-            if result.get("reason") == "ml_calibration" and result.get("H") is not None:
-                H_mm = np.asarray(result["H"], dtype=np.float64)
-                committed_src = cal.commit_homography(H_mm, n_points=8)
-                result["points"] = committed_src.tolist()
-                result["n_points"] = int(len(committed_src))
-                committed_via_h = True
-                print(f"[CAL] Auto Cam {cam_id}: committed direct ML homography "
-                      f"as {len(committed_src)} canonical anchors")
-            else:
-                src_points = np.asarray(result["points"], dtype=np.float32)
-                cal.calibrate(src_points)
-
-            # ── Enhanced radial bias from ML correspondences ─────────
-            # If ML provided rich multi-radius correspondences, feed
-            # them into the calibrator for a degree-2 radial correction
-            # instead of the default 2-radius linear fit.
-            if (ml_result_raw is not None
-                    and ml_result_raw.get("success")
-                    and ml_result_raw.get("H") is not None):
-                try:
-                    import math as _m
-                    from ml_calibration import _CLASS_RADIUS
-                    detections = _cal_model.predict(frame) if _cal_model else []
-                    ml_src, ml_dst = [], []
-                    for det_obj in detections:
-                        r_mm = _CLASS_RADIUS.get(det_obj.class_name)
-                        if r_mm is None:
-                            continue
-                        # Use the detection centre as the camera-space point
-                        # and the snapped board-mm coordinate from ml_calibrate
-                        cx_d, cy_d = det_obj.cx, det_obj.cy
-                        ml_src.append([cx_d, cy_d])
-                        # Project through calibrated H_mm to get measured pos,
-                        # pair with known ring radius at the detection angle
-                        pt_mm = cal.transform_to_mm(cx_d, cy_d)
-                        angle = _m.atan2(pt_mm[1], pt_mm[0])
-                        ml_dst.append([r_mm * _m.cos(angle),
-                                       r_mm * _m.sin(angle)])
-                    if len(ml_src) >= 8:
-                        cal.build_radial_bias_from_correspondences(
-                            np.array(ml_src, dtype=np.float32),
-                            np.array(ml_dst, dtype=np.float32),
-                        )
-                        print(f"[CAL] Auto Cam {cam_id}: enhanced radial bias "
-                              f"from {len(ml_src)} ML correspondences")
-                except Exception as e:
-                    print(f"[CAL] Auto Cam {cam_id}: enhanced radial bias "
-                          f"failed: {e}")
-
-            det.cal = cal
-            det.capture_reference()
-            det.reset_to_wait()
-
-            quality = cal.calibration_quality()
-            n_rings = result["rings_found"]
-            err     = result["reprojection_error"]
-            result["calibration_quality"] = quality
-            metric_name = "reproj" if committed_via_h else "mean_shift"
-            print(f"[CAL] Auto Cam {cam_id}: committed — "
-                  f"{n_rings} anchors, {metric_name}={err:.2f}px, "
-                  f"quality={quality:.1%}")
-        except Exception as e:
-            print(f"[CAL] Auto Cam {cam_id}: commit failed: {e}")
-            traceback.print_exc()
-            return jsonify({"success": False, "reason": f"commit_error: {e}"}), 500
-
-        return jsonify(result)
-    except Exception as e:
-        print(f"[CAL] Auto Cam {cam_id}: route crashed: {e}")
-        traceback.print_exc()
-        return jsonify({"success": False, "reason": f"auto_route_crashed: {type(e).__name__}: {e}"}), 500
+    result, status = _run_auto_calibration(cam_id)
+    return jsonify(result), status
 
 
 @app.route("/api/board/register", methods=["POST"])
@@ -1727,6 +2112,31 @@ def on_connect():
         socketio.emit("dart_scored", _last_score, to=None)
     if _practice_accuracy_session_id:
         _emit_accuracy_session_state()
+    if _cfg is not None:
+        emit("tfluna_status", {
+            "detected": bool(_cfg.tfluna_port),
+            "port": _cfg.tfluna_port,
+            "connected": _tfluna is not None and _tfluna.connected,
+            "enabled": _cfg.tfluna_enabled,
+        })
+        if _tfluna is not None and _tfluna.connected:
+            threshold = _cfg.tfluna_foul_distance_cm - _cfg.tfluna_tolerance_cm
+            dist = _tfluna.distance_cm
+            emit("distance_update", {
+                "distance_cm": dist,
+                "strength": _tfluna.strength,
+                "connected": True,
+                "foul_threshold_cm": _cfg.tfluna_foul_distance_cm,
+                "is_trespassing": 0 < dist < threshold,
+            })
+        else:
+            emit("distance_update", {
+                "distance_cm": 0,
+                "strength": 0,
+                "connected": False,
+                "foul_threshold_cm": _cfg.tfluna_foul_distance_cm,
+                "is_trespassing": False,
+            })
 
 
 @socketio.on("test_dart")
@@ -1744,6 +2154,7 @@ def on_start_detection():
     # Auto-open cameras if not already open
     if not _cameras_open:
         _do_open_cameras()
+    _ensure_tfluna_running()
     _detection_paused = False
     _practice_dart_count = 0
     _start_accuracy_session(context="practice", mode="practice")
@@ -1768,6 +2179,7 @@ def on_open_cameras():
     """Open cameras on demand (calibration, preview, debug)."""
     if not _cameras_open:
         _do_open_cameras()
+    _ensure_tfluna_running()
 
 
 @socketio.on("close_cameras")
@@ -1877,10 +2289,8 @@ def _do_close_cameras():
                 "state": "OFFLINE", "fps": 0.0, "active": False,
             }
         _cameras_open = False
+        # TODO: match_review — cameras_lost abandonment
         _emit_cam_status()
-        # Stop TF-Luna sensor when cameras close
-        if _tfluna is not None:
-            _tfluna.stop()
         print("[SRV] Cameras released.")
         socketio.emit("cameras_state", {"open": False})
 
@@ -1932,13 +2342,29 @@ def on_clear_tips():
 def on_start_bullseye(data=None):
     """Begin bullseye throw sequence to determine first player."""
     global _game_mode, _bullseye, _game, _detection_paused
-    global _game_pending_mode, _game_pending_opts
+    global _game_pending_mode, _game_pending_opts, _pending_player_names
     global _awaiting_takeout, _takeout_hand_seen
 
+    if _game is not None and not _game.is_finished:
+        _abandon_current_match("user_quit")
     _end_accuracy_session(finalize_open_turn=False)
 
     _game_pending_mode = data.get("mode", "x01") if data else "x01"
     _game_pending_opts = data.get("options", {}) if data else {}
+    _pending_player_names = _sanitize_player_names(
+        data.get("player_names") if data else None
+    )
+    global _pending_bot_config
+    _pending_bot_config = bot_player.sanitize_bot_config(
+        data.get("bot_config") if data else None
+    )
+    if _pending_bot_config is not None:
+        # Reflect bot name on the pending names list so scoreboard + review
+        # show "Bot" (or custom bot name) for the bot's seat.
+        seat = _pending_bot_config.get("seat", 2)
+        bot_name = _pending_bot_config.get("name") or "Bot"
+        if 1 <= seat <= 2:
+            _pending_player_names[seat - 1] = bot_name
     _bullseye = BullseyeThrow()
     _game = None
     _game_mode = "bullseye"
@@ -1957,24 +2383,44 @@ def on_start_bullseye(data=None):
         _do_open_cameras()
     else:
         _refresh_detection_reference()
+    _ensure_tfluna_running()
     _detection_paused = False
     socketio.emit("detection_state", {"paused": False})
 
+    # Camera-open + tfluna-start can take a moment; if a concurrent
+    # handler (e.g. end_game from a quick Quit click) nulled _bullseye
+    # in the meantime, bail cleanly instead of crashing on None.start().
+    if _bullseye is None:
+        print("[GAME] start_bullseye aborted — state cleared during init")
+        return
     state = _bullseye.start()
-    socketio.emit("bullseye_state", state)
+    _emit_bullseye_state(state)
     print(f"[GAME] Bullseye throw started (pending mode: {_game_pending_mode})")
+    _maybe_run_bot_bullseye()
 
 
 @socketio.on("start_game")
 def on_start_game(data):
     """Start a game directly (skip bullseye if desired)."""
-    global _game_mode, _game, _bullseye, _detection_paused
+    global _game_mode, _game, _bullseye, _detection_paused, _current_player_names
 
+    if _game is not None and not _game.is_finished:
+        _abandon_current_match("user_quit")
     _end_accuracy_session(finalize_open_turn=False)
 
     mode = data.get("mode", "x01")
     options = data.get("options", {})
     first_player = data.get("first_player", 1)
+    player_names = _sanitize_player_names(data.get("player_names"))
+    bot_config = bot_player.sanitize_bot_config(data.get("bot_config"))
+    if bot_config is not None:
+        seat = bot_config.get("seat", 2)
+        bot_name = bot_config.get("name") or "Bot"
+        if 1 <= seat <= 2:
+            player_names[seat - 1] = bot_name
+    _current_player_names = player_names
+    global _current_bot_config
+    _current_bot_config = bot_config
 
     _bullseye = None
     _game = _create_game(mode, options)
@@ -1990,15 +2436,33 @@ def on_start_game(data):
             mode=mode,
             metadata={"started_via": "direct"},
         )
+    # --- Match review bundle start (all modes) ---
+    global _match_review_game_id
+    try:
+        _match_review_game_id = game_stats.reserve_id()
+        match_review.start(
+            game_id=_match_review_game_id,
+            mode=mode,
+            players=[{"player": 1, "name": player_names[0]},
+                     {"player": 2, "name": player_names[1]}],
+            started_at=time.time(),
+        )
+    except Exception as exc:
+        print(f"[MATCH_REVIEW] start failed: {exc}")
+        _match_review_game_id = None
+
+    socketio.emit("player_names", {"names": list(player_names)})
 
     # Auto-open cameras and start detection
     if not _cameras_open:
         _do_open_cameras()
+    _ensure_tfluna_running()
     _detection_paused = False
     socketio.emit("detection_state", {"paused": False})
 
     socketio.emit("game_state", _game.state())
     print(f"[GAME] {mode.upper()} game started (first player: {first_player})")
+    _maybe_run_bot_turn()
 
 
 @socketio.on("undo_dart")
@@ -2035,6 +2499,11 @@ def on_end_game():
     global _confirm_thread_count, _pending_turn_state, _turn_continue_pending
     # Stats were already saved when the game finished (in the dart-detection path).
     # Do NOT save again here — that caused every win to be recorded twice.
+    # HOWEVER, if the user quits mid-match (game not finished), we must record
+    # the abandoned match BEFORE nulling _game, otherwise the abandon check
+    # below would always be False.
+    if _game is not None and not _game.is_finished:
+        _abandon_current_match("user_quit")
 
     with _confirm_thread_lock:
         _confirm_thread_count = 0
@@ -2092,6 +2561,7 @@ def on_skip_takeout():
         socketio.emit("detection_state", {"paused": False})
         socketio.emit('state', {'state': 'WAIT'})
         print("[GAME] Turn review completed — switched to next player")
+        _maybe_run_bot_turn()
     else:
         # Between-turn takeout — just resume scoring
         print("[GAME] Turn takeout completed by user — resuming")
@@ -2112,6 +2582,10 @@ def on_get_stats(data=None):
     """Return statistics for a game mode."""
     mode = data.get("mode") if data else None
     stats = game_stats.get_stats(mode)
+    # Annotate the shared-shape stats dict the same way the HTTP /api/stats does.
+    _annotate_has_review(stats.get("recent"))
+    for mode_bucket in (stats.get("by_mode") or {}).values():
+        _annotate_has_review(mode_bucket.get("recent"))
     socketio.emit("stats_data", stats)
 
 
@@ -2121,6 +2595,7 @@ def on_get_recent_games(data=None):
     mode = data.get("mode") if data else None
     limit = data.get("limit", 20) if data else 20
     recent = game_stats.get_recent(mode, limit)
+    _annotate_has_review(recent)
     socketio.emit("recent_games", {"games": recent})
 
 
@@ -2372,8 +2847,12 @@ def _start_pending_game(winner: int):
 def _do_start_pending_game():
     """Actually create and start the game after takeout confirmed."""
     global _game_mode, _game, _bullseye, _awaiting_takeout, _takeout_hand_seen
+    global _current_player_names, _current_bot_config
     mode = _game_pending_mode or "x01"
     opts = _game_pending_opts or {}
+    player_names = list(_pending_player_names) if _pending_player_names else ["Player 1", "Player 2"]
+    _current_player_names = player_names
+    _current_bot_config = _pending_bot_config
     _game = _create_game(mode, opts)
     if _game is None:
         _game_mode = None
@@ -2389,8 +2868,24 @@ def _do_start_pending_game():
             mode=mode,
             metadata={"started_via": "bullseye"},
         )
+    # --- Match review bundle start (all modes) ---
+    global _match_review_game_id
+    try:
+        _match_review_game_id = game_stats.reserve_id()
+        match_review.start(
+            game_id=_match_review_game_id,
+            mode=mode,
+            players=[{"player": 1, "name": player_names[0]},
+                     {"player": 2, "name": player_names[1]}],
+            started_at=time.time(),
+        )
+    except Exception as exc:
+        print(f"[MATCH_REVIEW] start failed (bullseye path): {exc}")
+        _match_review_game_id = None
+    socketio.emit("player_names", {"names": list(player_names)})
     socketio.emit("game_state", _game.state())
     print(f"[GAME] {mode.upper()} game started (winner of bullseye: Player {_pending_game_winner})")
+    _maybe_run_bot_turn()
 
 
 def _current_pose_model_name() -> str:
@@ -2490,6 +2985,49 @@ def _end_accuracy_session(*, finalize_open_turn: bool = False) -> None:
     _accuracy_session_context = None
     _accuracy_session_mode = None
     _emit_accuracy_session_state()
+
+
+def _abandon_current_match(reason: str) -> None:
+    """Finalize the in-flight match as abandoned. Safe to call multiple times."""
+    global _match_review_game_id, _game
+    gid = _match_review_game_id
+    if gid is None:
+        return
+    try:
+        summary = {}
+        if _game is not None and not _game.is_finished:
+            try:
+                summary = _game.stats_summary()
+            except Exception:
+                summary = {}
+            summary["status"] = "abandoned"
+            summary["abandoned_reason"] = reason
+            summary["id"] = gid
+            try:
+                game_stats.save_game(summary)
+            except Exception as exc:
+                print(f"[MATCH_REVIEW] abandoned save_game failed: {exc}")
+        match_review.finalize(gid, summary, abandoned=True, reason=reason)
+    except Exception as exc:
+        print(f"[MATCH_REVIEW] abandon failed: {exc}")
+    finally:
+        _match_review_game_id = None
+
+
+def _on_shutdown(*_args):
+    try:
+        _abandon_current_match("server_restart")
+    except Exception:
+        pass
+
+
+atexit.register(_on_shutdown)
+try:
+    signal.signal(signal.SIGTERM, _on_shutdown)
+    signal.signal(signal.SIGINT, _on_shutdown)
+except (ValueError, AttributeError):
+    # signal.signal not allowed off main thread; atexit still covers it.
+    pass
 
 
 def _attach_accuracy_prediction(
@@ -2610,17 +3148,31 @@ def _reset_practice_turn(reset_reason: str = "manual_reset") -> dict:
 
 # ── Stats API endpoints ─────────────────────────────────────────────────────
 
+def _annotate_has_review(rows):
+    for row in rows or []:
+        try:
+            row["has_review"] = match_review.has_review(int(row.get("id") or 0))
+        except Exception:
+            row["has_review"] = False
+
+
 @app.route("/api/stats")
 def api_stats():
     mode = request.args.get("mode")
-    return jsonify(game_stats.get_stats(mode))
+    result = game_stats.get_stats(mode)
+    _annotate_has_review(result.get("recent"))
+    for mode_bucket in (result.get("by_mode") or {}).values():
+        _annotate_has_review(mode_bucket.get("recent"))
+    return jsonify(result)
 
 
 @app.route("/api/stats/recent")
 def api_stats_recent():
     mode = request.args.get("mode")
     limit = int(request.args.get("limit", 20))
-    return jsonify({"games": game_stats.get_recent(mode, limit)})
+    games = game_stats.get_recent(mode, limit)
+    _annotate_has_review(games)
+    return jsonify({"games": games})
 
 
 @app.route("/api/stats/reset", methods=["POST"])
@@ -2633,7 +3185,109 @@ def api_stats_reset():
 def api_stats_delete_game(game_id: int):
     if not game_stats.delete_game(game_id):
         return jsonify({"ok": False, "error": "Game not found"}), 404
+    try:
+        match_review.delete_review(game_id)
+    except Exception as exc:
+        print(f"[MATCH_REVIEW] delete_review failed: {exc}")
     return jsonify({"ok": True, "id": game_id})
+
+
+@app.route("/api/matches/<int:match_id>/review", methods=["GET"])
+def api_get_match_review(match_id: int):
+    data = match_review.get_review(match_id)
+    if data is None:
+        return ("", 404)
+    return jsonify(data)
+
+
+_ALLOWED_KINDS = {"per_dart", "eot"}
+
+
+def _mr_frame_filename(kind: str, p: int, r: int, d: int, cam: int) -> Optional[str]:
+    if kind == "per_dart":
+        return f"p{int(p)}_r{int(r)}_d{int(d)}_cam{int(cam)}.jpg"
+    if kind == "eot":
+        return f"p{int(p)}_r{int(r)}_eot_cam{int(cam)}.jpg"
+    return None
+
+
+def _mr_validate_coords(p: int, r: int, d: int, cam: int) -> bool:
+    return 1 <= p <= 4 and 1 <= r <= 40 and 0 <= d <= 2 and 0 <= cam <= 2
+
+
+@app.route("/api/matches/<int:match_id>/frame/<kind>/<int:p>/<int:r>/<int:d>/<int:cam>",
+           methods=["GET"])
+def api_get_match_frame(match_id: int, kind: str, p: int, r: int,
+                        d: int, cam: int):
+    if kind not in _ALLOWED_KINDS:
+        return ("invalid kind", 400)
+    if not _mr_validate_coords(p, r, d, cam):
+        return ("out of range", 400)
+    fname = _mr_frame_filename(kind, p, r, d, cam)
+    if fname is None:
+        return ("invalid kind", 400)
+    folder = (match_review.DATA_ROOT / f"match_{match_id}" / "frames").resolve()
+    if not folder.is_dir():
+        return ("", 404)
+    return send_from_directory(str(folder), fname, mimetype="image/jpeg")
+
+
+@app.route("/api/matches/<int:match_id>/frame/<kind>/<int:p>/<int:r>/<int:d>/<int:cam>/annotated",
+           methods=["GET"])
+def api_get_match_frame_annotated(match_id: int, kind: str, p: int, r: int,
+                                   d: int, cam: int):
+    if kind not in _ALLOWED_KINDS:
+        return ("invalid kind", 400)
+    if not _mr_validate_coords(p, r, d, cam):
+        return ("out of range", 400)
+    blob = match_review.render_annotated(
+        game_id=match_id, kind=kind, player=p,
+        round_num=r, dart_idx=d, cam_idx=cam,
+    )
+    if blob is None:
+        return ("", 404)
+    return Response(blob, mimetype="image/jpeg")
+
+
+@app.route("/api/matches/<int:match_id>/frame/<kind>/<int:p>/<int:r>/<int:d>/<int:cam>/warped",
+           methods=["GET"])
+def api_get_match_frame_warped(match_id: int, kind: str, p: int, r: int,
+                                d: int, cam: int):
+    """Return the stored capture unwarped via the current per-camera homography.
+
+    Uses the live calibrator for the requested cam. If calibration has changed
+    since the match, this view reflects the current calibration, not the one
+    in use when the dart was thrown.
+    """
+    if kind not in _ALLOWED_KINDS:
+        return ("invalid kind", 400)
+    if not _mr_validate_coords(p, r, d, cam):
+        return ("out of range", 400)
+    fname = _mr_frame_filename(kind, p, r, d, cam)
+    if fname is None:
+        return ("invalid kind", 400)
+    folder = (match_review.DATA_ROOT / f"match_{match_id}" / "frames").resolve()
+    fpath = folder / fname
+    if not fpath.is_file():
+        return ("", 404)
+    if cam >= len(_calibrators) or _calibrators[cam] is None:
+        return ("calibrator unavailable", 503)
+    cal = _calibrators[cam]
+    if getattr(cal, "_M", None) is None:
+        return ("not calibrated", 503)
+    try:
+        img = cv2.imread(str(fpath), cv2.IMREAD_COLOR)
+        if img is None:
+            return ("decode failed", 500)
+        warped = cal.unwarp(img)
+        ok, buf = cv2.imencode(".jpg", warped,
+                               [int(cv2.IMWRITE_JPEG_QUALITY), 85])
+        if not ok:
+            return ("encode failed", 500)
+        return Response(bytes(buf), mimetype="image/jpeg")
+    except Exception as exc:  # noqa: BLE001
+        print(f"[match_review] warped render failed: {exc}", flush=True)
+        return ("render failed", 500)
 
 
 @app.route("/api/accuracy/summary")
@@ -2678,6 +3332,7 @@ def api_accuracy_review():
 def api_accuracy_review_x01_action():
     global _pending_turn_state, _awaiting_takeout, _takeout_hand_seen, _takeout_reason
     global _turn_continue_pending, _detection_paused
+    global _match_review_game_id
 
     data = request.get_json(silent=True) or {}
     session_id = str(data.get("session_id") or "")
@@ -2711,7 +3366,17 @@ def api_accuracy_review_x01_action():
             socketio.emit("game_state", game_state)
             socketio.emit("game_over", game_state)
             try:
-                game_stats.save_game(_game.stats_summary())
+                _summary = _game.stats_summary()
+                if _match_review_game_id is not None:
+                    _summary["id"] = _match_review_game_id
+                game_stats.save_game(_summary)
+                if _match_review_game_id is not None:
+                    try:
+                        match_review.finalize(_match_review_game_id, _summary)
+                    except Exception as exc:
+                        print(f'[MATCH_REVIEW] finalize failed: {exc}')
+                    finally:
+                        _match_review_game_id = None
             except Exception as e:
                 print(f"[STATS] Error saving: {e}")
             return jsonify({
@@ -2757,7 +3422,17 @@ def api_accuracy_review_x01_action():
         socketio.emit("game_state", game_state)
         socketio.emit("game_over", game_state)
         try:
-            game_stats.save_game(_game.stats_summary())
+            _summary = _game.stats_summary()
+            if _match_review_game_id is not None:
+                _summary["id"] = _match_review_game_id
+            game_stats.save_game(_summary)
+            if _match_review_game_id is not None:
+                try:
+                    match_review.finalize(_match_review_game_id, _summary)
+                except Exception as exc:
+                    print(f'[MATCH_REVIEW] finalize failed: {exc}')
+                finally:
+                    _match_review_game_id = None
         except Exception as e:
             print(f"[STATS] Error saving: {e}")
         return jsonify({
@@ -2795,6 +3470,7 @@ def _emit_dart(label: str, score: int, x_mm: float, y_mm: float,
     global _last_score, _game_mode, _bullseye, _game
     global _awaiting_takeout, _takeout_hand_seen, _takeout_ready_at, _takeout_reason
     global _needs_takeout_init, _pending_turn_state
+    global _match_review_game_id
 
     # ── Foul-line check (TF-Luna oche sensor) ─────────────────────────
     if _cfg is not None and _cfg.tfluna_enabled:
@@ -2848,10 +3524,14 @@ def _emit_dart(label: str, score: int, x_mm: float, y_mm: float,
         import math
         dist = math.sqrt(x_mm ** 2 + y_mm ** 2)
         state = _bullseye.record_dart(label, score, (x_mm, y_mm), dist)
-        socketio.emit('bullseye_state', state)
+        _emit_bullseye_state(state)
         if _bullseye.is_finished:
             socketio.emit('bullseye_result', state)
             _start_pending_game(state.get('winner', 1))
+        else:
+            # Phase may have advanced to the bot's turn (or to a tiebreak seat
+            # the bot occupies). Fire the bullseye bot runner if so.
+            _maybe_run_bot_bullseye()
         return  # don't emit dart_scored during bullseye
 
     if _game is not None and not _game.is_finished:
@@ -2861,12 +3541,78 @@ def _emit_dart(label: str, score: int, x_mm: float, y_mm: float,
             socketio.emit('dart_scored', payload)
             return
         prev_player = _game.current_player
+        # Snapshot dart_idx BEFORE record_dart (turn may end internally)
+        dart_idx_snapshot = len(getattr(_game, "darts_this_turn", []) or [])
+        turn_idx_snapshot = len(getattr(_game, "turn_history", []) or []) // 2
+        player_1based_snapshot = int(_game.current_player) + 1
         game_state = _game.record_dart(label, score, (x_mm, y_mm))
+
+        # --- Match review capture (all modes) ---
+        if _match_review_game_id is not None:
+            try:
+                frames = {}
+                for idx, det in enumerate(_detectors):
+                    if det is None or not getattr(det, "active", False):
+                        continue
+                    frame = getattr(det, "last_frame", None)
+                    if frame is not None:
+                        frames[idx] = frame.copy()
+                prediction = {
+                    "label": label,
+                    "score": int(score),
+                    "x_mm": float(x_mm) if x_mm is not None else None,
+                    "y_mm": float(y_mm) if y_mm is not None else None,
+                    "agreement_bucket": _categorize_agreement(cam_details),
+                    "cam_details": cam_details or [],
+                    "ts": time.time(),
+                }
+                match_review.record_dart(
+                    game_id=_match_review_game_id,
+                    player=player_1based_snapshot,
+                    turn_idx=turn_idx_snapshot,
+                    round_num=turn_idx_snapshot + 1,
+                    dart_idx=dart_idx_snapshot,
+                    prediction=prediction,
+                    frames_bgr=frames,
+                )
+                if dart_idx_snapshot == 2:  # 3rd dart — capture EOT after settle
+                    time.sleep(0.250)
+                    eot_frames = {}
+                    for idx, det in enumerate(_detectors):
+                        if det is None or not getattr(det, "active", False):
+                            continue
+                        try:
+                            eot_frame = det._grab() if hasattr(det, "_grab") else getattr(det, "last_frame", None)
+                        except Exception:
+                            eot_frame = None
+                        if eot_frame is not None:
+                            eot_frames[idx] = eot_frame
+                    match_review.record_turn_end(
+                        game_id=_match_review_game_id,
+                        player=player_1based_snapshot,
+                        turn_idx=turn_idx_snapshot,
+                        round_num=turn_idx_snapshot + 1,
+                        frames_bgr=eot_frames,
+                        ts=time.time(),
+                    )
+            except Exception as exc:
+                print(f"[MATCH_REVIEW] capture failed: {exc}")
+
         if _game.is_finished:
             socketio.emit('game_state', game_state)
             socketio.emit('game_over', game_state)
             try:
-                game_stats.save_game(_game.stats_summary())
+                _summary = _game.stats_summary()
+                if _match_review_game_id is not None:
+                    _summary["id"] = _match_review_game_id
+                game_stats.save_game(_summary)
+                if _match_review_game_id is not None:
+                    try:
+                        match_review.finalize(_match_review_game_id, _summary)
+                    except Exception as exc:
+                        print(f'[MATCH_REVIEW] finalize failed: {exc}')
+                    finally:
+                        _match_review_game_id = None
             except Exception as e:
                 print(f'[STATS] Error saving: {e}')
         elif _game.current_player != prev_player:
@@ -3059,7 +3805,7 @@ def _run_detection(cam_ids: List[int], cfg) -> None:
     yolo = None
     if cfg.yolo_enabled:
         from yolo_verifier import YoloVerifier
-        _model_path = str(BASE_DIR / "darttipbox1.1.pt")
+        _model_path = str(BASE_DIR / "models" / "tip" / "darttipbox1.1.pt")
         yolo = YoloVerifier(
             model_path=_model_path,
             conf_threshold=cfg.yolo_conf_threshold,
@@ -3097,6 +3843,14 @@ def _run_detection(cam_ids: List[int], cfg) -> None:
         if _pose_model is not None:
             det._pose_model = _pose_model
 
+    if cfg.calibrate_on_startup:
+        try:
+            _do_open_cameras()
+            _run_startup_auto_calibration()
+        finally:
+            if _cameras_open:
+                _do_close_cameras()
+
     # ── Cameras stay OFF until explicitly opened ──────────────────────────────
     # Set initial cam states to OFFLINE
     for det in detectors:
@@ -3124,9 +3878,15 @@ def _run_detection(cam_ids: List[int], cfg) -> None:
         if not _cameras_open:
             now = time.perf_counter()
             # TF-Luna distance broadcast (every ~500ms)
-            if (_tfluna is not None and _tfluna.connected
-                    and (not getattr(_run_detection, '_last_dist_emit', None)
-                         or now - getattr(_run_detection, '_last_dist_emit', 0) >= 0.5)):
+            should_emit_distance = (
+                _tfluna is not None
+                and _tfluna.connected
+                and (
+                    not getattr(_run_detection, '_last_dist_emit', None)
+                    or now - getattr(_run_detection, '_last_dist_emit', 0) >= 0.5
+                )
+            )
+            if should_emit_distance:
                 _run_detection._last_dist_emit = now
                 dist = _tfluna.distance_cm
                 threshold = cfg.tfluna_foul_distance_cm - cfg.tfluna_tolerance_cm
@@ -3210,9 +3970,15 @@ def _run_detection(cam_ids: List[int], cfg) -> None:
                 _emit_cam_status()
 
         # ── TF-Luna distance broadcast (every ~500ms) ────────────────────
-        if (_tfluna is not None and _tfluna.connected
-                and not getattr(_run_detection, '_last_dist_emit', None)
-                or now - getattr(_run_detection, '_last_dist_emit', 0) >= 0.5):
+        should_emit_distance = (
+            _tfluna is not None
+            and _tfluna.connected
+            and (
+                not getattr(_run_detection, '_last_dist_emit', None)
+                or now - getattr(_run_detection, '_last_dist_emit', 0) >= 0.5
+            )
+        )
+        if should_emit_distance:
             _run_detection._last_dist_emit = now
             dist = _tfluna.distance_cm
             threshold = cfg.tfluna_foul_distance_cm - cfg.tfluna_tolerance_cm
@@ -4129,6 +4895,7 @@ def _run_detection(cam_ids: List[int], cfg) -> None:
                             _takeout_reason = ''
                             socketio.emit('state', {'state': 'WAIT'})
                             print("[GAME] Turn takeout done — switched to next player")
+                            _maybe_run_bot_turn()
                     else:
                         # Bullseye path — show Continue button
                         print("[GAME] Takeout completed — darts removed, waiting for user to click Continue")
@@ -4160,6 +4927,11 @@ def main():
     # Expose cfg globally so /api/settings works before the detection thread starts
     global _cfg
     _cfg = cfg
+
+    try:
+        match_review.scan_orphans()
+    except Exception as exc:
+        print(f"[MATCH_REVIEW] startup orphan scan failed: {exc}")
 
     if args.cameras:
         cam_ids = [int(c.strip()) for c in args.cameras.split(",")]

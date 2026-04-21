@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap"
     rel="stylesheet">
-  <link rel="stylesheet" href="style.css?v=6">
+  <link rel="stylesheet" href="style.css?v=8">
 </head>
 
 <body>
@@ -153,6 +153,59 @@
                 <button type="button" class="game-segment-btn" id="game-first-player-2"
                   onclick="setGameFirstPlayer(2)">Player 2</button>
               </div>
+            </div>
+            <div class="game-form-grid" id="game-player-names-grid">
+              <label class="game-field">
+                <span>Player 1 name</span>
+                <input type="text" id="game-p1-name" maxlength="24"
+                  placeholder="Player 1" autocomplete="off"
+                  oninput="onPlayerNameInput()">
+                <div class="flight-picker-row">
+                  <span class="flight-picker-label">Flight</span>
+                  <div class="flight-picker" id="flight-picker-1" data-seat="1"
+                       role="radiogroup" aria-label="Player 1 flight color"></div>
+                </div>
+              </label>
+              <label class="game-field">
+                <span>Player 2 name</span>
+                <input type="text" id="game-p2-name" maxlength="24"
+                  placeholder="Player 2" autocomplete="off"
+                  oninput="onPlayerNameInput()">
+                <div class="flight-picker-row">
+                  <span class="flight-picker-label">Flight</span>
+                  <div class="flight-picker" id="flight-picker-2" data-seat="2"
+                       role="radiogroup" aria-label="Player 2 flight color"></div>
+                </div>
+              </label>
+            </div>
+
+            <label class="game-switch-row" for="match-use-bot">
+              <span>
+                <strong>Play against Bot</strong>
+                <small>Replaces Player 2 with a simulated opponent. No camera capture for bot turns.</small>
+              </span>
+              <span class="game-switch">
+                <input id="match-use-bot" type="checkbox" onchange="onBotToggleChanged()">
+                <span class="game-switch-slider"></span>
+              </span>
+            </label>
+
+            <div class="game-form-grid" id="bot-config-grid" style="display:none;">
+              <label class="game-field">
+                <span>Bot mode</span>
+                <select id="bot-mode" onchange="updateGameConfigView()">
+                  <option value="simulated" selected>Simulated — throws virtual darts</option>
+                  <option value="auto_advance">Auto-advance — always MISS (solo scoring)</option>
+                </select>
+              </label>
+              <label class="game-field" id="bot-skill-field">
+                <span>Bot skill</span>
+                <select id="bot-skill" onchange="updateGameConfigView()">
+                  <option value="easy">Easy — sprays wide</option>
+                  <option value="medium" selected>Medium — usually scores</option>
+                  <option value="hard">Hard — often hits triples</option>
+                </select>
+              </label>
             </div>
           </section>
 
@@ -425,6 +478,40 @@
       </section>
     </div>
   </main>
+
+  <main class="page" id="page-match-review">
+    <div class="mr-header">
+      <button class="btn page-back-btn" onclick="showPage('stats')">← Back</button>
+      <h2 class="mr-title">Match Review</h2>
+      <button class="btn btn--danger mr-delete-btn" id="mr-delete-btn">🗑 Delete Match</button>
+    </div>
+
+    <div class="mr-abandoned-banner" id="mr-abandoned-banner" style="display:none;"></div>
+
+    <div class="mr-meta" id="mr-meta"></div>
+
+    <div class="mr-tabs" id="mr-tabs" role="tablist"></div>
+
+    <div class="mr-turns" id="mr-turns"></div>
+  </main>
+
+  <!-- Lightbox overlay (shared singleton) -->
+  <div class="mr-lightbox" id="mr-lightbox" style="display:none;">
+    <button class="mr-lightbox__close" onclick="closeLightbox()">✕</button>
+    <img class="mr-lightbox__img" id="mr-lightbox-img" alt="Capture">
+    <div class="mr-lightbox__scorecard" id="mr-lightbox-scorecard"></div>
+    <div class="mr-lightbox__caption" id="mr-lightbox-caption"></div>
+    <div class="mr-lightbox__controls">
+      <button class="btn" id="mr-lightbox-raw">Raw</button>
+      <button class="btn" id="mr-lightbox-warp">Warped</button>
+    </div>
+    <div class="mr-lightbox__nav">
+      <button class="btn" onclick="lightboxPrev()">◀ Prev</button>
+      <span id="mr-lightbox-pos"></span>
+      <button class="btn" onclick="lightboxNext()">Next ▶</button>
+    </div>
+  </div>
+
   <div class="loading-overlay" id="practice-loading" style="display:none">
     <div class="loading-content">
       <div class="loading-spinner">
@@ -772,6 +859,11 @@
           <label class="toggle"><input type="checkbox" id="set-approx-dist" checked><span
               class="toggle-slider"></span></label>
         </div>
+        <div class="setting-row toggle-row">
+          <label>Auto Calibrate on Startup</label>
+          <label class="toggle"><input type="checkbox" id="set-auto-cal-startup"><span
+              class="toggle-slider"></span></label>
+        </div>
         <button class="btn btn-accent" onclick="requestRecalibrate()">Recalibrate All Cameras</button>
 
         <div class="setting-row" style="margin-top:12px">
@@ -934,10 +1026,10 @@
     <div class="cal-instructions" id="cal-hint">
       Drag <strong id="cal-hint-n">8 points</strong> to the dartboard wire intersections:
       <span id="cal-hint-outer"><strong style="color:#00d4ff">●</strong> D20/D1 <strong style="color:#00d4ff">●</strong>
-        D6/D10 <strong style="color:#00d4ff">●</strong> D3/D19 <strong style="color:#00d4ff">●</strong> D11/D14</span>
+        D11/D14 <strong style="color:#00d4ff">●</strong> D3/D19 <strong style="color:#00d4ff">●</strong> D6/D10</span>
       <span id="cal-hint-inner">&nbsp;+&nbsp;<strong style="color:#ff8c00">●</strong> T20/T1 <strong
-          style="color:#ff8c00">●</strong> T6/T10 <strong style="color:#ff8c00">●</strong> T3/T19 <strong
-          style="color:#ff8c00">●</strong> T11/T14</span>
+          style="color:#ff8c00">●</strong> T11/T14 <strong style="color:#ff8c00">●</strong> T3/T19 <strong
+          style="color:#ff8c00">●</strong> T6/T10</span>
       &nbsp;|&nbsp; Arrow keys = nudge &nbsp;|&nbsp; Accept when aligned
     </div>
   </main>
@@ -1022,7 +1114,7 @@
       </div>
     </div>
     <div class="bar-right-group">
-      <span class="bar-copy">v1.3.5 — ThrowVision © 2026</span>
+      <span class="bar-copy">v1.4.0 — ThrowVision © 2026</span>
       <button class="bar-debug-btn" id="debug-toggle-btn" onclick="toggleDebugPanel()" title="Debug Console">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
           stroke-linejoin="round" width="16" height="16">
@@ -1257,7 +1349,7 @@
   </div>
 
   <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
-  <script src="app.js?v=6"></script>
+<script src="app.js?v=7"></script>
 </body>
 
 </html>

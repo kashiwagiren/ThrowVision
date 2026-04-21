@@ -63,10 +63,10 @@ class ScoreMapper:
         theta = math.degrees(math.atan2(y_mm, x_mm)) % 360.0
         return r, theta
 
-    # Physical board edge (number ring outer wire) — beyond DOUBLE_OUTER but
-    # still on the board surface. Darts landing slightly outside the double
-    # wire should still count as MISS instead of being suppressed as OFF.
-    BOARD_OUTER_R = 225.0  # mm
+    # Physical board edge (number ring outer wire) plus a small tolerance for
+    # homography drift / parallax at the very edge. This keeps near-edge
+    # outside throws registering as MISS instead of dropping to OFF too early.
+    BOARD_OUTER_R = 233.0  # mm
 
     @staticmethod
     def score_from_polar(r: float, theta: float) -> Tuple[str, int]:

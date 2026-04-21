@@ -461,8 +461,8 @@ const CAL_COLORS = [
   '#ff8c00', '#ff8c00', '#ff8c00', '#ff8c00',   // inner triple (orange)
 ];
 const CAL_LABELS = [
-  'D20/D1', 'D6/D10', 'D3/D19', 'D11/D14',      // outer double ring
-  'T20/T1', 'T6/T10', 'T3/T19', 'T11/T14',      // inner triple ring
+  'D20/D1', 'D11/D14', 'D3/D19', 'D6/D10',      // outer double ring
+  'T20/T1', 'T11/T14', 'T3/T19', 'T6/T10',      // inner triple ring
 ];
 let calActivePoint = 0;  // which point zoom follows
 let calMode = 8;          // 4 = legacy outer-only, 8 = outer+inner (precise)
@@ -607,7 +607,7 @@ function calSetMode(n) {
   const cx = calImage.width / 2, cy = calImage.height / 2;
   const ro = Math.min(calImage.width, calImage.height) * 0.40;
   const ri = ro * (107.0 / 170.0);
-  const angs = [81, 351, 261, 171].map(a => a * Math.PI / 180);
+  const angs = [81, 171, 261, 351].map(a => a * Math.PI / 180);
   const outer = angs.map(a => ({ x: cx + ro * Math.cos(a), y: cy - ro * Math.sin(a) }));
   if (n === 4) {
     calPoints = outer;
@@ -688,8 +688,8 @@ async function calCaptureFrame(retries = 5, keepPoints = false) {
           const cx = img.width / 2, cy = img.height / 2;
           const ro = Math.min(img.width, img.height) * 0.40;  // outer double ring radius
           const ri = ro * (107.0 / 170.0);                     // triple ring radius
-          // Same 4 angles as server: D20/D1, D6/D10, D3/D19, D11/D14
-          const angs = [81, 351, 261, 171].map(a => a * Math.PI / 180);
+          // Same 4 angles as server: D20/D1, D11/D14, D3/D19, D6/D10
+          const angs = [81, 171, 261, 351].map(a => a * Math.PI / 180);
           calPoints = [
             // 4 outer double ring
             ...angs.map(a => ({ x: cx + ro * Math.cos(a), y: cy - ro * Math.sin(a) })),
@@ -849,7 +849,7 @@ function resetCalPoints() {
   const cx = calImage.width / 2, cy = calImage.height / 2;
   const ro = Math.min(calImage.width, calImage.height) * 0.40;
   const ri = ro * (107.0 / 170.0);
-  const angs = [81, 351, 261, 171].map(a => a * Math.PI / 180);
+  const angs = [81, 171, 261, 351].map(a => a * Math.PI / 180);
   calPoints = [
     ...angs.map(a => ({ x: cx + ro * Math.cos(a), y: cy - ro * Math.sin(a) })),
     ...angs.map(a => ({ x: cx + ri * Math.cos(a), y: cy - ri * Math.sin(a) })),
@@ -1136,7 +1136,7 @@ const BOARD_RADII_MM = {
   double_inner: 162, double_outer: 170,
 };
 const BOARD_CANVAS_MM = 451;
-const BOARD_DST_WIRE_ANGLES = [81, 351, 261, 171]; // D20/D1, D6/D10, D3/D19, D11/D14
+const BOARD_DST_WIRE_ANGLES = [81, 171, 261, 351]; // D20/D1, D11/D14, D3/D19, D6/D10
 
 function boardSectorBoundaryAngles() {
   const start = 90 - BOARD_SECTOR_ANGLE / 2;
@@ -1742,6 +1742,21 @@ document.addEventListener('keydown', (e) => {
     return;
   }
 
+  // ── MATCH REVIEW page ──
+  if (currentPage === 'match-review') {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      const lb = document.getElementById('mr-lightbox');
+      if (lb && lb.style.display !== 'none' && lb.offsetParent !== null) {
+        if (typeof closeMatchReviewLightbox === 'function') closeMatchReviewLightbox();
+        else lb.style.display = 'none';
+      } else {
+        showPage('stats');
+      }
+    }
+    return;
+  }
+
   // ── SETTINGS page ──
   if (currentPage === 'settings') {
     if (e.key === 'Escape') {
@@ -1878,6 +1893,9 @@ function connectSocket() {
   socket.on('game_over', onGameOver);
   socket.on('stats_data', onStatsData);
   socket.on('accuracy_session', (data) => applyPracticeAccuracySession(data));
+  socket.on('player_names', (data) => {
+    if (data && Array.isArray(data.names)) applyScoreboardPlayerNames(data.names);
+  });
 
   // Clear dart dots from board when turn takeout is confirmed
   socket.on('clear_board_dots', () => {
@@ -1995,16 +2013,23 @@ function connectSocket() {
   });
 
   // ── TF-Luna hotplug auto-detection ─────────────────────────────────
+  // NO toast: the sensor's connection state is already visible in the
+  // Settings panel (status dot + "Auto-detected on COMx" label). Toasts
+  // were firing on every startup because the server emits tfluna_status
+  // at least twice during boot (once offline during probe, once online
+  // after auto-detect), which no amount of client-side gating could
+  // reliably distinguish from a genuine plug event. Drop the toast
+  // entirely — real unplug/replug events still update the status dot
+  // silently.
   socket.on('tfluna_status', (data) => {
-    // Auto-update settings UI when sensor is plugged or unplugged
     const enabledEl = document.getElementById('set-tfluna-enabled');
     const portEl = document.getElementById('set-tfluna-port');
     if (enabledEl) enabledEl.checked = !!data.enabled;
     if (portEl && data.port != null) portEl.textContent = data.port;
 
-    if (data.detected && data.connected) {
+    const online = !!(data.detected && data.connected);
+    if (online) {
       _setTFLunaStatus('tfluna-ok', `Auto-detected on ${data.port}`);
-      showToast(`TF-Luna sensor detected on ${data.port}`, 'ok');
     } else if (!data.detected) {
       _setTFLunaStatus('tfluna-fail', 'Sensor removed');
       _updateTFLunaLive({ connected: false });
@@ -3849,6 +3874,7 @@ async function saveSettings(btnEl) {
     standby_time: document.getElementById('set-standby').value,
     triangle_k_factor: parseFloat(document.getElementById('set-triangle-k').value),
     approximate_distortion: document.getElementById('set-approx-dist').checked,
+    calibrate_on_startup: document.getElementById('set-auto-cal-startup').checked,
     blur_kernel: parseInt(document.getElementById('set-blur').value),
     binary_thresh: parseInt(document.getElementById('set-bin-thresh').value),
     tfluna_enabled: document.getElementById('set-tfluna-enabled').checked,
@@ -4423,6 +4449,10 @@ async function loadServerSettings() {
       const el = document.getElementById('set-approx-dist');
       if (el) el.checked = !!s.approximate_distortion;
     }
+    if (s.calibrate_on_startup != null) {
+      const el = document.getElementById('set-auto-cal-startup');
+      if (el) el.checked = !!s.calibrate_on_startup;
+    }
 
     // Blur kernel
     if (s.blur_kernel != null) {
@@ -4651,6 +4681,99 @@ function _isBullOffEnabled() {
   return input ? input.checked : true;
 }
 
+function _isBotEnabled() {
+  return !!document.getElementById('match-use-bot')?.checked;
+}
+
+function _resolveBotConfig() {
+  // Returns null when bot is disabled.
+  if (!_isBotEnabled()) return null;
+  const modeEl = document.getElementById('bot-mode');
+  const skillEl = document.getElementById('bot-skill');
+  const mode = modeEl?.value === 'auto_advance' ? 'auto_advance' : 'simulated';
+  const skillRaw = (skillEl?.value || 'medium').toLowerCase();
+  const skill = ['easy', 'medium', 'hard'].includes(skillRaw) ? skillRaw : 'medium';
+  return { enabled: true, mode, skill, seat: 2, name: 'Bot' };
+}
+
+function onBotToggleChanged() {
+  const on = _isBotEnabled();
+  const panel = document.getElementById('bot-config-grid');
+  if (panel) panel.style.display = on ? '' : 'none';
+  const p2Input = document.getElementById('game-p2-name');
+  if (p2Input) {
+    if (on) {
+      p2Input.value = 'Bot';
+      p2Input.readOnly = true;
+      p2Input.classList.add('input-locked');
+    } else {
+      if (p2Input.value === 'Bot') p2Input.value = '';
+      p2Input.readOnly = false;
+      p2Input.classList.remove('input-locked');
+    }
+  }
+  // Reflect bot skill field visibility based on bot mode.
+  _syncBotSkillVisibility();
+  onPlayerNameInput();
+}
+
+function _syncBotSkillVisibility() {
+  const modeEl = document.getElementById('bot-mode');
+  const skillField = document.getElementById('bot-skill-field');
+  if (!modeEl || !skillField) return;
+  skillField.style.display = modeEl.value === 'simulated' ? '' : 'none';
+}
+
+function _resolvePlayerNames() {
+  // Read inputs and return [p1, p2] with "Player N" fallback when empty.
+  const raw1 = (document.getElementById('game-p1-name')?.value || '').trim();
+  const raw2 = (document.getElementById('game-p2-name')?.value || '').trim();
+  const p1 = raw1.slice(0, 24) || 'Player 1';
+  let p2 = raw2.slice(0, 24) || 'Player 2';
+  if (_isBotEnabled()) p2 = 'Bot';
+  return [p1, p2];
+}
+
+function onPlayerNameInput() {
+  // Live-update the starting-player segment labels as the user types.
+  const [n1, n2] = _resolvePlayerNames();
+  const b1 = document.getElementById('game-first-player-1');
+  const b2 = document.getElementById('game-first-player-2');
+  if (b1) b1.textContent = n1;
+  if (b2) b2.textContent = n2;
+  updateGameConfigView?.();
+}
+
+// Module-level cache of the current match's player names so pre-game
+// UI (bullseye throw-off) and server events that arrive before a full
+// re-render can still show the custom names the user typed.
+let _currentPlayerNames = ['Player 1', 'Player 2'];
+
+function applyScoreboardPlayerNames(names) {
+  if (!Array.isArray(names) || names.length < 2) return;
+  _currentPlayerNames = [String(names[0] || 'Player 1'),
+                        String(names[1] || 'Player 2')];
+  document.querySelectorAll('#player-panel-1 .pp-name').forEach(el => {
+    el.textContent = _currentPlayerNames[0];
+  });
+  document.querySelectorAll('#player-panel-2 .pp-name').forEach(el => {
+    el.textContent = _currentPlayerNames[1];
+  });
+  // Propagate to the bullseye (pre-game) screen so P1/P2 cards + prompts
+  // reflect the typed names and the bot's configured name.
+  applyBullseyePlayerNames(_currentPlayerNames);
+  // Re-apply flight colors — panels may have just been re-shown.
+  if (typeof _applyPlayerFlights === 'function') _applyPlayerFlights();
+}
+
+function applyBullseyePlayerNames(names) {
+  if (!Array.isArray(names) || names.length < 2) return;
+  const bp1Label = document.querySelector('#bullseye-p1 .bp-label');
+  const bp2Label = document.querySelector('#bullseye-p2 .bp-label');
+  if (bp1Label) bp1Label.textContent = names[0];
+  if (bp2Label) bp2Label.textContent = names[1];
+}
+
 function _selectedGameConfig() {
   if (!_selectedGameMode) return null;
 
@@ -4658,6 +4781,8 @@ function _selectedGameConfig() {
     mode: _selectedGameMode,
     bullOff: _isBullOffEnabled(),
     firstPlayer: _gameFirstPlayer,
+    playerNames: _resolvePlayerNames(),
+    botConfig: _resolveBotConfig(),
     options: {},
   };
 
@@ -4791,8 +4916,11 @@ function startGame() {
     ...config.options,
     bull_off: config.bullOff,
     first_player: config.firstPlayer,
+    player_names: config.playerNames,
+    bot_config: config.botConfig,
   };
   _prevGamePlayer = null;  // Reset turn tracking for new game
+  applyScoreboardPlayerNames(config.playerNames);
 
   // Clear any residual dots from previous sessions
   clearBoardDots();
@@ -4807,12 +4935,19 @@ function startGame() {
   setStatus('waiting', 'Opening cameras…');
 
   if (config.bullOff) {
-    socket.emit('start_bullseye', { mode: _gameMode, options: config.options });
+    socket.emit('start_bullseye', {
+      mode: _gameMode,
+      options: config.options,
+      player_names: config.playerNames,
+      bot_config: config.botConfig,
+    });
   } else {
     socket.emit('start_game', {
       mode: _gameMode,
       options: config.options,
       first_player: config.firstPlayer,
+      player_names: config.playerNames,
+      bot_config: config.botConfig,
     });
   }
 }
@@ -4828,18 +4963,32 @@ function restartGame() {
   showPage('game');
   const bullOff = !!_gameOpts.bull_off;
   const firstPlayer = Number(_gameOpts.first_player || 1);
+  const playerNames = Array.isArray(_gameOpts.player_names)
+    ? _gameOpts.player_names
+    : ['Player 1', 'Player 2'];
+  const botConfig = _gameOpts.bot_config || null;
   const options = { ..._gameOpts };
   delete options.bull_off;
   delete options.first_player;
+  delete options.player_names;
+  delete options.bot_config;
   document.getElementById('bullseye-phase').style.display = bullOff ? '' : 'none';
   document.getElementById('game-active').style.display = 'none';
+  applyScoreboardPlayerNames(playerNames);
   if (bullOff) {
-    socket.emit('start_bullseye', { mode: _gameMode, options });
+    socket.emit('start_bullseye', {
+      mode: _gameMode,
+      options,
+      player_names: playerNames,
+      bot_config: botConfig,
+    });
   } else {
     socket.emit('start_game', {
       mode: _gameMode,
       options,
       first_player: firstPlayer,
+      player_names: playerNames,
+      bot_config: botConfig,
     });
   }
 }
@@ -4925,8 +5074,8 @@ function onBullseyeState(state) {
     dotsG.innerHTML = '';  // Clear previous dots
     const scale = TOTAL_R / 170;
     const playerDots = [
-      { coord: state.p1_coord, color: '#ff4444' },  // P1 = red
-      { coord: state.p2_coord, color: '#4488ff' },  // P2 = blue
+      { coord: state.p1_coord, color: _flightHexFor(1) },  // P1 = chosen flight
+      { coord: state.p2_coord, color: _flightHexFor(2) },  // P2 = chosen flight
     ];
     playerDots.forEach(({ coord, color }) => {
       if (coord) {
@@ -4954,28 +5103,41 @@ function onBullseyeState(state) {
     tiebreak.style.display = 'none';
   }
 
+  // Pull names from the server state when provided, else fall back to
+  // the module-level cache set at game-start. This keeps the bullseye
+  // UI in sync with the custom names the user typed (or "Bot" when a
+  // bot is seated).
+  const names = (Array.isArray(state.player_names) && state.player_names.length >= 2)
+    ? state.player_names
+    : _currentPlayerNames;
+  const n1 = names[0] || 'Player 1';
+  const n2 = names[1] || 'Player 2';
+  // Keep the bullseye cards' labels in sync too (belt-and-suspenders
+  // in case start_bullseye arrived before applyScoreboardPlayerNames).
+  applyBullseyePlayerNames([n1, n2]);
+
   switch (state.phase) {
     case 'player1_throw':
     case 'tiebreak_p1':
-      prompt.textContent = 'Player 1: Throw at the bullseye!';
+      prompt.textContent = `${n1}: Throw at the bullseye!`;
       prompt.className = 'bullseye-prompt p1-active';
       bp1.classList.add('active');
-      setStatus('detecting', 'Player 1 Throwing');
+      setStatus('detecting', `${n1} Throwing`);
       break;
     case 'player2_throw':
     case 'tiebreak_p2':
-      prompt.textContent = 'Player 2: Throw at the bullseye!';
+      prompt.textContent = `${n2}: Throw at the bullseye!`;
       prompt.className = 'bullseye-prompt p2-active';
       bp2.classList.add('active');
-      setStatus('detecting', 'Player 2 Throwing');
+      setStatus('detecting', `${n2} Throwing`);
       break;
     case 'result':
       if (state.winner === 1) {
-        prompt.textContent = 'Player 1 goes first!';
+        prompt.textContent = `${n1} goes first!`;
         prompt.className = 'bullseye-prompt p1-winner';
         bp1.classList.add('winner');
       } else {
-        prompt.textContent = 'Player 2 goes first!';
+        prompt.textContent = `${n2} goes first!`;
         prompt.className = 'bullseye-prompt p2-winner';
         bp2.classList.add('winner');
       }
@@ -5137,38 +5299,242 @@ function _renderPlayerTurn(targetId, darts, mode) {
   `;
 }
 
-function _renderGameThrowStrip(darts, mode) {
+// ── Per-dart aim suggestions ────────────────────────────────────────
+//
+// Populates the empty dart cards with "Aim here next" hints:
+//   * X01    : standard double-out checkout path (table generated at load).
+//              Setup shot is T20 when the remaining score isn't on a
+//              3-dart finish.
+//   * Cricket: highest-value target the current player hasn't closed
+//              (prefers triple form for 15-20, "BULL" for 25).
+//   * Count Up: always T20 (max scoring shot).
+
+const X01_CHECKOUTS = (() => {
+  const doubles = {};
+  for (let n = 1; n <= 20; n++) doubles[n * 2] = `D${n}`;
+  doubles[50] = 'BULL';
+
+  // Setup shots (first dart in a 2- or 3-dart finish): triples high->low,
+  // BULL, outer bull, singles high->low.
+  const setupShots = [];
+  for (let n = 20; n >= 1; n--) setupShots.push({ score: n * 3, label: `T${n}` });
+  setupShots.push({ score: 50, label: 'BULL' });
+  setupShots.push({ score: 25, label: '25' });
+  for (let n = 20; n >= 1; n--) setupShots.push({ score: n, label: `S${n}` });
+
+  // Preferred finishing doubles (classic tournament order): D20 is safest
+  // (miss lands in D5/D1 lanes), then D16, D18, D17... Bull is last because
+  // it's a small target.
+  const preferredDoubleOrder = [40, 32, 36, 34, 28, 24, 20, 16, 12, 8, 4,
+                                 38, 30, 26, 22, 18, 14, 10, 6, 2, 50];
+
+  const one = {};
+  for (const s of Object.keys(doubles)) one[s] = [doubles[s]];
+
+  const two = {};
+  for (let r = 2; r <= 170; r++) {
+    if (one[r]) { two[r] = one[r]; continue; }
+    outer: for (const dScore of preferredDoubleOrder) {
+      const setupNeed = r - dScore;
+      if (setupNeed <= 0) continue;
+      for (const s of setupShots) {
+        if (s.score === setupNeed) {
+          two[r] = [s.label, doubles[dScore]];
+          break outer;
+        }
+      }
+    }
+  }
+
+  const three = {};
+  for (let r = 2; r <= 170; r++) {
+    if (two[r] && two[r].length <= 2) { three[r] = two[r].slice(); continue; }
+    for (const fc of setupShots) {
+      const rem = r - fc.score;
+      if (rem >= 2 && two[rem] && two[rem].length === 2) {
+        three[r] = [fc.label, ...two[rem]];
+        break;
+      }
+    }
+  }
+  return { one, two, three };
+})();
+
+function _x01LabelScore(label) {
+  if (!label) return 0;
+  if (label === 'BULL') return 50;
+  if (label === '25') return 25;
+  const m = String(label).match(/^([STD])(\d+)$/);
+  if (!m) return 0;
+  const n = Number(m[2]);
+  const mult = m[1] === 'T' ? 3 : m[1] === 'D' ? 2 : 1;
+  return n * mult;
+}
+
+function _x01ThrownSoFar(darts) {
+  return (darts || []).reduce(
+    (sum, d) => sum + (d && !d.bust ? Number(d.score || 0) : 0),
+    0,
+  );
+}
+
+function _suggestX01(state) {
+  const out = [null, null, null];
+  const playerIdx = Math.max(0, Number(state.current_player || 1) - 1);
+  const scores = Array.isArray(state.scores) ? state.scores : [];
+  const remainingAtTurnStart = Number(scores[playerIdx] || 0);
+  const darts = Array.isArray(state.darts_this_turn) ? state.darts_this_turn : [];
+  const thrown = _x01ThrownSoFar(darts);
+  const remaining = remainingAtTurnStart - thrown;
+  if (remaining <= 0) return out;
+  if (remaining === 1) return out;
+
+  const dartsLeft = 3 - darts.length;
+
+  if (dartsLeft >= 1 && X01_CHECKOUTS.one[remaining]) {
+    out[darts.length] = {
+      label: X01_CHECKOUTS.one[remaining][0],
+      hint: `Finish on ${remaining}`,
+    };
+    return out;
+  }
+  if (dartsLeft >= 2 && X01_CHECKOUTS.two[remaining]
+      && X01_CHECKOUTS.two[remaining].length === 2) {
+    const path = X01_CHECKOUTS.two[remaining];
+    const leave = remaining - _x01LabelScore(path[0]);
+    out[darts.length]     = { label: path[0], hint: `Checkout ${remaining}` };
+    out[darts.length + 1] = { label: path[1], hint: `Finish on ${leave}` };
+    return out;
+  }
+  if (dartsLeft >= 3 && X01_CHECKOUTS.three[remaining]
+      && X01_CHECKOUTS.three[remaining].length === 3) {
+    const path = X01_CHECKOUTS.three[remaining];
+    const s1 = _x01LabelScore(path[0]);
+    const s2 = _x01LabelScore(path[1]);
+    out[0] = { label: path[0], hint: `Checkout ${remaining}` };
+    out[1] = { label: path[1], hint: `Leave ${remaining - s1 - s2}` };
+    out[2] = { label: path[2], hint: `Finish on ${remaining - s1 - s2}` };
+    return out;
+  }
+
+  for (let i = darts.length; i < 3; i++) {
+    out[i] = { label: 'T20', hint: 'Max scoring shot' };
+  }
+  return out;
+}
+
+const CRICKET_TARGET_LABEL = {
+  15: 'T15', 16: 'T16', 17: 'T17', 18: 'T18', 19: 'T19', 20: 'T20', 25: 'BULL',
+};
+
+function _suggestCricket(state) {
+  const out = [null, null, null];
+  const playerIdx = Math.max(0, Number(state.current_player || 1) - 1);
+  const numbers = Array.isArray(state.numbers) ? state.numbers : [20, 19, 18, 17, 16, 15, 25];
+  const marks = Array.isArray(state.marks) ? state.marks : [];
+  const me = marks[playerIdx] || {};
+  const opp = marks[1 - playerIdx] || {};
+  const darts = Array.isArray(state.darts_this_turn) ? state.darts_this_turn : [];
+
+  const priority = [20, 19, 18, 17, 16, 15, 25].filter((n) => numbers.includes(n));
+  let target = null;
+  for (const n of priority) {
+    if (Number(me[String(n)] || 0) < 3) { target = n; break; }
+  }
+  if (target == null) {
+    for (const n of priority) {
+      if (Number(me[String(n)] || 0) >= 3 && Number(opp[String(n)] || 0) < 3) {
+        target = n; break;
+      }
+    }
+  }
+  if (target == null) return out;
+
+  const label = CRICKET_TARGET_LABEL[target] || `S${target}`;
+  const hint = Number(me[String(target)] || 0) < 3
+    ? `Close ${target === 25 ? 'bull' : target}`
+    : `Score on ${target === 25 ? 'bull' : target}`;
+  for (let i = darts.length; i < 3; i++) {
+    out[i] = { label, hint };
+  }
+  return out;
+}
+
+function _suggestCountUp(state) {
+  const out = [null, null, null];
+  const darts = Array.isArray(state.darts_this_turn) ? state.darts_this_turn : [];
+  for (let i = darts.length; i < 3; i++) {
+    out[i] = { label: 'T20', hint: 'Max scoring shot' };
+  }
+  return out;
+}
+
+function _computeAimSuggestions(state, mode) {
+  if (!state) return [null, null, null];
+  if (mode === 'x01') return _suggestX01(state);
+  if (mode === 'cricket') return _suggestCricket(state);
+  if (mode === 'countup') return _suggestCountUp(state);
+  return [null, null, null];
+}
+
+function _buildThrowCard(index, dart, mode, aim) {
+  const card = document.createElement('div');
+  card.className = 'game-throw-card';
+  if (!dart) card.classList.add('is-empty');
+  if (dart && dart.bust) card.classList.add('is-bust');
+
+  const kicker = document.createElement('span');
+  kicker.className = 'game-throw-kicker';
+  kicker.textContent = `Dart ${index + 1}`;
+  card.appendChild(kicker);
+
+  const strong = document.createElement('strong');
+  const small = document.createElement('small');
+  const em = document.createElement('em');
+
+  if (!dart) {
+    if (aim && aim.label) {
+      card.classList.add('is-suggest');
+      strong.textContent = aim.label;
+      small.textContent = aim.hint || 'Suggested aim';
+      em.className = 'game-throw-aim';
+      em.textContent = 'AIM';
+    } else {
+      strong.textContent = 'No dart';
+      small.textContent = 'Waiting for detection';
+      em.textContent = '';
+    }
+  } else {
+    const baseScore = Number(dart.score || 0);
+    let meta;
+    if (mode === 'countup' && Number(dart.multiplier || 1) > 1) {
+      meta = `Multiplier x${dart.multiplier}`;
+    } else if (dart.points_added) {
+      meta = `Points +${dart.points_added}`;
+    } else if (dart.marks_added) {
+      meta = `Marks ${dart.marks_added}`;
+    } else {
+      meta = 'Recorded';
+    }
+    strong.textContent = String(dart.label || '');
+    small.textContent = meta;
+    em.textContent = dart.bust ? 'BUST' : String(baseScore);
+  }
+
+  card.appendChild(strong);
+  card.appendChild(small);
+  card.appendChild(em);
+  return card;
+}
+
+function _renderGameThrowStrip(darts, mode, suggestions) {
   const el = document.getElementById('game-throw-strip');
   if (!el) return;
-  const slots = Array.from({ length: 3 }, (_, index) => {
-    const dart = darts[index];
-    if (!dart) {
-      return `
-        <div class="game-throw-card is-empty">
-          <span class="game-throw-kicker">Dart ${index + 1}</span>
-          <strong>No dart</strong>
-          <small>Waiting for detection</small>
-        </div>
-      `;
-    }
-
-    const baseScore = Number(dart.score || 0);
-    const meta = mode === 'countup' && Number(dart.multiplier || 1) > 1
-      ? `Multiplier x${dart.multiplier}`
-      : (dart.points_added
-        ? `Points +${dart.points_added}`
-        : (dart.marks_added ? `Marks ${dart.marks_added}` : 'Recorded'));
-
-    return `
-      <div class="game-throw-card ${dart.bust ? 'is-bust' : ''}">
-        <span class="game-throw-kicker">Dart ${index + 1}</span>
-        <strong>${dart.label}</strong>
-        <small>${meta}</small>
-        <em>${dart.bust ? 'BUST' : `${baseScore}`}</em>
-      </div>
-    `;
-  });
-  el.innerHTML = slots.join('');
+  const aims = Array.isArray(suggestions) ? suggestions : [null, null, null];
+  while (el.firstChild) el.removeChild(el.firstChild);
+  for (let i = 0; i < 3; i++) {
+    el.appendChild(_buildThrowCard(i, darts[i], mode, aims[i]));
+  }
 }
 
 function _renderModePanel(kicker, title, bodyHtml) {
@@ -5342,7 +5708,7 @@ function renderX01State(s) {
 
   _renderPlayerTurn('pp1-darts', s.current_player === 1 ? s.darts_this_turn : [], 'x01');
   _renderPlayerTurn('pp2-darts', s.current_player === 2 ? s.darts_this_turn : [], 'x01');
-  _renderGameThrowStrip(s.darts_this_turn || [], 'x01');
+  _renderGameThrowStrip(s.darts_this_turn || [], 'x01', _computeAimSuggestions(s, 'x01'));
 
   _renderGameTurnInfo(s, [
     `<span class="game-turn-chip">Player ${s.current_player} Throwing</span>`,
@@ -5399,7 +5765,7 @@ function renderCricketState(s) {
 
   _renderPlayerTurn('pp1-darts', s.current_player === 1 ? currentDarts : [], 'cricket');
   _renderPlayerTurn('pp2-darts', s.current_player === 2 ? currentDarts : [], 'cricket');
-  _renderGameThrowStrip(currentDarts, 'cricket');
+  _renderGameThrowStrip(currentDarts, 'cricket', _computeAimSuggestions(s, 'cricket'));
 
   const turnPoints = currentDarts.reduce((sum, dart) => sum + Number(dart.points_added || 0), 0);
   _renderGameTurnInfo(s, [
@@ -5465,7 +5831,7 @@ function renderCountUpState(s) {
 
   _renderPlayerTurn('pp1-darts', s.current_player === 1 ? turnDarts : [], 'countup');
   _renderPlayerTurn('pp2-darts', s.current_player === 2 ? turnDarts : [], 'countup');
-  _renderGameThrowStrip(turnDarts, 'countup');
+  _renderGameThrowStrip(turnDarts, 'countup', _computeAimSuggestions(s, 'countup'));
 
   _renderGameTurnInfo(s, [
     `<span class="game-turn-chip">Round ${s.current_round} / ${s.total_rounds}</span>`,
@@ -5582,6 +5948,64 @@ function loadAccuracyStats() {
     });
 }
 
+function buildStatsRow(game, modeLabel, winnerText, date, summary) {
+    const row = document.createElement('div');
+    row.className = 'sr-row';
+    if (game.has_review) {
+        row.classList.add('sr-row--clickable');
+        row.addEventListener('click', (e) => {
+            if (e.target.closest('.sr-delete')) return;
+            openMatchReview(Number(game.id));
+        });
+    }
+
+    const main = document.createElement('div');
+    main.className = 'sr-main';
+
+    const topline = document.createElement('div');
+    topline.className = 'sr-topline';
+    const modeSpan = document.createElement('span');
+    modeSpan.className = 'sr-mode';
+    modeSpan.textContent = modeLabel;
+    topline.appendChild(modeSpan);
+    const summarySpan = document.createElement('span');
+    summarySpan.className = 'sr-summary';
+    summarySpan.textContent = summary;
+    topline.appendChild(summarySpan);
+    if (game.status === 'abandoned') {
+        const badge = document.createElement('span');
+        badge.className = 'mr-abandoned-badge';
+        badge.textContent = 'Abandoned';
+        topline.appendChild(badge);
+    }
+    main.appendChild(topline);
+
+    const meta = document.createElement('div');
+    meta.className = 'sr-meta';
+    const winSpan = document.createElement('span');
+    winSpan.textContent = winnerText;
+    meta.appendChild(winSpan);
+    const dateSpan = document.createElement('span');
+    dateSpan.textContent = date;
+    meta.appendChild(dateSpan);
+    main.appendChild(meta);
+
+    row.appendChild(main);
+
+    if (game.id) {
+        const delBtn = document.createElement('button');
+        delBtn.className = 'btn btn-sm btn-secondary sr-delete';
+        delBtn.textContent = 'Delete';
+        delBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            deleteGameStat(Number(game.id));
+        });
+        row.appendChild(delBtn);
+    }
+
+    return row;
+}
+
 function renderStats(data, mode) {
   const dash = document.getElementById('stats-dashboard');
   const recentList = document.getElementById('stats-recent-list');
@@ -5631,28 +6055,15 @@ function renderStats(data, mode) {
   if (recent.length === 0) {
     recentList.innerHTML = '<div class="stats-empty">No saved matches yet.</div>';
   } else {
-    recentList.innerHTML = recent.map(g => {
+    recentList.replaceChildren();
+    recent.forEach(g => {
       const date = formatStatsDate(g.started_at);
       const modeLabel = (g.mode || '').toUpperCase();
-      const winner = g.winner ? 'Player ' + g.winner + ' won' : 'Tie';
+      const winnerText = g.winner ? 'Player ' + g.winner + ' won'
+                       : (g.status === 'abandoned' ? 'Abandoned' : 'Tie');
       const summary = gameSummaryText(g);
-      const deleteBtn = g.id
-        ? `<button class="btn btn-sm btn-secondary sr-delete" onclick="deleteGameStat(${Number(g.id)})">Delete</button>`
-        : '';
-      return `<div class="sr-row">
-        <div class="sr-main">
-          <div class="sr-topline">
-            <span class="sr-mode">${modeLabel}</span>
-            <span class="sr-summary">${summary}</span>
-          </div>
-          <div class="sr-meta">
-            <span>${winner}</span>
-            <span>${date}</span>
-          </div>
-        </div>
-        ${deleteBtn}
-      </div>`;
-    }).join('');
+      recentList.appendChild(buildStatsRow(g, modeLabel, winnerText, date, summary));
+    });
   }
 }
 
@@ -5833,6 +6244,209 @@ async function deleteGameStat(gameId) {
   }
 }
 
+async function openMatchReview(matchId) {
+    try {
+        const resp = await fetch(`/api/matches/${matchId}/review`);
+        if (!resp.ok) {
+            alert('Review not available');
+            return;
+        }
+        const data = await resp.json();
+        window._currentMatchReview = data;
+        showPage('match-review');
+        renderMatchReview(data);
+    } catch (err) {
+        console.error('openMatchReview failed', err);
+    }
+}
+function fmtMm(v) {
+    if (v === null || v === undefined) return '—';
+    const sign = v >= 0 ? '+' : '';
+    return `${sign}${Number(v).toFixed(1)}mm`;
+}
+
+
+function _mrThumb(matchId, kind, player, round, dart, cam) {
+    const img = document.createElement('img');
+    img.className = 'mr-thumb';
+    img.loading = 'lazy';
+    img.src = `/api/matches/${matchId}/frame/${kind}/${player}/${round}/${dart}/${cam}`;
+    img.alt = `cam${cam}`;
+    img.addEventListener('error', () => img.classList.add('mr-thumb--missing'));
+    img.addEventListener('click',
+        () => openLightbox(matchId, kind, player, round, dart, cam));
+    return img;
+}
+
+
+function _mrThumbRow(labelText, thumbs) {
+    const row = document.createElement('div');
+    row.className = 'mr-thumbrow';
+    const label = document.createElement('span');
+    label.className = 'mr-thumb-label';
+    label.textContent = labelText;
+    row.appendChild(label);
+    thumbs.forEach(t => row.appendChild(t));
+    return row;
+}
+
+
+function renderMatchReview(data) {
+    // Title
+    const titleEl = document.querySelector('.mr-title');
+    if (titleEl) titleEl.textContent = `Match #${data.match_id} Review`;
+
+    // Abandonment banner
+    const banner = document.getElementById('mr-abandoned-banner');
+    if (data.status === 'abandoned') {
+        const reasonMap = {
+            user_quit: 'quit by user',
+            server_restart: 'server restart',
+            cameras_lost: 'cameras lost',
+        };
+        banner.style.display = '';
+        banner.textContent =
+            `⚠  This match was not completed — reason: ${reasonMap[data.abandoned_reason] || data.abandoned_reason || 'unknown'}`;
+    } else {
+        banner.style.display = 'none';
+        banner.textContent = '';
+    }
+
+    // Meta
+    const meta = document.getElementById('mr-meta');
+    const winnerTxt = data.winner
+        ? `Player ${data.winner} won`
+        : (data.status === 'abandoned' ? '—' : 'Draw');
+    const startedTs = data.started_at
+        ? new Date(data.started_at * 1000).toLocaleString() : '';
+    const totalDarts = (data.players || []).reduce(
+        (n, p) => n + (p.turns || []).reduce((m, t) => m + (t.darts || []).length, 0), 0);
+    meta.textContent =
+        `${(data.mode || '').toUpperCase()} • ${winnerTxt} • ${startedTs} • ${totalDarts} darts`;
+
+    // Delete button
+    const delBtn = document.getElementById('mr-delete-btn');
+    delBtn.onclick = async () => {
+        if (!confirm('Delete this match permanently?')) return;
+        await fetch(`/api/stats/game/${data.match_id}`, { method: 'DELETE' });
+        showPage('stats');
+        if (typeof refreshStats === 'function') refreshStats();
+    };
+
+    // Tabs
+    const tabs = document.getElementById('mr-tabs');
+    tabs.replaceChildren();
+    (data.players || []).forEach((p, idx) => {
+        const btn = document.createElement('button');
+        btn.className = 'mr-tab' + (idx === 0 ? ' mr-tab--active' : '');
+        btn.textContent = p.name || `Player ${p.player}`;
+        btn.dataset.seat = String(p.player);
+        // Tint the tab with the player's flight color when available.
+        if (typeof _playerFlights !== 'undefined'
+            && (p.player === 1 || p.player === 2)) {
+            btn.setAttribute('data-flight', _playerFlights[p.player - 1]);
+        }
+        btn.addEventListener('click', () => {
+            tabs.querySelectorAll('.mr-tab').forEach(b => b.classList.remove('mr-tab--active'));
+            btn.classList.add('mr-tab--active');
+            renderMatchReviewPlayer(data, p.player);
+        });
+        tabs.appendChild(btn);
+    });
+
+    if (data.players && data.players.length) {
+        renderMatchReviewPlayer(data, data.players[0].player);
+    }
+}
+
+
+function renderMatchReviewPlayer(data, playerNum) {
+    const turnsEl = document.getElementById('mr-turns');
+    turnsEl.replaceChildren();
+    const p = (data.players || []).find(x => x.player === playerNum);
+    if (!p) return;
+
+    (p.turns || []).forEach(turn => {
+        const card = document.createElement('div');
+        card.className = 'mr-turn-card';
+
+        // Head
+        const head = document.createElement('div');
+        head.className = 'mr-turn-card__head';
+        const headLabel = document.createElement('span');
+        headLabel.textContent = `Round ${turn.round} · Turn ${turn.index + 1}`;
+        head.appendChild(headLabel);
+
+        const total = (turn.darts || []).reduce((s, d) => s + (d.score || 0), 0);
+        const totalEl = document.createElement('span');
+        totalEl.className = 'mr-turn-card__total';
+        totalEl.textContent = `Total: ${total}`;
+        head.appendChild(totalEl);
+        card.appendChild(head);
+
+        // Dart rows
+        const dartsEl = document.createElement('div');
+        dartsEl.className = 'mr-turn-card__darts';
+        (turn.darts || []).forEach(d => {
+            const row = document.createElement('div');
+            row.className = 'mr-dart-row';
+
+            const l1 = document.createElement('span');
+            l1.className = 'mr-dart-label';
+            l1.textContent = `Dart ${d.dart_index + 1}:`;
+            row.appendChild(l1);
+
+            const l2 = document.createElement('span');
+            l2.className = 'mr-dart-call';
+            l2.textContent = `${d.label} (${d.score})`;
+            row.appendChild(l2);
+
+            const l3 = document.createElement('span');
+            l3.className = 'mr-dart-mm';
+            l3.textContent = `${fmtMm(d.x_mm)}, ${fmtMm(d.y_mm)}`;
+            row.appendChild(l3);
+
+            const l4 = document.createElement('span');
+            l4.className = 'mr-dart-agree';
+            l4.textContent = d.agreement_bucket || '';
+            row.appendChild(l4);
+
+            dartsEl.appendChild(row);
+        });
+        card.appendChild(dartsEl);
+
+        // Captures
+        const caps = document.createElement('div');
+        caps.className = 'mr-turn-card__captures';
+
+        const capLabel = document.createElement('div');
+        capLabel.className = 'mr-captures-label';
+        capLabel.textContent = 'Per-dart captures:';
+        caps.appendChild(capLabel);
+
+        (turn.darts || []).forEach(d => {
+            const thumbs = [0, 1, 2].map(cam =>
+                _mrThumb(data.match_id, 'per_dart', playerNum, turn.round, d.dart_index, cam));
+            caps.appendChild(_mrThumbRow(`Dart ${d.dart_index + 1}:`, thumbs));
+        });
+
+        if (turn.end_of_turn) {
+            const eotLabel = document.createElement('div');
+            eotLabel.className = 'mr-captures-label';
+            eotLabel.textContent = 'End-of-turn:';
+            caps.appendChild(eotLabel);
+            const thumbs = [0, 1, 2].map(cam =>
+                _mrThumb(data.match_id, 'eot', playerNum, turn.round, 0, cam));
+            caps.appendChild(_mrThumbRow('EOT:', thumbs));
+        }
+
+        card.appendChild(caps);
+        turnsEl.appendChild(card);
+    });
+}
+window.renderMatchReview = renderMatchReview;
+window.openMatchReview = openMatchReview;
+
 async function resetAccuracyStats() {
   const confirmed = await showConfirmModal({
     kicker: 'Accuracy Review',
@@ -5862,3 +6476,353 @@ function onStatsData(data) {
     renderStats(data, data.mode || _statsMode);
   }
 }
+
+const _lightbox = {
+    matchId: null,
+    sequence: [],  // list of {kind, player, round, dart, cam}
+    position: 0,
+    warped: false,
+};
+
+
+function buildLightboxSequence(data) {
+    const seq = [];
+    (data.players || []).forEach(p => {
+        const playerName = p.name || `Player ${p.player}`;
+        (p.turns || []).forEach(t => {
+            const dartsInTurn = t.darts || [];
+            const turnTotal = dartsInTurn.reduce(
+                (sum, x) => sum + Number(x.score || 0), 0,
+            );
+            const turnSequenceLabels = dartsInTurn
+                .map(x => x.label || '—')
+                .join(' · ');
+            dartsInTurn.forEach(d => {
+                for (let cam = 0; cam < 3; cam++) {
+                    seq.push({
+                        kind: 'per_dart',
+                        player: p.player,
+                        playerName,
+                        round: t.round,
+                        dart: d.dart_index,
+                        cam,
+                        dartLabel: d.label || '',
+                        dartScore: Number(d.score || 0),
+                        xMm: (d.x_mm == null) ? null : Number(d.x_mm),
+                        yMm: (d.y_mm == null) ? null : Number(d.y_mm),
+                        agreement: d.agreement_bucket || '',
+                        bot: !!d.bot,
+                        turnTotal,
+                        turnSequenceLabels,
+                    });
+                }
+            });
+            if (t.end_of_turn) {
+                for (let cam = 0; cam < 3; cam++) {
+                    seq.push({
+                        kind: 'eot',
+                        player: p.player,
+                        playerName,
+                        round: t.round,
+                        dart: 0,
+                        cam,
+                        turnTotal,
+                        turnSequenceLabels,
+                    });
+                }
+            }
+        });
+    });
+    return seq;
+}
+
+
+function openLightbox(matchId, kind, player, round, dart, cam) {
+    const data = window._currentMatchReview;
+    if (!data) return;
+
+    // Build the full sequence, then narrow to the 3 camera captures for the
+    // clicked dart/EOT so the lightbox isn't paging through the whole match.
+    const fullSequence = buildLightboxSequence(data);
+    const filtered = fullSequence.filter(s =>
+        s.kind === kind && s.player === player && s.round === round
+        && s.dart === dart);
+    _lightbox.sequence = filtered.length ? filtered : fullSequence;
+    _lightbox.position = _lightbox.sequence.findIndex(s =>
+        s.kind === kind && s.player === player && s.round === round
+        && s.dart === dart && s.cam === cam);
+    if (_lightbox.position < 0) _lightbox.position = 0;
+    _lightbox.warped = false;
+    _lightbox.matchId = matchId;
+    _applyLightbox();
+    document.getElementById('mr-lightbox').style.display = '';
+    document.addEventListener('keydown', _lightboxKey);
+}
+
+
+function closeLightbox() {
+    document.getElementById('mr-lightbox').style.display = 'none';
+    document.removeEventListener('keydown', _lightboxKey);
+}
+
+
+function lightboxPrev() {
+    if (_lightbox.position > 0) {
+        _lightbox.position -= 1;
+        _applyLightbox();
+    }
+}
+
+
+function lightboxNext() {
+    if (_lightbox.position < _lightbox.sequence.length - 1) {
+        _lightbox.position += 1;
+        _applyLightbox();
+    }
+}
+
+
+function _lightboxKey(ev) {
+    if (ev.key === 'Escape') closeLightbox();
+    else if (ev.key === 'ArrowLeft') lightboxPrev();
+    else if (ev.key === 'ArrowRight') lightboxNext();
+}
+
+
+function _applyLightbox() {
+    const item = _lightbox.sequence[_lightbox.position];
+    if (!item) return;
+    const suffix = _lightbox.warped ? '/warped' : '';
+    const url = `/api/matches/${_lightbox.matchId}/frame/${item.kind}/${item.player}/${item.round}/${item.dart}/${item.cam}${suffix}`;
+    document.getElementById('mr-lightbox-img').src = url;
+    const kindLabel = item.kind === 'per_dart' ? `Dart ${item.dart + 1}` : 'End-of-turn';
+    const viewLabel = _lightbox.warped ? ' · Warped' : '';
+    document.getElementById('mr-lightbox-caption').textContent =
+        `${item.playerName || ('Player ' + item.player)} · Round ${item.round} · ${kindLabel} · Cam ${item.cam}${viewLabel}`;
+    document.getElementById('mr-lightbox-pos').textContent =
+        `${_lightbox.position + 1} / ${_lightbox.sequence.length}`;
+    document.getElementById('mr-lightbox-raw').classList.toggle('mr-btn--active', !_lightbox.warped);
+    const warpBtn = document.getElementById('mr-lightbox-warp');
+    if (warpBtn) warpBtn.classList.toggle('mr-btn--active', _lightbox.warped);
+
+    _renderLightboxScorecard(item);
+}
+
+function _renderLightboxScorecard(item) {
+    const host = document.getElementById('mr-lightbox-scorecard');
+    if (!host) return;
+    while (host.firstChild) host.removeChild(host.firstChild);
+
+    const card = document.createElement('div');
+    card.className = 'mr-sc';
+
+    // Kicker row: what we're looking at + player
+    const kicker = document.createElement('div');
+    kicker.className = 'mr-sc__kicker';
+    const kickerText = item.kind === 'per_dart'
+        ? `Dart ${item.dart + 1} · Round ${item.round}`
+        : `End of Turn · Round ${item.round}`;
+    kicker.textContent = kickerText;
+    card.appendChild(kicker);
+
+    const who = document.createElement('div');
+    who.className = 'mr-sc__who';
+    who.textContent = (item.playerName || ('Player ' + item.player))
+        + (item.bot ? ' · Bot' : '');
+    card.appendChild(who);
+
+    if (item.kind === 'per_dart') {
+        // Hero label + score for this dart
+        const hero = document.createElement('div');
+        hero.className = 'mr-sc__hero';
+        const heroLabel = document.createElement('strong');
+        heroLabel.textContent = item.dartLabel || '—';
+        const heroScore = document.createElement('em');
+        heroScore.textContent = String(item.dartScore || 0);
+        hero.appendChild(heroLabel);
+        hero.appendChild(heroScore);
+        card.appendChild(hero);
+
+        // Coord + agreement chips
+        const chips = document.createElement('div');
+        chips.className = 'mr-sc__chips';
+        if (item.xMm != null && item.yMm != null) {
+            const coord = document.createElement('span');
+            coord.className = 'mr-sc__chip';
+            coord.textContent = `${item.xMm.toFixed(1)}mm, ${item.yMm.toFixed(1)}mm`;
+            chips.appendChild(coord);
+        }
+        if (item.agreement) {
+            const agr = document.createElement('span');
+            agr.className = 'mr-sc__chip mr-sc__chip--agr';
+            agr.textContent = String(item.agreement);
+            chips.appendChild(agr);
+        }
+        if (chips.childElementCount > 0) card.appendChild(chips);
+    } else {
+        // End-of-turn: show the 3-dart sequence + total
+        const hero = document.createElement('div');
+        hero.className = 'mr-sc__hero';
+        const heroLabel = document.createElement('strong');
+        heroLabel.textContent = 'Turn';
+        const heroScore = document.createElement('em');
+        heroScore.textContent = String(item.turnTotal || 0);
+        hero.appendChild(heroLabel);
+        hero.appendChild(heroScore);
+        card.appendChild(hero);
+
+        if (item.turnSequenceLabels) {
+            const seq = document.createElement('div');
+            seq.className = 'mr-sc__chips';
+            const chip = document.createElement('span');
+            chip.className = 'mr-sc__chip';
+            chip.textContent = item.turnSequenceLabels;
+            seq.appendChild(chip);
+            card.appendChild(seq);
+        }
+    }
+
+    host.appendChild(card);
+}
+
+
+document.addEventListener('DOMContentLoaded', () => {
+    const raw = document.getElementById('mr-lightbox-raw');
+    const warp = document.getElementById('mr-lightbox-warp');
+    if (raw) raw.addEventListener('click', () => { _lightbox.warped = false; _applyLightbox(); });
+    if (warp) warp.addEventListener('click', () => { _lightbox.warped = true; _applyLightbox(); });
+    _initPlayerFlights();
+});
+
+window.openLightbox = openLightbox;
+window.closeLightbox = closeLightbox;
+window.lightboxPrev = lightboxPrev;
+window.lightboxNext = lightboxNext;
+
+/* ─────────────────────────────────────────────────────────────
+ * Player flight colors (cosmetic personalization)
+ *
+ * Each player picks a flight color on the Game Setup page; the
+ * chosen color themes their scoreboard panel, turn cards, and
+ * match-review tab via a `data-flight` attribute. Persisted in
+ * localStorage so a player's color sticks between sessions.
+ * ───────────────────────────────────────────────────────────── */
+const FLIGHT_PALETTE = [
+    { id: 'blue',   label: 'Blue'   },
+    { id: 'red',    label: 'Red'    },
+    { id: 'green',  label: 'Green'  },
+    { id: 'gold',   label: 'Gold'   },
+    { id: 'purple', label: 'Purple' },
+    { id: 'orange', label: 'Orange' },
+    { id: 'pink',   label: 'Pink'   },
+    { id: 'teal',   label: 'Teal'   },
+];
+const _FLIGHT_DEFAULTS = ['blue', 'red'];
+let _playerFlights = _FLIGHT_DEFAULTS.slice();
+
+function _loadStoredFlights() {
+    try {
+        const raw = localStorage.getItem('throwvision.playerFlights');
+        if (!raw) return _FLIGHT_DEFAULTS.slice();
+        const parsed = JSON.parse(raw);
+        if (!Array.isArray(parsed)) return _FLIGHT_DEFAULTS.slice();
+        const ids = FLIGHT_PALETTE.map(f => f.id);
+        return [0, 1].map(i => (ids.indexOf(parsed[i]) >= 0
+            ? parsed[i] : _FLIGHT_DEFAULTS[i]));
+    } catch (_e) {
+        return _FLIGHT_DEFAULTS.slice();
+    }
+}
+
+function _saveStoredFlights() {
+    try {
+        localStorage.setItem('throwvision.playerFlights',
+            JSON.stringify(_playerFlights));
+    } catch (_e) { /* quota / private mode – ignore */ }
+}
+
+function _buildFlightPicker(containerId, seat) {
+    const root = document.getElementById(containerId);
+    if (!root) return;
+    root.textContent = '';
+    FLIGHT_PALETTE.forEach(flight => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'flight-swatch';
+        btn.dataset.flight = flight.id;
+        btn.title = flight.label + ' flight';
+        btn.setAttribute('aria-label', flight.label + ' flight');
+        btn.addEventListener('click', (ev) => {
+            ev.preventDefault();
+            setPlayerFlight(seat, flight.id);
+        });
+        root.appendChild(btn);
+    });
+    _syncFlightPickerSelection(seat);
+}
+
+function _syncFlightPickerSelection(seat) {
+    const picker = document.getElementById('flight-picker-' + seat);
+    if (!picker) return;
+    const current = _playerFlights[seat - 1];
+    picker.querySelectorAll('.flight-swatch').forEach(sw => {
+        sw.classList.toggle('is-selected', sw.dataset.flight === current);
+    });
+}
+
+function setPlayerFlight(seat, flightId) {
+    const idx = seat - 1;
+    if (idx < 0 || idx > 1) return;
+    if (!FLIGHT_PALETTE.some(f => f.id === flightId)) return;
+    _playerFlights[idx] = flightId;
+    _saveStoredFlights();
+    _syncFlightPickerSelection(seat);
+    _applyPlayerFlights();
+}
+
+function _applyPlayerFlights() {
+    const p1 = document.getElementById('player-panel-1');
+    const p2 = document.getElementById('player-panel-2');
+    if (p1) p1.setAttribute('data-flight', _playerFlights[0]);
+    if (p2) p2.setAttribute('data-flight', _playerFlights[1]);
+    // Expose as CSS custom properties on the page root so match review
+    // turn cards can pick the right tint even after the scoreboard is gone.
+    const root = document.documentElement;
+    root.style.setProperty('--player1-flight', 'var(--flight-' + _playerFlights[0] + ')');
+    root.style.setProperty('--player2-flight', 'var(--flight-' + _playerFlights[1] + ')');
+    // Also tag the bullseye pre-game cards so their color dots + accent
+    // ring reflect the chosen flight color instead of the hard-coded
+    // red/blue defaults.
+    const bp1 = document.getElementById('bullseye-p1');
+    const bp2 = document.getElementById('bullseye-p2');
+    if (bp1) bp1.setAttribute('data-flight', _playerFlights[0]);
+    if (bp2) bp2.setAttribute('data-flight', _playerFlights[1]);
+    // Tag any existing match-review tabs so their accents match.
+    document.querySelectorAll('.mr-tab').forEach(tab => {
+        const seat = parseInt(tab.dataset.seat || '0', 10);
+        if (seat === 1 || seat === 2) {
+            tab.setAttribute('data-flight', _playerFlights[seat - 1]);
+        }
+    });
+}
+
+// Resolve a flight id (e.g. "blue") into its concrete CSS hex so canvas
+// / SVG dots drawn from JS can match the CSS theming. Falls back to the
+// :root default if the var is unset.
+function _flightHexFor(seat) {
+    const id = _playerFlights[seat - 1] || (seat === 1 ? 'blue' : 'red');
+    const cssVar = '--flight-' + id;
+    const val = getComputedStyle(document.documentElement)
+        .getPropertyValue(cssVar).trim();
+    return val || (seat === 1 ? '#4ea7ff' : '#ff5260');
+}
+
+function _initPlayerFlights() {
+    _playerFlights = _loadStoredFlights();
+    _buildFlightPicker('flight-picker-1', 1);
+    _buildFlightPicker('flight-picker-2', 2);
+    _applyPlayerFlights();
+}
+
+window.setPlayerFlight = setPlayerFlight;
+

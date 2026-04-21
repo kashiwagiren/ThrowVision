@@ -66,9 +66,9 @@ def _board_point_mm(angle_deg: float, radius_mm: float) -> Tuple[float, float]:
 # ---------------------------------------------------------------------------
 _ANCHOR_ANGLES = [
     _wire_angle(20, 1),   # top-right
-    _wire_angle(6, 10),   # right
-    _wire_angle(3, 19),   # bottom-right
     _wire_angle(11, 14),  # left
+    _wire_angle(3, 19),   # bottom-right
+    _wire_angle(6, 10),   # right
 ]
 
 # Outer set: on the double ring outer edge
@@ -347,7 +347,7 @@ class BoardCalibrator:
                 and np.ptp(src_pts[:, 1]) > 1e-3
             )
 
-            if stored_H_mm is None and "matrix" in data.files and not src_valid:
+            if stored_H_mm is None and "matrix" in data.files:
                 saved_bs = min(saved_w, saved_h)
                 saved_scale = saved_bs / self.CANVAS_MM
                 saved_c = saved_bs / 2.0
@@ -413,7 +413,7 @@ class BoardCalibrator:
         dst_px, dst_mm = self._anchor_sets(n)
         self._build_homography(src, dst_px, dst_mm)
 
-        np.savez(self.matrix_path, **self._calibration_payload())
+        np.savez(self.matrix_path, **self._calibration_payload(include_matrix_mm=True))
         self._build_mask()
 
     def commit_homography(self, H_mm: np.ndarray,
