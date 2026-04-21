@@ -239,6 +239,8 @@ python server.py --cameras 0,1,2  # custom indices
 
 ## Project Structure
 
+For the deeper engineering map, see [System Architecture](ARCHITECTURE.md).
+
 ```
 ThrowVision/
 ├── server.py          # Flask + Socket.IO server, detection loop
