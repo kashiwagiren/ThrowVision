@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap"
     rel="stylesheet">
-  <link rel="stylesheet" href="style.css?v=6">
+  <link rel="stylesheet" href="style.css?v=8">
 </head>
 
 <body>
@@ -859,6 +859,11 @@
           <label class="toggle"><input type="checkbox" id="set-approx-dist" checked><span
               class="toggle-slider"></span></label>
         </div>
+        <div class="setting-row toggle-row">
+          <label>Auto Calibrate on Startup</label>
+          <label class="toggle"><input type="checkbox" id="set-auto-cal-startup"><span
+              class="toggle-slider"></span></label>
+        </div>
         <button class="btn btn-accent" onclick="requestRecalibrate()">Recalibrate All Cameras</button>
 
         <div class="setting-row" style="margin-top:12px">
@@ -1021,10 +1026,10 @@
     <div class="cal-instructions" id="cal-hint">
       Drag <strong id="cal-hint-n">8 points</strong> to the dartboard wire intersections:
       <span id="cal-hint-outer"><strong style="color:#00d4ff">●</strong> D20/D1 <strong style="color:#00d4ff">●</strong>
-        D6/D10 <strong style="color:#00d4ff">●</strong> D3/D19 <strong style="color:#00d4ff">●</strong> D11/D14</span>
+        D11/D14 <strong style="color:#00d4ff">●</strong> D3/D19 <strong style="color:#00d4ff">●</strong> D6/D10</span>
       <span id="cal-hint-inner">&nbsp;+&nbsp;<strong style="color:#ff8c00">●</strong> T20/T1 <strong
-          style="color:#ff8c00">●</strong> T6/T10 <strong style="color:#ff8c00">●</strong> T3/T19 <strong
-          style="color:#ff8c00">●</strong> T11/T14</span>
+          style="color:#ff8c00">●</strong> T11/T14 <strong style="color:#ff8c00">●</strong> T3/T19 <strong
+          style="color:#ff8c00">●</strong> T6/T10</span>
       &nbsp;|&nbsp; Arrow keys = nudge &nbsp;|&nbsp; Accept when aligned
     </div>
   </main>
@@ -1109,7 +1114,7 @@
       </div>
     </div>
     <div class="bar-right-group">
-      <span class="bar-copy">v1.3.5 — ThrowVision © 2026</span>
+      <span class="bar-copy">v1.4.0 — ThrowVision © 2026</span>
       <button class="bar-debug-btn" id="debug-toggle-btn" onclick="toggleDebugPanel()" title="Debug Console">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
           stroke-linejoin="round" width="16" height="16">
@@ -1344,7 +1349,7 @@
   </div>
 
   <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
-  <script src="app.js?v=6"></script>
+<script src="app.js?v=7"></script>
 </body>
 
 </html>

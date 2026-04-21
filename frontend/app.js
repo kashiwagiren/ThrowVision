@@ -461,8 +461,8 @@ const CAL_COLORS = [
   '#ff8c00', '#ff8c00', '#ff8c00', '#ff8c00',   // inner triple (orange)
 ];
 const CAL_LABELS = [
-  'D20/D1', 'D6/D10', 'D3/D19', 'D11/D14',      // outer double ring
-  'T20/T1', 'T6/T10', 'T3/T19', 'T11/T14',      // inner triple ring
+  'D20/D1', 'D11/D14', 'D3/D19', 'D6/D10',      // outer double ring
+  'T20/T1', 'T11/T14', 'T3/T19', 'T6/T10',      // inner triple ring
 ];
 let calActivePoint = 0;  // which point zoom follows
 let calMode = 8;          // 4 = legacy outer-only, 8 = outer+inner (precise)
@@ -607,7 +607,7 @@ function calSetMode(n) {
   const cx = calImage.width / 2, cy = calImage.height / 2;
   const ro = Math.min(calImage.width, calImage.height) * 0.40;
   const ri = ro * (107.0 / 170.0);
-  const angs = [81, 351, 261, 171].map(a => a * Math.PI / 180);
+  const angs = [81, 171, 261, 351].map(a => a * Math.PI / 180);
   const outer = angs.map(a => ({ x: cx + ro * Math.cos(a), y: cy - ro * Math.sin(a) }));
   if (n === 4) {
     calPoints = outer;
@@ -688,8 +688,8 @@ async function calCaptureFrame(retries = 5, keepPoints = false) {
           const cx = img.width / 2, cy = img.height / 2;
           const ro = Math.min(img.width, img.height) * 0.40;  // outer double ring radius
           const ri = ro * (107.0 / 170.0);                     // triple ring radius
-          // Same 4 angles as server: D20/D1, D6/D10, D3/D19, D11/D14
-          const angs = [81, 351, 261, 171].map(a => a * Math.PI / 180);
+          // Same 4 angles as server: D20/D1, D11/D14, D3/D19, D6/D10
+          const angs = [81, 171, 261, 351].map(a => a * Math.PI / 180);
           calPoints = [
             // 4 outer double ring
             ...angs.map(a => ({ x: cx + ro * Math.cos(a), y: cy - ro * Math.sin(a) })),
@@ -849,7 +849,7 @@ function resetCalPoints() {
   const cx = calImage.width / 2, cy = calImage.height / 2;
   const ro = Math.min(calImage.width, calImage.height) * 0.40;
   const ri = ro * (107.0 / 170.0);
-  const angs = [81, 351, 261, 171].map(a => a * Math.PI / 180);
+  const angs = [81, 171, 261, 351].map(a => a * Math.PI / 180);
   calPoints = [
     ...angs.map(a => ({ x: cx + ro * Math.cos(a), y: cy - ro * Math.sin(a) })),
     ...angs.map(a => ({ x: cx + ri * Math.cos(a), y: cy - ri * Math.sin(a) })),
@@ -1136,7 +1136,7 @@ const BOARD_RADII_MM = {
   double_inner: 162, double_outer: 170,
 };
 const BOARD_CANVAS_MM = 451;
-const BOARD_DST_WIRE_ANGLES = [81, 351, 261, 171]; // D20/D1, D6/D10, D3/D19, D11/D14
+const BOARD_DST_WIRE_ANGLES = [81, 171, 261, 351]; // D20/D1, D11/D14, D3/D19, D6/D10
 
 function boardSectorBoundaryAngles() {
   const start = 90 - BOARD_SECTOR_ANGLE / 2;
@@ -1738,6 +1738,21 @@ document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
       e.preventDefault();
       showPage('home');
+    }
+    return;
+  }
+
+  // ── MATCH REVIEW page ──
+  if (currentPage === 'match-review') {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      const lb = document.getElementById('mr-lightbox');
+      if (lb && lb.style.display !== 'none' && lb.offsetParent !== null) {
+        if (typeof closeMatchReviewLightbox === 'function') closeMatchReviewLightbox();
+        else lb.style.display = 'none';
+      } else {
+        showPage('stats');
+      }
     }
     return;
   }
@@ -3859,6 +3874,7 @@ async function saveSettings(btnEl) {
     standby_time: document.getElementById('set-standby').value,
     triangle_k_factor: parseFloat(document.getElementById('set-triangle-k').value),
     approximate_distortion: document.getElementById('set-approx-dist').checked,
+    calibrate_on_startup: document.getElementById('set-auto-cal-startup').checked,
     blur_kernel: parseInt(document.getElementById('set-blur').value),
     binary_thresh: parseInt(document.getElementById('set-bin-thresh').value),
     tfluna_enabled: document.getElementById('set-tfluna-enabled').checked,
@@ -4432,6 +4448,10 @@ async function loadServerSettings() {
     if (s.approximate_distortion != null) {
       const el = document.getElementById('set-approx-dist');
       if (el) el.checked = !!s.approximate_distortion;
+    }
+    if (s.calibrate_on_startup != null) {
+      const el = document.getElementById('set-auto-cal-startup');
+      if (el) el.checked = !!s.calibrate_on_startup;
     }
 
     // Blur kernel
@@ -6520,7 +6540,14 @@ function buildLightboxSequence(data) {
 function openLightbox(matchId, kind, player, round, dart, cam) {
     const data = window._currentMatchReview;
     if (!data) return;
-    _lightbox.sequence = buildLightboxSequence(data);
+
+    // Build the full sequence, then narrow to the 3 camera captures for the
+    // clicked dart/EOT so the lightbox isn't paging through the whole match.
+    const fullSequence = buildLightboxSequence(data);
+    const filtered = fullSequence.filter(s =>
+        s.kind === kind && s.player === player && s.round === round
+        && s.dart === dart);
+    _lightbox.sequence = filtered.length ? filtered : fullSequence;
     _lightbox.position = _lightbox.sequence.findIndex(s =>
         s.kind === kind && s.player === player && s.round === round
         && s.dart === dart && s.cam === cam);

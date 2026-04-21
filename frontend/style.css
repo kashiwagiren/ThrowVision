@@ -2008,6 +2008,7 @@ body {
   line-height: 1;
   letter-spacing: -0.04em;
   margin: 0;
+  color: white;
 }
 
 .game-card p {
@@ -4571,6 +4572,22 @@ body {
   gap: 10px;
   margin-top: 20px;
   justify-content: center;
+  align-items: center;
+  width: 100%;
+}
+
+.profile-modal-actions .profile-modal-btn:only-child {
+  margin-left: auto;
+  margin-right: auto;
+}
+
+#offline-modal .profile-modal-actions {
+  display: grid;
+  place-items: center;
+}
+
+#offline-modal .profile-modal-actions > .profile-modal-btn {
+  justify-self: center;
 }
 
 .profile-modal-btn {
@@ -4579,6 +4596,8 @@ body {
   border-radius: 8px;
   font-size: 14px;
   font-weight: 600;
+  justify-content: center;
+  text-align: center;
 }
 
 /* ── Profile List Items ───────────────────────────────────── */
@@ -8045,82 +8064,224 @@ body {
     color: #cfe2ff;
 }
 
-/* ── Turn list — fills remaining height and scrolls internally ────── */
+/* ── Turn list — fills remaining height and scrolls internally ──────
+   Auto-fill grid so multiple compact turn cards tile horizontally on
+   wide displays (no dead zones). Scrollbar hidden but scroll still
+   works (wheel / trackpad / keyboard). */
 .mr-turns {
-    flex: 1; min-height: 0;   /* flex: 1 + min-height: 0 lets it shrink */
+    flex: 1; min-height: 0;
     overflow-y: auto;
-    padding: 14px 24px;
-    display: flex; flex-direction: column; gap: 10px;
-    scrollbar-width: thin;
-    scrollbar-color: rgba(255,255,255,0.12) transparent;
+    padding: 14px 24px 20px;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(560px, 1fr));
+    gap: 14px;
+    align-content: start;
+    scrollbar-width: none;          /* Firefox */
+    -ms-overflow-style: none;       /* IE / old Edge */
 }
+.mr-turns::-webkit-scrollbar { width: 0; height: 0; display: none; }
+/* ── Turn card ───────────────────────────────────────────────────────
+   Compact single-column card sized to fit an auto-fill grid cell
+   (~560–720px wide). Dart scoring rides up top as a tabular strip,
+   captures sit below. Many cards tile side-by-side on wide displays
+   so the pane has no dead zones. Head is sticky against .mr-turns. */
 .mr-turn-card {
-    background: rgba(255,255,255,0.03);
+    background:
+        linear-gradient(180deg, rgba(255,255,255,0.040) 0%, rgba(255,255,255,0.012) 100%),
+        #0f1320;
     border: 1px solid rgba(255,255,255,0.07);
-    border-radius: 10px; padding: 10px 14px;
+    border-radius: 12px;
+    display: flex;
+    flex-direction: column;
+    overflow: visible;           /* keep sticky head working inside grid cell */
+    box-shadow: 0 1px 0 rgba(255,255,255,0.02) inset;
+    transition: border-color 180ms ease, transform 180ms ease, box-shadow 180ms ease;
 }
+.mr-turn-card:hover {
+    border-color: rgba(78,142,247,0.22);
+    box-shadow:
+        0 1px 0 rgba(255,255,255,0.03) inset,
+        0 8px 24px rgba(0,0,0,0.35);
+}
+
+/* Sticky header bar */
 .mr-turn-card__head {
     display: flex; align-items: center; justify-content: space-between;
-    font-size: 13px; font-weight: 700;
+    padding: 10px 14px;
+    font-size: 11px; font-weight: 700; letter-spacing: 0.08em;
+    text-transform: uppercase;
     color: rgba(255,255,255,0.75);
-    margin-bottom: 6px;
+    background: rgba(18, 24, 36, 0.94);
+    border-bottom: 1px solid rgba(255,255,255,0.06);
+    border-radius: 12px 12px 0 0;
+    position: sticky;
+    top: -14px;   /* cancels .mr-turns top padding so head hugs viewport */
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    z-index: 2;
+}
+.mr-turn-card__head > span:first-child {
+    display: inline-flex; align-items: center; gap: 8px;
+}
+.mr-turn-card__head > span:first-child::before {
+    content: "";
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: var(--accent, #4e8ef7);
+    box-shadow: 0 0 8px rgba(78,142,247,0.55);
 }
 .mr-turn-card__total {
-    color: var(--accent, #4e8ef7);
+    color: #cfe2ff;
     font-variant-numeric: tabular-nums;
-    font-size: 13px;
+    font-weight: 700;
+    font-size: 12px;
+    letter-spacing: 0;
+    text-transform: none;
+    padding: 2px 10px;
+    background: rgba(78,142,247,0.15);
+    border: 1px solid rgba(78,142,247,0.35);
+    border-radius: 999px;
 }
 
-/* Dart score rows */
+/* ── Dart info — inline tabular strip ─────────────────────────────── */
+.mr-turn-card__darts {
+    padding: 8px 14px 10px;
+    display: flex; flex-direction: column;
+    border-bottom: 1px solid rgba(255,255,255,0.05);
+}
 .mr-dart-row {
-    display: grid; grid-template-columns: 56px 88px 156px 1fr;
-    gap: 6px; padding: 2px 0; font-size: 12px; color: var(--muted, #bbc);
-    align-items: center;
+    display: grid;
+    grid-template-columns: 48px 68px minmax(0, 1fr) minmax(0, auto);
+    gap: 10px;
+    padding: 5px 0;
+    align-items: baseline;
+    white-space: nowrap;
+    border-bottom: 1px dashed rgba(255,255,255,0.05);
+}
+.mr-dart-row:last-child { border-bottom: none; }
+.mr-dart-row > span:nth-child(1) {
+    font-size: 10px; font-weight: 700; letter-spacing: 0.10em;
+    text-transform: uppercase;
+    color: rgba(255,255,255,0.42);
+}
+.mr-dart-row > span:nth-child(2) {
+    font-size: 13px; font-weight: 700;
+    color: rgba(255,255,255,0.95);
+    font-variant-numeric: tabular-nums;
+}
+.mr-dart-row > span:nth-child(3) {
+    font-size: 11px;
+    color: rgba(255,255,255,0.60);
+    font-variant-numeric: tabular-nums;
+    overflow: hidden; text-overflow: ellipsis;
+}
+.mr-dart-row > span:nth-child(4) {
+    font-size: 10px;
+    color: rgba(255,255,255,0.36);
+    font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+    letter-spacing: 0.02em;
+    overflow: hidden; text-overflow: ellipsis;
+    justify-self: end;
 }
 
-/* ── Captures ───────────────────────────────────────────────────────── */
-.mr-captures-label {
-    margin-top: 10px; margin-bottom: 2px;
-    font-size: 11px; font-weight: 700; letter-spacing: 0.05em;
-    text-transform: uppercase; color: rgba(255,255,255,0.28);
+/* ── Captures ─────────────────────────────────────────────────────── */
+.mr-turn-card__captures {
+    padding: 8px 14px 12px;
+    display: flex; flex-direction: column; gap: 4px;
+    min-width: 0;
 }
+.mr-captures-label {
+    margin: 0; padding-top: 9px; padding-bottom: 9px;
+    font-size: 9.5px; font-weight: 700; letter-spacing: 0.10em;
+    text-transform: uppercase; color: rgba(255,255,255,0.32);
+}
+.mr-captures-label + .mr-captures-label { margin-top: 4px; }
 .mr-thumbrow {
     display: grid;
-    grid-template-columns: 56px repeat(3, minmax(0, 1fr));
-    align-items: center; gap: 6px; margin: 4px 0;
+    grid-template-columns: 48px repeat(3, minmax(0, 1fr));
+    align-items: center; gap: 6px;
+    margin: 0;
 }
-.mr-thumb-label { font-size: 11px; color: var(--muted, #889); }
+.mr-thumb-label {
+    font-size: 10px; font-weight: 700; letter-spacing: 0.10em;
+    text-transform: uppercase;
+    color: rgba(255,255,255,0.42);
+}
 .mr-thumb {
     width: 100%; aspect-ratio: 16 / 9;
-    object-fit: cover; border-radius: 5px;
-    background: rgba(0,0,0,0.4); cursor: pointer;
-    border: 1px solid rgba(255,255,255,0.07);
+    object-fit: cover; border-radius: 6px;
+    background: rgba(0,0,0,0.5); cursor: pointer;
+    border: 1px solid rgba(255,255,255,0.08);
     display: block;
-    transition: border-color 120ms ease, transform 120ms ease;
+    transition: border-color 140ms ease, transform 140ms ease, box-shadow 140ms ease;
 }
 .mr-thumb:hover {
     border-color: var(--accent, #4e8ef7);
-    transform: scale(1.02);
+    transform: scale(1.04);
+    box-shadow: 0 8px 22px rgba(0,0,0,0.55);
 }
 .mr-thumb--missing { visibility: hidden; position: relative; }
 .mr-thumb--missing::after {
-    content: "Capture unavailable"; visibility: visible;
+    content: "No capture"; visibility: visible;
     position: absolute; inset: 0; display: flex; align-items: center;
-    justify-content: center; font-size: 10px; color: #555;
-    background: rgba(0,0,0,0.25); border-radius: 5px;
+    justify-content: center; font-size: 10px; letter-spacing: 0.04em;
+    text-transform: uppercase; color: rgba(255,255,255,0.25);
+    background: rgba(255,255,255,0.02);
+    border: 1px dashed rgba(255,255,255,0.08);
+    border-radius: 6px;
 }
 
 .mr-lightbox {
-    position: fixed; inset: 0; background: rgba(0,0,0,0.92);
-    display: flex; flex-direction: column; align-items: center;
-    justify-content: center; z-index: 1000; gap: 12px; padding: 24px;
+    position: fixed;
+    inset: 0;
+    z-index: 1000;
+    background: rgba(0, 0, 0, 0.86);
+    backdrop-filter: blur(8px);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    padding: clamp(14px, 3vw, 28px);
 }
 .mr-lightbox__close {
-    position: absolute; top: 16px; right: 20px; font-size: 20px;
-    background: transparent; color: #fff; border: none; cursor: pointer;
+    position: absolute;
+    top: 14px;
+    right: 16px;
+    width: 38px;
+    height: 38px;
+    border-radius: 999px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 18px;
+    background: rgba(255, 255, 255, 0.08);
+    border: 1px solid rgba(255, 255, 255, 0.16);
+    color: #fff;
+    cursor: pointer;
+    transition: background 120ms ease, border-color 120ms ease, transform 120ms ease;
 }
-.mr-lightbox__img { max-width: 90vw; max-height: 70vh; object-fit: contain; }
-.mr-lightbox__caption { color: #ddd; font-size: 14px; }
+.mr-lightbox__close:hover {
+    background: rgba(255, 255, 255, 0.14);
+    border-color: rgba(255, 255, 255, 0.26);
+    transform: scale(1.04);
+}
+.mr-lightbox__img {
+    width: min(1120px, 96vw);
+    max-height: min(74vh, 780px);
+    object-fit: contain;
+    border-radius: 16px;
+    background: rgba(255, 255, 255, 0.02);
+    border: 1px solid rgba(255, 255, 255, 0.10);
+    box-shadow: 0 20px 80px rgba(0, 0, 0, 0.55);
+}
+.mr-lightbox__caption {
+    width: min(1120px, 96vw);
+    text-align: center;
+    color: rgba(232, 238, 249, 0.88);
+    font-size: 13px;
+    line-height: 1.35;
+}
 
 /* ── Lightbox scorecard (dart info overlay) ───────────────────────── */
 /* Lives in the top-left corner so it never collides with the close ✕
@@ -8213,7 +8374,22 @@ body {
   letter-spacing: 0.08em;
 }
 .mr-lightbox__controls, .mr-lightbox__nav {
-    display: flex; gap: 8px; align-items: center; color: #aaa;
+    width: min(1120px, 96vw);
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    justify-content: center;
+    color: rgba(232, 238, 249, 0.75);
+    background: rgba(10, 14, 24, 0.55);
+    border: 1px solid rgba(255, 255, 255, 0.10);
+    padding: 10px 12px;
+    border-radius: 14px;
+    backdrop-filter: blur(6px);
+}
+.mr-lightbox__nav #mr-lightbox-pos {
+    min-width: 84px;
+    text-align: center;
+    font-variant-numeric: tabular-nums;
 }
 .mr-lightbox__controls .btn,
 .mr-lightbox__nav .btn {
