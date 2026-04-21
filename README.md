@@ -6,9 +6,18 @@
 ![License](https://img.shields.io/badge/License-MIT-yellow)
 ![Cameras](https://img.shields.io/badge/Cameras-3×_USB-orange)
 ![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux-lightgrey)
-![Version](https://img.shields.io/badge/Version-1.4.0-brightgreen)
+![Version](https://img.shields.io/badge/Version-1.4.1-brightgreen)
 
 **ThrowVision** is an open-source, camera-based automatic dart scoring system. Three USB webcams at 120° intervals detect dart tips with millimetre accuracy using frame differencing, perspective homography, and multi-camera consensus fusion.
+
+---
+
+## What's New in v1.4.1
+
+### Windows Release Build
+- Bumped the desktop release to `v1.4.1`.
+- Added this patch release to ship built Windows executable artifacts with the GitHub release.
+- Kept the v1.4.0 match-review, calibration, scoring, and README flowchart updates intact.
 
 ---
 
@@ -268,7 +277,7 @@ ThrowVision/
 
 ```bash
 npm run pyinstaller   # → dist/server/server.exe
-npm run build:win     # → dist-electron/ThrowVision Setup 1.4.0.exe
+npm run build:win     # → dist-electron/ThrowVision Setup 1.4.1.exe
 ```
 
 ---
@@ -477,6 +486,10 @@ flowchart TD
 ---
 
 ## Changelog
+
+### v1.4.1 — 2026-04-21
+- **RELEASE** Bumped package metadata, README badge, build notes, and footer version to `v1.4.1`.
+- **BUILD** Added this patch release for publishing Windows executable artifacts alongside the GitHub release.
 
 ### v1.4.0 — 2026-04-21
 - **NEW** Match Review page for X01, Cricket, and Count Up with per-dart and end-of-turn camera captures.
